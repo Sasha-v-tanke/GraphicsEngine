@@ -1,0 +1,43 @@
+# Paths are relative to the repository root.
+#
+# Patterns use Bash shell matching syntax because run.sh checks them through
+# a case statement.
+#
+# Examples:
+#   build/*
+#   third_party/*
+#   graphics/backend/vulkan/generated/*
+#
+# Keep directory patterns ending with /* so everything inside is excluded.
+
+# Version-control and IDE metadata
+.git/*
+.idea/*
+.vscode/*
+
+# Build outputs
+build/*
+build-*/*
+cmake-build-*/*
+out/*
+
+# Generated code and generated assets
+generated/*
+*/generated/*
+
+# External/vendor code
+external/*
+*/external/*
+exclude/*
+*/exclude/*
+third_party/*
+*/third_party/*
+vendor/*
+*/vendor/*
+
+# CMake internals that may appear in custom build trees
+CMakeFiles/*
+*/CMakeFiles/*
+
+# Shaders
+*.spv
