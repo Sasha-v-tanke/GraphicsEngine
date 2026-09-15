@@ -17,6 +17,16 @@ configure_project() {
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 }
 
+configure_project_with() {
+    RunQuiet "Configure" \
+        cmake \
+        -S "${REPO_ROOT}" \
+        -B "${BUILD_DIR}" \
+        -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+        "$@"
+}
+
 build_project() {
     RunQuiet "Build" \
         cmake --build "${BUILD_DIR}"

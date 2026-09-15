@@ -11,7 +11,14 @@ REQUIRED_CLANG_FORMAT_VERSION="23.1.0"
 usage() {
     cat <<'EOF'
 Usage:
-  tools/formatter/run.sh
+  tools/formatter/format.sh
+  tools/formatter/format.sh <file> [file...]
+
+Without arguments:
+  Formats all C/C++ files in the repository.
+
+With arguments:
+  Formats only the specified C/C++ files.
 
 Environment:
   CLANG_FORMAT_BIN  Path or command name for clang-format.
@@ -51,6 +58,7 @@ is_ignored() {
     local relative_path="$1"
     local pattern
 
+    # shellcheck disable=SC2254
     for pattern in "${IGNORE_PATTERNS[@]-}"; do
         case "${relative_path}" in
             ${pattern})
@@ -62,15 +70,57 @@ is_ignored() {
     return 1
 }
 
-collect_files() {
+is_cpp_file() {
+    local file="$1"
+
+    case "${file}" in
+        *.h|*.hpp|*.hh|*.c|*.cc|*.cpp|*.cxx)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+add_file() {
+    local file="$1"
+    local absolute_path
+    local relative_path
+    local directory
+    local existing_file
+
+    # Deleted/renamed-away files may still be passed by Git.
+    [[ -f "${file}" ]] || return 0
+
+    directory="$(cd -- "$(dirname -- "${file}")" && pwd -P)"
+    absolute_path="${directory}/$(basename -- "${file}")"
+
+    case "${absolute_path}" in
+        "${REPO_ROOT}"/*)
+            ;;
+        *)
+            die "file is outside repository: ${file}"
+            ;;
+    esac
+
+    relative_path="${absolute_path#"${REPO_ROOT}/"}"
+
+    is_cpp_file "${relative_path}" || return 0
+    is_ignored "${relative_path}" && return 0
+
+    # Avoid formatting the same file twice.
+    for existing_file in "${FILES[@]-}"; do
+        [[ "${existing_file}" == "${absolute_path}" ]] && return 0
+    done
+
+    FILES+=("${absolute_path}")
+}
+
+collect_all_files() {
     FILES=()
 
     while IFS= read -r -d '' file; do
-        local relative_path="${file#"${REPO_ROOT}/"}"
-
-        if ! is_ignored "${relative_path}"; then
-            FILES+=("${file}")
-        fi
+        add_file "${file}"
     done < <(
         find "${REPO_ROOT}" \
             -type f \
@@ -85,6 +135,20 @@ collect_files() {
             \) \
             -print0
     )
+}
+
+collect_requested_files() {
+    FILES=()
+
+    local file
+
+    for file in "$@"; do
+        if [[ "${file}" == /* ]]; then
+            add_file "${file}"
+        else
+            add_file "${PWD}/${file}"
+        fi
+    done
 }
 
 format_files() {
@@ -103,14 +167,20 @@ format_files() {
 }
 
 main() {
-    if [[ "${#}" -ne 0 ]]; then
+    if [[ "${#}" -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
         usage
-        exit 2
+        return 0
     fi
 
     check_clang_format
     load_ignore_patterns
-    collect_files
+
+    if [[ "${#}" -eq 0 ]]; then
+        collect_all_files
+    else
+        collect_requested_files "$@"
+    fi
+
     format_files
 }
 

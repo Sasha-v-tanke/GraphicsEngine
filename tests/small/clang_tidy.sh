@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=common.sh
+# shellcheck source=../common/common.sh
 source "${SCRIPT_DIR}/../common/common.sh"
 
 CLANG_TIDY_BIN="${CLANG_TIDY_BIN:-clang-tidy}"
