@@ -59,6 +59,7 @@ macro(_GRAPHICS_ENGINE_FIND_ENTRY output directory)
     foreach (entryName IN ITEMS
         module.cmake
         submodule.cmake
+        test.cmake
         test_module.cmake
         test_submodule.cmake
     )
@@ -265,6 +266,83 @@ macro(TEST_SUBMODULE name)
 endmacro()
 
 
+macro(TEST name)
+    if (NOT GRAPHICS_ENGINE_BUILD_TESTS)
+        message(FATAL_ERROR
+            "TEST: tests are disabled"
+        )
+    endif ()
+
+    set(
+        testTarget
+        "GraphicsEngine${name}Tests"
+    )
+
+    if (TARGET "${testTarget}")
+        message(FATAL_ERROR
+            "TEST: target '${testTarget}' already exists"
+        )
+    endif ()
+
+    add_executable(
+        ${testTarget}
+    )
+
+    add_executable(
+        GraphicsEngine::${name}Tests
+        ALIAS
+        ${testTarget}
+    )
+
+    target_compile_features(
+        ${testTarget}
+        PRIVATE
+        cxx_std_23
+    )
+
+    add_test(
+        NAME ${testTarget}
+        COMMAND ${testTarget}
+    )
+
+    set(
+        GRAPHICS_ENGINE_CURRENT_CONTEXT
+        "TEST"
+    )
+
+    set(
+        GRAPHICS_ENGINE_CURRENT_MODULE
+        "${name}"
+    )
+
+    set(
+        GRAPHICS_ENGINE_CURRENT_TARGET
+        "${testTarget}"
+    )
+
+    _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
+endmacro()
+
+
+macro(TEST_LABELS)
+    _GRAPHICS_ENGINE_REQUIRE_CONTEXT(
+        "TEST_LABELS"
+    )
+
+    if (NOT GRAPHICS_ENGINE_CURRENT_CONTEXT STREQUAL "TEST")
+        message(FATAL_ERROR
+            "TEST_LABELS: current context is not a test"
+        )
+    endif ()
+
+    set_tests_properties(
+        ${GRAPHICS_ENGINE_CURRENT_TARGET}
+        PROPERTIES
+        LABELS "${ARGN}"
+    )
+endmacro()
+
+
 # =============================================================================
 # Sources
 # =============================================================================
@@ -361,6 +439,8 @@ macro(RECURSE)
             AND (
             entryFileName STREQUAL "test_module.cmake"
             OR
+            entryFileName STREQUAL "test.cmake"
+            OR
             entryFileName STREQUAL "test_submodule.cmake"
         )
         )
@@ -432,3 +512,13 @@ macro(SAMPLE name)
 
     _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
 endmacro()
+
+# =============================================================================
+# Library include
+# =============================================================================
+
+function(include_external Name)
+    include(
+        "${CMAKE_CURRENT_LIST_DIR}/${Name}/${Name}.cmake"
+    )
+endfunction()
