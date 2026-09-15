@@ -49,3 +49,28 @@ jobs:
           if [ -f tests/result/small.log ]; then
             cat tests/result/small.log
           fi
+
+  sanitizers-macos:
+    name: ASan + UBSan / macOS
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          brew install \
+            glm \
+            glfw \
+            vulkan-volk
+
+      - name: Run sanitizers
+        run: ./tests/test_sanitizers.sh
+
+      - name: Show sanitizer log
+        if: failure()
+        run: |
+          if [ -f tests/result/sanitizers.log ]; then
+            cat tests/result/sanitizers.log
+          fi

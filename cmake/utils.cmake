@@ -108,6 +108,10 @@ macro(MODULE name)
         ${moduleTarget}
     )
 
+    _GRAPHICS_ENGINE_APPLY_SANITIZERS(
+        ${moduleTarget}
+    )
+
     add_library(
         GraphicsEngine::${name}
         ALIAS
@@ -127,6 +131,10 @@ macro(MODULE name)
         )
 
         add_executable(
+            ${testTarget}
+        )
+
+        _GRAPHICS_ENGINE_APPLY_SANITIZERS(
             ${testTarget}
         )
 
@@ -285,6 +293,10 @@ macro(TEST name)
     endif ()
 
     add_executable(
+        ${testTarget}
+    )
+
+    _GRAPHICS_ENGINE_APPLY_SANITIZERS(
         ${testTarget}
     )
 
@@ -522,6 +534,10 @@ macro(SAMPLE name)
         ${sampleTarget}
     )
 
+    _GRAPHICS_ENGINE_APPLY_SANITIZERS(
+        ${sampleTarget}
+    )
+
     target_compile_features(
         ${sampleTarget}
         PRIVATE
@@ -550,3 +566,15 @@ function(include_external Name)
         "${CMAKE_CURRENT_LIST_DIR}/${Name}/${Name}.cmake"
     )
 endfunction()
+
+# ============================================================================
+# Sanitizers
+# ============================================================================
+
+macro(_GRAPHICS_ENGINE_APPLY_SANITIZERS target)
+    target_link_libraries(
+        ${target}
+        PRIVATE
+        GraphicsEngine::Sanitizers
+    )
+endmacro()
