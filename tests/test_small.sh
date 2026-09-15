@@ -15,6 +15,7 @@ build_project
 
 RunQuiet "Clang-Tidy" \
   bash "${SCRIPT_DIR}/small/clang_tidy.sh"
+
 run_ctest_label "small"
 
 printf 'Test: small passed\n'
