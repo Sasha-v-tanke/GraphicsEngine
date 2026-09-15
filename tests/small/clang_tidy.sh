@@ -73,6 +73,8 @@ run_tidy() {
         "${CLANG_TIDY_BIN}" \
             -p "${BUILD_DIR}" \
             --config-file="${REPO_ROOT}/.clang-tidy" \
+            --header-filter="${REPO_ROOT}/.*" \
+            --exclude-header-filter="${REPO_ROOT}/(.*/)?(external|third_party|vendor|generated)/.*" \
             --extra-arg-before="-isysroot" \
             --extra-arg-before="${SDK_PATH}" \
             "${file}"

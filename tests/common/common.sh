@@ -24,16 +24,33 @@ build_project() {
 
 run_ctest_label() {
     local label="$1"
+    local log_file="${TEST_LOG:-}"
+
+    if [[ -z "${log_file}" ]]; then
+        log_file="${TEST_DIR}/result/${label}.log"
+        mkdir -p "$(dirname -- "${log_file}")"
+    fi
 
     if [[ ! -f "${BUILD_DIR}/CTestTestfile.cmake" ]]; then
         printf 'test: no CTest tests are registered; skipping label "%s"\n' "${label}"
         return 0
     fi
 
-    ctest \
+    printf 'CTest %s' "${label}"
+    printf '\n===== CTest %s =====\n' "${label}" >>"${log_file}"
+
+    if ctest \
         --test-dir "${BUILD_DIR}" \
         --output-on-failure \
-        --label-regex "^${label}$"
+        --label-regex "^${label}$" \
+        >>"${log_file}" 2>&1; then
+        printf ' — OK\n'
+        return 0
+    fi
+
+    printf ' — FAILED\n\n'
+    printf 'log: %s\n' "${log_file}"
+    return 1
 }
 
 RunQuiet() {
