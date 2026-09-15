@@ -12,7 +12,23 @@ on:
 permissions:
   contents: read
 
+
 jobs:
+  format:
+    name: Format
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check formatting
+        env:
+          CLANG_FORMAT_BIN: /opt/homebrew/opt/llvm/bin/clang-format
+        run: |
+          ./tools/formatter/format.sh
+          git diff --exit-code
+
   small-macos:
     name: Small / macOS
     runs-on: macos-26
