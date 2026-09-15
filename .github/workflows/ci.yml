@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  small-macos:
+    name: Small / macOS
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          brew install \
+            llvm \
+            glm \
+            glfw \
+            vulkan-volk
+
+      - name: Run small tests
+        env:
+          CLANG_TIDY_BIN: /opt/homebrew/opt/llvm/bin/clang-tidy
+        run: ./tests/test_small.sh
+
+      - name: Show test log
+        if: failure()
+        run: |
+          if [ -f tests/result/small.log ]; then
+            cat tests/result/small.log
+          fi
