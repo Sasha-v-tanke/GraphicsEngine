@@ -8,7 +8,13 @@ project(
 option(
     GRAPHICS_ENGINE_BUILD_TESTS
     "Build GraphicsEngine tests"
-    ON
+    ${PROJECT_IS_TOP_LEVEL}
+)
+
+option(
+    GRAPHICS_ENGINE_BUILD_SAMPLES
+    "Build GraphicsEngine samples"
+    ${PROJECT_IS_TOP_LEVEL}
 )
 
 option(
@@ -23,18 +29,14 @@ option(
     ON
 )
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if (PROJECT_IS_TOP_LEVEL)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif ()
 
 include(cmake/utils.cmake)
 include(cmake/sanitizers.cmake)
-
-if (GRAPHICS_ENGINE_BUILD_TESTS)
-    enable_testing()
-endif ()
 
 # Modules
 include(external/external.cmake)
@@ -43,4 +45,6 @@ if (GRAPHICS_ENGINE_BUILD_TESTS)
     include(tests/tests.cmake)
 endif ()
 
-include(samples/samples.cmake)
+if (GRAPHICS_ENGINE_BUILD_SAMPLES)
+    include(samples/samples.cmake)
+endif ()
