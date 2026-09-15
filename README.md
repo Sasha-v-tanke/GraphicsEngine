@@ -2,6 +2,80 @@
 
 Движок для рендеринга графики на C++. Планируется поддержка Vulkan, OpenGL; GLFW, Qt etc.
 
+## Архитектура
+
+GraphicsEngine разделён на независимые модули с явно определёнными зонами ответственности и зависимостями.
+
+```text id="fai033"
+Application
+    │
+    ├── Window
+    │     └── GLFW / Qt / SDL
+    │
+    └── Engine
+          ├── ECS
+          ├── Resources
+          ├── TaskSystem
+          └── Renderer
+                 │
+                 ▼
+              Graphics
+                 │
+          ┌──────┴──────┐
+          ▼             ▼
+       Vulkan         OpenGL
+```
+
+### Модули
+
+- **Application** — жизненный цикл приложения и основной цикл. Пользователь может наследоваться от базового
+  `Application` и переопределять необходимое поведение.
+- **Window** — абстракция окна без зависимости от конкретной оконной библиотеки. GLFW, Qt, SDL и другие реализации
+  скрыты за внутренними интерфейсами и фабриками.
+- **Engine** — основной runtime и координатор подсистем. Связывает мир, ресурсы, renderer и систему задач.
+- **ECS** — entities, components, systems и состояние мира. Не зависит от graphics backend.
+- **Resources** — backend-independent ресурсы и управление их жизненным циклом: textures, meshes, materials, shaders и
+  т.д.
+- **TaskSystem** — общий thread pool и выполнение задач с учётом их зависимостей.
+- **Render** — высокоуровневая подготовка отрисовки: extraction, culling, LOD, sorting, batching и построение render
+  lists.
+- **Graphics** — низкоуровневая backend-independent graphics abstraction, используемая renderer.
+- **Vulkan / OpenGL** — реализации Graphics. Все API-specific объекты, synchronization, command recording и
+  GPU-представления ресурсов остаются внутри соответствующего backend.
+
+### Window abstraction
+
+Пользователь выбирает тип оконной системы, но не работает напрямую с `GLFWwindow`, `QWindow`, `SDL_Window` и другими
+native-типами.
+
+```text id="o6fgux"
+Window
+    │
+    ▼
+IWindowImpl / IWindowSystem
+    │
+    ├── GLFW
+    ├── Qt
+    └── SDL
+```
+
+Window system и graphics backend являются независимыми подсистемами.
+
+Места, где необходима информация сразу о двух сторонах, например создание Vulkan surface для GLFW, выносятся в отдельный
+integration layer.
+
+### Границы абстракций
+
+- ECS не знает о Render, Vulkan или OpenGL.
+- Resources не предоставляет наружу `VkImage`, OpenGL handles и другие backend-specific объекты.
+- Render работает через backend-independent Graphics API.
+- Graphics не зависит от конкретной оконной библиотеки.
+- Vulkan/OpenGL implementation details не выходят за границы соответствующего backend.
+- GLFW/Qt/SDL types не выходят в публичный Engine/Graphics API.
+- Backend-specific поведение выбирается через capabilities backend, а не через проверки `if Vulkan` / `if OpenGL` в
+  высокоуровневых модулях.
+- Высокоуровневые системы зависят от абстракций, а конкретные реализации остаются изолированными внутри своих модулей.
+
 ## Frame Pipeline and Multithreading
 
 ### Общая модель
