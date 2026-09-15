@@ -108,7 +108,7 @@ macro(MODULE name)
         ${moduleTarget}
     )
 
-    _GRAPHICS_ENGINE_APPLY_SANITIZERS(
+    _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
         ${moduleTarget}
     )
 
@@ -134,7 +134,7 @@ macro(MODULE name)
             ${testTarget}
         )
 
-        _GRAPHICS_ENGINE_APPLY_SANITIZERS(
+        _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
             ${testTarget}
         )
 
@@ -296,7 +296,7 @@ macro(TEST name)
         ${testTarget}
     )
 
-    _GRAPHICS_ENGINE_APPLY_SANITIZERS(
+    _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
         ${testTarget}
     )
 
@@ -534,7 +534,7 @@ macro(SAMPLE name)
         ${sampleTarget}
     )
 
-    _GRAPHICS_ENGINE_APPLY_SANITIZERS(
+    _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
         ${sampleTarget}
     )
 
@@ -568,13 +568,14 @@ function(include_external Name)
 endfunction()
 
 # ============================================================================
-# Sanitizers
+# Local checks
 # ============================================================================
 
-macro(_GRAPHICS_ENGINE_APPLY_SANITIZERS target)
+macro(_GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS target)
     target_link_libraries(
         ${target}
         PRIVATE
+        GraphicsEngine::Warnings
         GraphicsEngine::Sanitizers
     )
 endmacro()

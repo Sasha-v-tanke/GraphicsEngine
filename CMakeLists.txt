@@ -37,6 +37,7 @@ endif ()
 
 include(cmake/utils.cmake)
 include(cmake/sanitizers.cmake)
+include(cmake/warnings.cmake)
 
 # Modules
 include(external/external.cmake)
