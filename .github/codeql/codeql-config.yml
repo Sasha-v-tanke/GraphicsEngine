@@ -1,0 +1,9 @@
+name: GraphicsEngine CodeQL
+
+paths-ignore:
+  - external/**
+  - cmake-build-*/**
+  - build/**
+  - out/**
+  - generated/**
+  - '**/generated/**'
