@@ -58,6 +58,7 @@ is_ignored() {
     local relative_path="$1"
     local pattern
 
+    # shellcheck disable=SC2254
     for pattern in "${IGNORE_PATTERNS[@]-}"; do
         case "${relative_path}" in
             ${pattern})

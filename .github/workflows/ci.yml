@@ -14,21 +14,6 @@ permissions:
 
 
 jobs:
-  format:
-    name: Format
-    runs-on: macos-26
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Check formatting
-        env:
-          CLANG_FORMAT_BIN: /opt/homebrew/opt/llvm/bin/clang-format
-        run: |
-          ./tools/formatter/format.sh
-          git diff --exit-code
-
   small-macos:
     name: Small / macOS
     runs-on: macos-26
@@ -41,9 +26,17 @@ jobs:
         run: |
           brew install \
             llvm \
+            shellcheck \
             glm \
             glfw \
             vulkan-volk
+
+      - name: Check formatting
+        env:
+          CLANG_FORMAT_BIN: /opt/homebrew/opt/llvm/bin/clang-format
+        run: |
+          ./tools/formatter/format.sh
+          git diff --exit-code
 
       - name: Run small tests
         env:

@@ -7,7 +7,7 @@ if [[ ! -d "${SCRIPT_DIR}/result" ]]; then
 fi
 TEST_LOG="${SCRIPT_DIR}/result/medium.log"
 : >"${TEST_LOG}"
-# shellcheck source=common.sh
+# shellcheck source=common/common.sh
 source "${SCRIPT_DIR}/common/common.sh"
 
 printf 'Test: medium\n'
