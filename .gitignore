@@ -4,3 +4,4 @@
 *exclude/
 *.spv
 tests/result/
+CMakeUserPresets.json
