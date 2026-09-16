@@ -2,21 +2,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ ! -d "${SCRIPT_DIR}/result" ]]; then
-    mkdir "${SCRIPT_DIR}/result/"
-fi
-TEST_LOG="${SCRIPT_DIR}/result/test-medium.log"
-: >"${TEST_LOG}"
 # shellcheck source=common/common.sh
 source "${SCRIPT_DIR}/common/common.sh"
 
+# MEDIUM_TESTS_DIR="${TEST_DIR}/medium"
+TEST_LOG="${LOGS_DIR}/test-medium.log"
+: >"${TEST_LOG}"
+
 printf 'Test: medium\n'
 
-configure_project_with \
-    -DGRAPHICS_ENGINE_BUILD_TESTS=ON \
-    -DGRAPHICS_ENGINE_BUILD_GLFW=ON \
-    -DGRAPHICS_ENGINE_BUILD_VULKAN=ON
+configure_project "ci-vulkan-glfw"
 build_project
+
 run_ctest_label "medium"
 
 printf 'Test: medium passed\n'

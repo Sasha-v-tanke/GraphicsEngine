@@ -11,7 +11,7 @@ PRIVATE_DEPENDS(
 )
 
 TEST_LABELS(
-    small
+    medium
     cpp
     libs
 )

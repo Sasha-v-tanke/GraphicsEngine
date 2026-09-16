@@ -2,29 +2,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ ! -d "${SCRIPT_DIR}/result" ]]; then
-    mkdir "${SCRIPT_DIR}/result/"
-fi
-TEST_LOG="${SCRIPT_DIR}/result/test-small.log"
-: >"${TEST_LOG}"
-
 # shellcheck source=common/common.sh
 source "${SCRIPT_DIR}/common/common.sh"
 
+SMALL_TESTS_DIR="${TEST_DIR}/small"
+TEST_LOG="${LOGS_DIR}/test-small.log"
+: >"${TEST_LOG}"
+
 printf 'Test: small\n'
 
-configure_project_with \
-    -DGRAPHICS_ENGINE_BUILD_TESTS=ON \
-    -DGRAPHICS_ENGINE_BUILD_SAMPLES=OFF \
-    -DGRAPHICS_ENGINE_BUILD_GLFW=OFF \
-    -DGRAPHICS_ENGINE_BUILD_VULKAN=OFF
+configure_project "ci-lite"
 build_project
 
 RunQuiet "Clang-Tidy" \
-  bash "${SCRIPT_DIR}/small/clang_tidy.sh"
+    bash "${SMALL_TESTS_DIR}/clang_tidy.sh"
 
 RunQuiet "ShellCheck" \
-  bash "${SCRIPT_DIR}/small/shellcheck.sh"
+    bash "${SMALL_TESTS_DIR}/shellcheck.sh"
 
 run_ctest_label "small"
 

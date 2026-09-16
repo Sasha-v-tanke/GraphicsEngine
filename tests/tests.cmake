@@ -1,3 +1,3 @@
 RECURSE(
-    small/cpp
+    medium/cpp
 )
