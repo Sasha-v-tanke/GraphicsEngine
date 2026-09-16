@@ -1,0 +1,57 @@
+#pragma once
+
+#include <concepts>
+#include <format>
+#include <source_location>
+#include <string>
+#include <system_error>
+#include <utility>
+
+#include <lib/common/error/error.h>
+
+namespace NCommon {
+
+class Exception final: public std::system_error {
+public:
+    Exception(std::error_code code, std::string message, std::source_location location)
+        : std::system_error(code, message)
+        , m_message(std::move(message))
+        , m_location(location) {
+    }
+
+    [[nodiscard]] const std::string& GetMessage() const noexcept {
+        return m_message;
+    }
+
+    [[nodiscard]] const std::source_location& GetLocation() const noexcept {
+        return m_location;
+    }
+
+private:
+    std::string m_message;
+    std::source_location m_location;
+};
+
+template<typename... Args>
+[[noreturn]] void
+Throw(std::error_code code, std::source_location location, std::format_string<Args...> format, Args&&... args) {
+    throw Exception{
+            code,
+            std::format(format, std::forward<Args>(args)...),
+            location,
+    };
+}
+
+template<typename ErrorType, typename... Args>
+    requires requires(ErrorType error) {
+        { MakeErrorCode(error) } -> std::same_as<std::error_code>;
+    }
+[[noreturn]] void
+Throw(ErrorType error, std::source_location location, std::format_string<Args...> format, Args&&... args) {
+    Throw(MakeErrorCode(error), location, format, std::forward<Args>(args)...);
+}
+
+} // namespace NCommon
+
+#define GRAPHICS_ENGINE_THROW(error, format, ...)                                                                      \
+    ::NCommon::Throw(error, std::source_location::current(), format __VA_OPT__(, ) __VA_ARGS__)
