@@ -12,6 +12,12 @@ option(
 )
 
 option(
+    GRAPHICS_ENGINE_BUILD_BENCHMARKS
+    "Build GraphicsEngine benchmarks"
+    OFF
+)
+
+option(
     GRAPHICS_ENGINE_BUILD_SAMPLES
     "Build GraphicsEngine samples"
     ${PROJECT_IS_TOP_LEVEL}
@@ -45,6 +51,10 @@ include(external/external.cmake)
 if (GRAPHICS_ENGINE_BUILD_TESTS)
     enable_testing()
     include(tests/tests.cmake)
+endif ()
+
+if (GRAPHICS_ENGINE_BUILD_BENCHMARKS)
+    include(benchmarks/benchmarks.cmake)
 endif ()
 
 if (GRAPHICS_ENGINE_BUILD_SAMPLES)

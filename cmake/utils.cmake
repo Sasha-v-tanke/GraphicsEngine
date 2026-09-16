@@ -62,6 +62,7 @@ macro(_GRAPHICS_ENGINE_FIND_ENTRY output directory)
         test.cmake
         test_module.cmake
         test_submodule.cmake
+        benchmark.cmake
     )
         if (EXISTS "${directory}/${entryName}")
             list(APPEND entryFiles
@@ -487,6 +488,13 @@ macro(RECURSE)
             continue()
         endif ()
 
+        if (
+            NOT GRAPHICS_ENGINE_BUILD_BENCHMARKS
+            AND entryFileName STREQUAL "benchmark.cmake"
+        )
+            continue()
+        endif ()
+
         set(
             savedContext
             "${GRAPHICS_ENGINE_CURRENT_CONTEXT}"
@@ -521,6 +529,75 @@ macro(RECURSE)
             "${savedTarget}"
         )
     endforeach ()
+endmacro()
+
+# =============================================================================
+# Benchmark modules
+# =============================================================================
+
+macro(BENCHMARK_MODULE)
+    if (NOT GRAPHICS_ENGINE_BUILD_BENCHMARKS)
+        message(FATAL_ERROR
+            "BENCHMARK_MODULE: benchmarks are disabled"
+        )
+    endif ()
+
+    set(
+        benchmarkTarget
+        "GraphicsEngineBenchmarks"
+    )
+
+    if (TARGET "${benchmarkTarget}")
+        message(FATAL_ERROR
+            "BENCHMARK_MODULE: target '${benchmarkTarget}' already exists"
+        )
+    endif ()
+
+    add_executable(
+        ${benchmarkTarget}
+    )
+
+    _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
+        ${benchmarkTarget}
+    )
+
+    target_compile_features(
+        ${benchmarkTarget}
+        PRIVATE
+        cxx_std_23
+    )
+
+    target_link_libraries(
+        ${benchmarkTarget}
+        PRIVATE
+        GraphicsEngine::Benchmark
+    )
+
+    set(
+        GRAPHICS_ENGINE_CURRENT_CONTEXT
+        "BENCHMARK"
+    )
+
+    set(
+        GRAPHICS_ENGINE_CURRENT_TARGET
+        "${benchmarkTarget}"
+    )
+
+    _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
+endmacro()
+
+macro(BENCHMARK)
+    _GRAPHICS_ENGINE_REQUIRE_CONTEXT(
+        "BENCHMARK"
+    )
+
+    if (NOT GRAPHICS_ENGINE_CURRENT_CONTEXT STREQUAL "BENCHMARK")
+        message(FATAL_ERROR
+            "BENCHMARK: current context is not a benchmark"
+        )
+    endif ()
+
+    _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
 endmacro()
 
 # =============================================================================

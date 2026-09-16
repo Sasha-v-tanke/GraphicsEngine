@@ -13,6 +13,7 @@
             "cacheVariables": {
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "GRAPHICS_ENGINE_BUILD_TESTS": "OFF",
+                "GRAPHICS_ENGINE_BUILD_BENCHMARKS": "OFF",
                 "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
                 "GRAPHICS_ENGINE_BUILD_VULKAN": "OFF",
                 "GRAPHICS_ENGINE_BUILD_GLFW": "OFF"
@@ -34,6 +35,15 @@
             "cacheVariables": {
                 "GRAPHICS_ENGINE_BUILD_VULKAN": "ON",
                 "GRAPHICS_ENGINE_BUILD_GLFW": "ON"
+            }
+        },
+        {
+            "name": "benchmark",
+            "displayName": "Benchmarks",
+            "description": "GraphicsEngine performance benchmarks",
+            "inherits": "release",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_BUILD_BENCHMARKS": "ON"
             }
         },
         {
@@ -82,6 +92,10 @@
         {
             "name": "release-vulkan-glfw",
             "configurePreset": "release-vulkan-glfw"
+        },
+        {
+            "name": "benchmark",
+            "configurePreset": "benchmark"
         },
         {
             "name": "ci-lite",
