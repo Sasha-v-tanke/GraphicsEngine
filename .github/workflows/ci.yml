@@ -14,40 +14,39 @@ permissions:
 
 
 jobs:
-  small-macos:
-    name: Small / macOS
-    runs-on: macos-26
+  small-linux:
+    name: Small / Linux
+    runs-on: ubuntu-24.04
+
+    env:
+      CC: clang-23
+      CXX: clang++-23
+      CLANG_TIDY_BIN: clang-tidy-23
+      CLANG_FORMAT_BIN: clang-format-23
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install dependencies
-        run: |
-          brew install \
-            llvm \
-            shellcheck \
-            glm \
-            glfw \
-            vulkan-volk
+      #      - name: Install dependencies
+      #        # LLVM 23
+      #        # shellcheck
+      #        # glm
+      #        # cmake >= 3.31
 
       - name: Check formatting
-        env:
-          CLANG_FORMAT_BIN: /opt/homebrew/opt/llvm/bin/clang-format
         run: |
           ./tools/formatter/format.sh
           git diff --exit-code
 
       - name: Run small tests
-        env:
-          CLANG_TIDY_BIN: /opt/homebrew/opt/llvm/bin/clang-tidy
         run: ./tests/test_small.sh
 
       - name: Show test log
         if: failure()
         run: |
-          if [ -f tests/result/small.log ]; then
-            cat tests/result/small.log
+          if [ -f tests/result/test-small.log ]; then
+            cat tests/result/test-small.log
           fi
 
   sanitizers-macos:

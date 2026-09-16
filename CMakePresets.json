@@ -1,101 +1,110 @@
 {
-  "version": 10,
-  "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 31,
-    "patch": 0
-  },
-  "configurePresets": [
-    {
-      "name": "base",
-      "hidden": true,
-      "binaryDir": "${sourceDir}/cmake-build-${presetName}",
-      "cacheVariables": {
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "GRAPHICS_ENGINE_BUILD_TESTS": "ON",
-        "GRAPHICS_ENGINE_BUILD_SAMPLES": "ON"
-      }
+    "version": 10,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 31,
+        "patch": 0
     },
-    {
-      "name": "debug",
-      "displayName": "Debug",
-      "description": "GraphicsEngine development build",
-      "inherits": "base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "release",
-      "displayName": "Release",
-      "description": "GraphicsEngine optimized build",
-      "inherits": "base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "GRAPHICS_ENGINE_BUILD_TESTS": "OFF"
-      }
-    },
-    {
-      "name": "ci",
-      "displayName": "CI",
-      "description": "GraphicsEngine CI build",
-      "inherits": "debug",
-      "cacheVariables": {
-        "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
-        "GRAPHICS_ENGINE_WARNINGS_AS_ERRORS": "ON"
-      }
-    },
-    {
-      "name": "sanitizers",
-      "displayName": "ASan + UBSan",
-      "description": "GraphicsEngine sanitizer build",
-      "inherits": "debug",
-      "cacheVariables": {
-        "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
-        "GRAPHICS_ENGINE_ENABLE_ASAN": "ON",
-        "GRAPHICS_ENGINE_ENABLE_UBSAN": "ON"
-      }
-    }
-  ],
-  "buildPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug"
-    },
-    {
-      "name": "release",
-      "configurePreset": "release"
-    },
-    {
-      "name": "ci",
-      "configurePreset": "ci"
-    },
-    {
-      "name": "sanitizers",
-      "configurePreset": "sanitizers"
-    }
-  ],
-  "testPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "ci",
-      "configurePreset": "ci",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "sanitizers",
-      "configurePreset": "sanitizers",
-      "output": {
-        "outputOnFailure": true
-      }
-    }
-  ]
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/cmake-build-${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "GRAPHICS_ENGINE_BUILD_TESTS": "ON",
+                "GRAPHICS_ENGINE_BUILD_SAMPLES": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug",
+            "description": "GraphicsEngine development build",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "description": "GraphicsEngine optimized build",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "GRAPHICS_ENGINE_BUILD_TESTS": "OFF"
+            }
+        },
+        {
+            "name": "ci-base",
+            "hidden": true,
+            "inherits": "debug",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
+                "GRAPHICS_ENGINE_WARNINGS_AS_ERRORS": "ON"
+            }
+        },
+        {
+            "name": "ci-core",
+            "displayName": "CI Core",
+            "description": "GraphicsEngine core CI build without optional backends",
+            "inherits": "ci-base",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_BUILD_GLFW": "OFF",
+                "GRAPHICS_ENGINE_BUILD_VULKAN": "OFF"
+            }
+        },
+        {
+            "name": "sanitizers",
+            "displayName": "ASan + UBSan",
+            "description": "GraphicsEngine sanitizer build",
+            "inherits": "ci-core",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
+                "GRAPHICS_ENGINE_ENABLE_ASAN": "ON",
+                "GRAPHICS_ENGINE_ENABLE_UBSAN": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci"
+        },
+        {
+            "name": "sanitizers",
+            "configurePreset": "sanitizers"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "sanitizers",
+            "configurePreset": "sanitizers",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
 }

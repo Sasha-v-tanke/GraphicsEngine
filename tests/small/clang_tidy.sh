@@ -21,19 +21,11 @@ check_clang_tidy() {
 collect_translation_units() {
     TRANSLATION_UNITS=()
 
-    while IFS= read -r -d '' file; do
+    while IFS= read -r file; do
         case "${file}" in
-            "${REPO_ROOT}"/build/* \
-            | "${REPO_ROOT}"/build-*/* \
-            | "${REPO_ROOT}"/cmake-build-*/* \
-            | "${REPO_ROOT}"/out/* \
-            | "${REPO_ROOT}"/*/external/* \
-            | "${REPO_ROOT}"/external/* \
-            | "${REPO_ROOT}"/*/third_party/* \
+            "${REPO_ROOT}"/external/* \
             | "${REPO_ROOT}"/third_party/* \
-            | "${REPO_ROOT}"/*/vendor/* \
             | "${REPO_ROOT}"/vendor/* \
-            | "${REPO_ROOT}"/*/generated/* \
             | "${REPO_ROOT}"/generated/*)
                 continue
                 ;;
@@ -41,15 +33,27 @@ collect_translation_units() {
 
         TRANSLATION_UNITS+=("${file}")
     done < <(
-        find "${REPO_ROOT}" \
-            -type f \
-            \( \
-                -name '*.c' \
-                -o -name '*.cc' \
-                -o -name '*.cpp' \
-                -o -name '*.cxx' \
-            \) \
-            -print0
+        python3 - "${BUILD_DIR}/compile_commands.json" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    commands = json.load(stream)
+
+files = set()
+
+for command in commands:
+    path = command["file"]
+
+    if not os.path.isabs(path):
+        path = os.path.join(command["directory"], path)
+
+    files.add(os.path.realpath(path))
+
+for path in sorted(files):
+    print(path)
+PY
     )
 }
 
@@ -64,19 +68,33 @@ run_tidy() {
         return 0
     fi
 
+    local extra_args=()
+
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        command -v xcrun >/dev/null 2>&1 \
+            || die "xcrun is required on macOS"
+
+        local sdk_path
+        sdk_path="$(xcrun --show-sdk-path)"
+
+        extra_args+=(
+            "--extra-arg-before=-isysroot"
+            "--extra-arg-before=${sdk_path}"
+        )
+    fi
+
     printf 'clang-tidy: checking %d translation units\n' "${#TRANSLATION_UNITS[@]}"
 
     local file
     for file in "${TRANSLATION_UNITS[@]}"; do
         printf 'clang-tidy: %s\n' "${file#"${REPO_ROOT}/"}"
-        SDK_PATH="$(xcrun --show-sdk-path)"
+
         "${CLANG_TIDY_BIN}" \
             -p "${BUILD_DIR}" \
             --config-file="${REPO_ROOT}/.clang-tidy" \
             --header-filter="${REPO_ROOT}/.*" \
             --exclude-header-filter="${REPO_ROOT}/(.*/)?(external|third_party|vendor|generated)/.*" \
-            --extra-arg-before="-isysroot" \
-            --extra-arg-before="${SDK_PATH}" \
+            "${extra_args[@]}" \
             "${file}"
     done
 }

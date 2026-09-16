@@ -13,7 +13,11 @@ source "${SCRIPT_DIR}/common/common.sh"
 
 printf 'Test: small\n'
 
-configure_project
+configure_project_with \
+    -DGRAPHICS_ENGINE_BUILD_TESTS=ON \
+    -DGRAPHICS_ENGINE_BUILD_SAMPLES=OFF \
+    -DGRAPHICS_ENGINE_BUILD_GLFW=OFF \
+    -DGRAPHICS_ENGINE_BUILD_VULKAN=OFF
 build_project
 
 RunQuiet "Clang-Tidy" \
