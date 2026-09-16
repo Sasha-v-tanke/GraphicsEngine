@@ -9,14 +9,23 @@ on:
     branches:
       - main
 
+  workflow_dispatch:
+
 permissions:
   contents: read
 
 
 jobs:
-  small-macos:
-    name: Small / macOS
-    runs-on: macos-26
+  small-linux:
+    name: Small / Linux
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch'
+
+    env:
+      CC: clang-23
+      CXX: clang++-23
+      CLANG_TIDY_BIN: clang-tidy-23
+      CLANG_FORMAT_BIN: clang-format-23
 
     steps:
       - name: Checkout
@@ -24,35 +33,43 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install \
-            llvm \
-            shellcheck \
-            glm \
-            glfw \
-            vulkan-volk
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            clang-23 \
+            clang-tidy-23 \
+            clang-format-23 \
+            libglm-dev
 
       - name: Check formatting
-        env:
-          CLANG_FORMAT_BIN: /opt/homebrew/opt/llvm/bin/clang-format
         run: |
           ./tools/formatter/format.sh
           git diff --exit-code
 
       - name: Run small tests
-        env:
-          CLANG_TIDY_BIN: /opt/homebrew/opt/llvm/bin/clang-tidy
         run: ./tests/test_small.sh
 
       - name: Show test log
         if: failure()
         run: |
-          if [ -f tests/result/small.log ]; then
-            cat tests/result/small.log
+          if [ -f tests/result/test-small.log ]; then
+            cat tests/result/test-small.log
           fi
 
-  sanitizers-macos:
-    name: ASan + UBSan / macOS
-    runs-on: macos-26
+  sanitizers-linux:
+    name: ASan + UBSan / Linux
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch'
+
+    env:
+      CC: clang-23
+      CXX: clang++-23
 
     steps:
       - name: Checkout
@@ -60,10 +77,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install \
-            glm \
-            glfw \
-            vulkan-volk
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            clang-23 \
+            libclang-rt-23-dev \
+            libglm-dev
 
       - name: Run sanitizers
         run: ./tests/test_sanitizers.sh
@@ -73,4 +98,56 @@ jobs:
         run: |
           if [ -f tests/result/sanitizers.log ]; then
             cat tests/result/sanitizers.log
+          fi
+
+  medium-macos:
+    name: Medium / MacOS
+    runs-on: macos-26
+    if: github.event_name != 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          brew install \
+            glm \
+            glfw \
+            vulkan-volk
+
+      - name: Run medium tests
+        run: ./tests/test_medium.sh
+
+      - name: Show test log
+        if: failure()
+        run: |
+          if [ -f tests/result/test-medium.log ]; then
+            cat tests/result/test-medium.log
+          fi
+
+  heavy-macos:
+    name: Heavy / MacOS
+    runs-on: macos-26
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          brew install \
+            glm \
+            glfw \
+            vulkan-volk
+
+      - name: Run heavy tests
+        run: ./tests/test_heavy.sh
+
+      - name: Show test log
+        if: failure()
+        run: |
+          if [ -f tests/result/test-heavy.log ]; then
+            cat tests/result/test-heavy.log
           fi

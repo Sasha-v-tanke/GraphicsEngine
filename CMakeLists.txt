@@ -43,6 +43,7 @@ include(cmake/warnings.cmake)
 include(external/external.cmake)
 
 if (GRAPHICS_ENGINE_BUILD_TESTS)
+    enable_testing()
     include(tests/tests.cmake)
 endif ()
 

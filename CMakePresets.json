@@ -1,101 +1,122 @@
 {
-  "version": 10,
-  "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 31,
-    "patch": 0
-  },
-  "configurePresets": [
-    {
-      "name": "base",
-      "hidden": true,
-      "binaryDir": "${sourceDir}/cmake-build-${presetName}",
-      "cacheVariables": {
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "GRAPHICS_ENGINE_BUILD_TESTS": "ON",
-        "GRAPHICS_ENGINE_BUILD_SAMPLES": "ON"
-      }
+    "version": 10,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 31,
+        "patch": 0
     },
-    {
-      "name": "debug",
-      "displayName": "Debug",
-      "description": "GraphicsEngine development build",
-      "inherits": "base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "release",
-      "displayName": "Release",
-      "description": "GraphicsEngine optimized build",
-      "inherits": "base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "GRAPHICS_ENGINE_BUILD_TESTS": "OFF"
-      }
-    },
-    {
-      "name": "ci",
-      "displayName": "CI",
-      "description": "GraphicsEngine CI build",
-      "inherits": "debug",
-      "cacheVariables": {
-        "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
-        "GRAPHICS_ENGINE_WARNINGS_AS_ERRORS": "ON"
-      }
-    },
-    {
-      "name": "sanitizers",
-      "displayName": "ASan + UBSan",
-      "description": "GraphicsEngine sanitizer build",
-      "inherits": "debug",
-      "cacheVariables": {
-        "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
-        "GRAPHICS_ENGINE_ENABLE_ASAN": "ON",
-        "GRAPHICS_ENGINE_ENABLE_UBSAN": "ON"
-      }
-    }
-  ],
-  "buildPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug"
-    },
-    {
-      "name": "release",
-      "configurePreset": "release"
-    },
-    {
-      "name": "ci",
-      "configurePreset": "ci"
-    },
-    {
-      "name": "sanitizers",
-      "configurePreset": "sanitizers"
-    }
-  ],
-  "testPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "ci",
-      "configurePreset": "ci",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "sanitizers",
-      "configurePreset": "sanitizers",
-      "output": {
-        "outputOnFailure": true
-      }
-    }
-  ]
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/cmake-build-${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "GRAPHICS_ENGINE_BUILD_TESTS": "OFF",
+                "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
+                "GRAPHICS_ENGINE_BUILD_VULKAN": "OFF",
+                "GRAPHICS_ENGINE_BUILD_GLFW": "OFF"
+            }
+        },
+        {
+            "name": "release",
+            "hidden": true,
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "release-vulkan-glfw",
+            "displayName": "Release Vulkan+GLFW",
+            "description": "GraphicsEngine optimized build for Vulkan+GLFW",
+            "inherits": "release",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_BUILD_VULKAN": "ON",
+                "GRAPHICS_ENGINE_BUILD_GLFW": "ON"
+            }
+        },
+        {
+            "name": "ci-base",
+            "hidden": true,
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "GRAPHICS_ENGINE_BUILD_TESTS": "ON",
+                "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
+                "GRAPHICS_ENGINE_WARNINGS_AS_ERRORS": "ON"
+            }
+        },
+        {
+            "name": "ci-lite",
+            "displayName": "CI Lite",
+            "description": "Backend-independent CI build",
+            "inherits": "ci-base",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_BUILD_GLFW": "OFF",
+                "GRAPHICS_ENGINE_BUILD_VULKAN": "OFF"
+            }
+        },
+        {
+            "name": "ci-vulkan-glfw",
+            "displayName": "CI Vulkan GLFW",
+            "description": "Vulkan GLFW supported CI build",
+            "inherits": "ci-base",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_BUILD_GLFW": "ON",
+                "GRAPHICS_ENGINE_BUILD_VULKAN": "ON"
+            }
+        },
+        {
+            "name": "ci-sanitizers",
+            "displayName": "CI Sanitizers",
+            "description": "Backend-independent CI build with sanitizers",
+            "inherits": "ci-lite",
+            "cacheVariables": {
+                "GRAPHICS_ENGINE_ENABLE_ASAN": "ON",
+                "GRAPHICS_ENGINE_ENABLE_UBSAN": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release-vulkan-glfw",
+            "configurePreset": "release-vulkan-glfw"
+        },
+        {
+            "name": "ci-lite",
+            "configurePreset": "ci-lite"
+        },
+        {
+            "name": "ci-vulkan-glfw",
+            "configurePreset": "ci-vulkan-glfw"
+        },
+        {
+            "name": "ci-sanitizers",
+            "configurePreset": "ci-sanitizers"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "ci-lite",
+            "configurePreset": "ci-lite",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "ci-vulkan-glfw",
+            "configurePreset": "ci-vulkan-glfw",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "ci-sanitizers",
+            "configurePreset": "ci-sanitizers",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
 }
