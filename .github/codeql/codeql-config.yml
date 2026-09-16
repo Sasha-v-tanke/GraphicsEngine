@@ -2,6 +2,9 @@ name: GraphicsEngine CodeQL
 
 paths-ignore:
   - external/**
+  - benchmarks/**
+  - tests/**
+  - '**/test/**'
   - cmake-build-*/**
   - build/**
   - out/**
