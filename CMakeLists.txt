@@ -14,7 +14,7 @@ option(
 option(
     GRAPHICS_ENGINE_BUILD_BENCHMARKS
     "Build GraphicsEngine benchmarks"
-    OFF
+    ${PROJECT_IS_TOP_LEVEL}
 )
 
 option(

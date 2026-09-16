@@ -18,6 +18,5 @@ add_library(
 target_link_libraries(
     GraphicsEngineExternalBenchmark
     INTERFACE
-    benchmark::benchmark
     benchmark::benchmark_main
 )
