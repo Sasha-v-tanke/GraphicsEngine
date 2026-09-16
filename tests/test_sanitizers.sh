@@ -14,6 +14,10 @@ source "${SCRIPT_DIR}/common/common.sh"
 printf 'Test: sanitizers\n'
 
 configure_project_with \
+    -DGRAPHICS_ENGINE_BUILD_TESTS=ON \
+    -DGRAPHICS_ENGINE_BUILD_SAMPLES=OFF \
+    -DGRAPHICS_ENGINE_BUILD_GLFW=OFF \
+    -DGRAPHICS_ENGINE_BUILD_VULKAN=OFF \
     -DGRAPHICS_ENGINE_ENABLE_ASAN=ON \
     -DGRAPHICS_ENGINE_ENABLE_UBSAN=ON
 build_project

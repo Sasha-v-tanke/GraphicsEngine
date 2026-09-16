@@ -45,9 +45,9 @@
             }
         },
         {
-            "name": "ci-core",
-            "displayName": "CI Core",
-            "description": "GraphicsEngine core CI build without optional backends",
+            "name": "ci-small",
+            "displayName": "CI Small",
+            "description": "Backend-independent GraphicsEngine small test build",
             "inherits": "ci-base",
             "cacheVariables": {
                 "GRAPHICS_ENGINE_BUILD_GLFW": "OFF",
@@ -58,7 +58,7 @@
             "name": "sanitizers",
             "displayName": "ASan + UBSan",
             "description": "GraphicsEngine sanitizer build",
-            "inherits": "ci-core",
+            "inherits": "ci-small",
             "cacheVariables": {
                 "GRAPHICS_ENGINE_BUILD_SAMPLES": "OFF",
                 "GRAPHICS_ENGINE_ENABLE_ASAN": "ON",
@@ -76,8 +76,8 @@
             "configurePreset": "release"
         },
         {
-            "name": "ci",
-            "configurePreset": "ci"
+            "name": "ci-small",
+            "configurePreset": "ci-small"
         },
         {
             "name": "sanitizers",
@@ -93,8 +93,8 @@
             }
         },
         {
-            "name": "ci",
-            "configurePreset": "ci",
+            "name": "ci-small",
+            "configurePreset": "ci-small",
             "output": {
                 "outputOnFailure": true
             }

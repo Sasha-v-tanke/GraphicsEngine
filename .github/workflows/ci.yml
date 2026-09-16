@@ -9,6 +9,8 @@ on:
     branches:
       - main
 
+  workflow_dispatch:
+
 permissions:
   contents: read
 
@@ -17,6 +19,7 @@ jobs:
   small-linux:
     name: Small / Linux
     runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch'
 
     env:
       CC: clang-23
@@ -28,11 +31,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      #      - name: Install dependencies
-      #        # LLVM 23
-      #        # shellcheck
-      #        # glm
-      #        # cmake >= 3.31
+      - name: Install dependencies
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            clang-23 \
+            clang-tidy-23 \
+            clang-format-23 \
+            libglm-dev
 
       - name: Check formatting
         run: |
@@ -49,9 +62,48 @@ jobs:
             cat tests/result/test-small.log
           fi
 
-  sanitizers-macos:
-    name: ASan + UBSan / macOS
+  sanitizers-linux:
+    name: ASan + UBSan / Linux
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch'
+
+    env:
+      CC: clang-23
+      CXX: clang++-23
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            clang-23 \
+            libclang-rt-23-dev \
+            libglm-dev
+
+      - name: Run sanitizers
+        run: ./tests/test_sanitizers.sh
+
+      - name: Show sanitizer log
+        if: failure()
+        run: |
+          if [ -f tests/result/sanitizers.log ]; then
+            cat tests/result/sanitizers.log
+          fi
+
+  medium-macos:
+    name: Medium / MacOS
     runs-on: macos-26
+    if: github.event_name != 'workflow_dispatch'
 
     steps:
       - name: Checkout
@@ -64,12 +116,38 @@ jobs:
             glfw \
             vulkan-volk
 
-      - name: Run sanitizers
-        run: ./tests/test_sanitizers.sh
+      - name: Run medium tests
+        run: ./tests/test_medium.sh
 
-      - name: Show sanitizer log
+      - name: Show test log
         if: failure()
         run: |
-          if [ -f tests/result/sanitizers.log ]; then
-            cat tests/result/sanitizers.log
+          if [ -f tests/result/test-medium.log ]; then
+            cat tests/result/test-medium.log
+          fi
+
+  heavy-macos:
+    name: Heavy / MacOS
+    runs-on: macos-26
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          brew install \
+            glm \
+            glfw \
+            vulkan-volk
+
+      - name: Run heavy tests
+        run: ./tests/test_heavy.sh
+
+      - name: Show test log
+        if: failure()
+        run: |
+          if [ -f tests/result/test-heavy.log ]; then
+            cat tests/result/test-heavy.log
           fi

@@ -12,7 +12,11 @@ source "${SCRIPT_DIR}/common/common.sh"
 
 printf 'Test: heavy\n'
 
-configure_project
+
+configure_project_with \
+    -DGRAPHICS_ENGINE_BUILD_TESTS=ON \
+    -DGRAPHICS_ENGINE_BUILD_GLFW=ON \
+    -DGRAPHICS_ENGINE_BUILD_VULKAN=ON
 build_project
 run_ctest_label "heavy"
 
