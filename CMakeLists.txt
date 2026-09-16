@@ -47,6 +47,7 @@ include(cmake/warnings.cmake)
 
 # Modules
 include(external/external.cmake)
+include(lib/lib.cmake)
 
 if (GRAPHICS_ENGINE_BUILD_TESTS)
     enable_testing()

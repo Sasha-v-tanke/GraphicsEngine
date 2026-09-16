@@ -45,7 +45,8 @@ jobs:
             clang-23 \
             clang-tidy-23 \
             clang-format-23 \
-            libglm-dev
+            libglm-dev \
+            libgtest-dev
 
       - name: Check formatting
         run: |
@@ -88,7 +89,8 @@ jobs:
           sudo apt-get install -y \
             clang-23 \
             libclang-rt-23-dev \
-            libglm-dev
+            libglm-dev \
+            libgtest-dev
 
       - name: Run sanitizers
         run: ./tests/test_sanitizers.sh
@@ -114,7 +116,8 @@ jobs:
           brew install \
             glm \
             glfw \
-            vulkan-volk
+            vulkan-volk \
+            googletest
 
       - name: Run medium tests
         run: ./tests/test_medium.sh
@@ -140,7 +143,8 @@ jobs:
           brew install \
             glm \
             glfw \
-            vulkan-volk
+            vulkan-volk \
+            googletest
 
       - name: Run heavy tests
         run: ./tests/test_heavy.sh

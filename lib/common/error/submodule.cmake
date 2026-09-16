@@ -1,0 +1,5 @@
+SUBMODULE()
+
+SOURCES(
+    error.cpp
+)
