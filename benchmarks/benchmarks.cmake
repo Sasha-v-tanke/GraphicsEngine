@@ -1,0 +1,5 @@
+BENCHMARK_MODULE()
+
+RECURSE(
+    smoke
+)

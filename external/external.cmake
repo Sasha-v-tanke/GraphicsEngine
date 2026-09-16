@@ -9,3 +9,7 @@ endif ()
 if (GRAPHICS_ENGINE_BUILD_VULKAN)
     include_external(vulkan)
 endif ()
+
+if (GRAPHICS_ENGINE_BUILD_BENCHMARKS)
+    include_external(benchmark)
+endif ()

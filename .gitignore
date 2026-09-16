@@ -1,7 +1,12 @@
 *build*
+*exclude/
+
 .idea/
 .DS_Store/
-*exclude/
+
 *.spv
+
 tests/result/
+benchmarks/result/
+
 CMakeUserPresets.json
