@@ -125,44 +125,6 @@ macro(MODULE name)
         cxx_std_23
     )
 
-    if (GRAPHICS_ENGINE_BUILD_TESTS)
-        set(
-            testTarget
-            "GraphicsEngine${name}Tests"
-        )
-
-        add_executable(
-            ${testTarget}
-        )
-
-        _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
-            ${testTarget}
-        )
-
-        add_executable(
-            GraphicsEngine::${name}Tests
-            ALIAS
-            ${testTarget}
-        )
-
-        target_compile_features(
-            ${testTarget}
-            PRIVATE
-            cxx_std_23
-        )
-
-        target_link_libraries(
-            ${testTarget}
-            PRIVATE
-            GraphicsEngine::${name}
-        )
-
-        add_test(
-            NAME ${testTarget}
-            COMMAND ${testTarget}
-        )
-    endif ()
-
     set(
         GRAPHICS_ENGINE_CURRENT_CONTEXT
         "MODULE"
@@ -179,6 +141,12 @@ macro(MODULE name)
     )
 
     _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
+
+    target_include_directories(
+        ${GRAPHICS_ENGINE_CURRENT_TARGET}
+        PUBLIC
+        ${PROJECT_SOURCE_DIR}
+    )
 endmacro()
 
 
@@ -208,16 +176,54 @@ macro(TEST_MODULE name)
         )
     endif ()
 
+    if (NOT TARGET "GraphicsEngine::${name}")
+        message(FATAL_ERROR
+            "TEST_MODULE: module '${name}' does not exist"
+        )
+    endif ()
+
     set(
         testTarget
         "GraphicsEngine${name}Tests"
     )
 
-    if (NOT TARGET "${testTarget}")
+    if (TARGET "${testTarget}")
         message(FATAL_ERROR
-            "TEST_MODULE: module '${name}' does not exist"
+            "TEST_MODULE: target '${testTarget}' already exists"
         )
     endif ()
+
+    add_executable(
+        ${testTarget}
+    )
+
+    _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
+        ${testTarget}
+    )
+
+    add_executable(
+        GraphicsEngine::${name}Tests
+        ALIAS
+        ${testTarget}
+    )
+
+    target_compile_features(
+        ${testTarget}
+        PRIVATE
+        cxx_std_23
+    )
+
+    target_link_libraries(
+        ${testTarget}
+        PRIVATE
+        GraphicsEngine::${name}
+        GraphicsEngine::Test
+    )
+
+    add_test(
+        NAME ${testTarget}
+        COMMAND ${testTarget}
+    )
 
     set(
         GRAPHICS_ENGINE_CURRENT_CONTEXT
@@ -238,38 +244,22 @@ macro(TEST_MODULE name)
 endmacro()
 
 
-macro(TEST_SUBMODULE name)
+macro(TEST_SUBMODULE)
     if (NOT GRAPHICS_ENGINE_BUILD_TESTS)
         message(FATAL_ERROR
             "TEST_SUBMODULE: tests are disabled"
         )
     endif ()
 
-    set(
-        testTarget
-        "GraphicsEngine${name}Tests"
+    _GRAPHICS_ENGINE_REQUIRE_CONTEXT(
+        "TEST_SUBMODULE"
     )
 
-    if (NOT TARGET "${testTarget}")
+    if (NOT GRAPHICS_ENGINE_CURRENT_CONTEXT STREQUAL "TEST")
         message(FATAL_ERROR
-            "TEST_SUBMODULE: module '${name}' does not exist"
+            "TEST_SUBMODULE: current context is not a test"
         )
     endif ()
-
-    set(
-        GRAPHICS_ENGINE_CURRENT_CONTEXT
-        "TEST"
-    )
-
-    set(
-        GRAPHICS_ENGINE_CURRENT_MODULE
-        "${name}"
-    )
-
-    set(
-        GRAPHICS_ENGINE_CURRENT_TARGET
-        "${testTarget}"
-    )
 
     _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
 endmacro()
