@@ -46,7 +46,7 @@ const std::error_category& GetErrorCategory() noexcept {
 
 } // namespace
 
-std::error_code MakeErrorCode(EError error) noexcept {
+std::error_code make_error_code(EError error) noexcept {
     return {
             static_cast<int>(error),
             GetErrorCategory(),

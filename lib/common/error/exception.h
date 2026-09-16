@@ -1,13 +1,10 @@
 #pragma once
 
-#include <concepts>
 #include <format>
 #include <source_location>
 #include <string>
 #include <system_error>
 #include <utility>
-
-#include <lib/common/error/error.h>
 
 namespace NCommon {
 
@@ -40,15 +37,6 @@ Throw(std::error_code code, std::source_location location, std::format_string<Ar
             std::format(format, std::forward<Args>(args)...),
             location,
     };
-}
-
-template<typename ErrorType, typename... Args>
-    requires requires(ErrorType error) {
-        { MakeErrorCode(error) } -> std::same_as<std::error_code>;
-    }
-[[noreturn]] void
-Throw(ErrorType error, std::source_location location, std::format_string<Args...> format, Args&&... args) {
-    Throw(MakeErrorCode(error), location, format, std::forward<Args>(args)...);
 }
 
 } // namespace NCommon

@@ -9,7 +9,7 @@
 namespace {
 
 TEST(Error, CreatesErrorCode) {
-    const std::error_code code = NCommon::MakeErrorCode(NCommon::EError::INVALID_ARGUMENT);
+    const std::error_code code = NCommon::make_error_code(NCommon::EError::INVALID_ARGUMENT);
 
     EXPECT_EQ(code.value(), static_cast<int>(NCommon::EError::INVALID_ARGUMENT));
 
@@ -21,11 +21,11 @@ TEST(Error, CreatesErrorCode) {
 }
 
 TEST(Error, ComparesErrorCodes) {
-    const std::error_code first = NCommon::MakeErrorCode(NCommon::EError::INVALID_STATE);
+    const std::error_code first = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
 
-    const std::error_code second = NCommon::MakeErrorCode(NCommon::EError::INVALID_STATE);
+    const std::error_code second = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
 
-    const std::error_code different = NCommon::MakeErrorCode(NCommon::EError::INVALID_ARGUMENT);
+    const std::error_code different = NCommon::make_error_code(NCommon::EError::INVALID_ARGUMENT);
 
     EXPECT_EQ(first, second);
     EXPECT_NE(first, different);
@@ -35,7 +35,7 @@ TEST(Exception, ThrowsFormattedMessage) {
     try {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Frame index {} is out of range [0, {})", 7, 2);
     } catch (const NCommon::Exception& exception) {
-        EXPECT_EQ(exception.code(), NCommon::MakeErrorCode(NCommon::EError::INVALID_ARGUMENT));
+        EXPECT_EQ(exception.code(), NCommon::make_error_code(NCommon::EError::INVALID_ARGUMENT));
 
         EXPECT_EQ(exception.GetMessage(), "Frame index 7 is out of range [0, 2)");
 
@@ -76,7 +76,7 @@ TEST(Exception, CapturesSourceLocation) {
 }
 
 TEST(Exception, AcceptsErrorCode) {
-    const std::error_code code = NCommon::MakeErrorCode(NCommon::EError::IO_ERROR);
+    const std::error_code code = NCommon::make_error_code(NCommon::EError::IO_ERROR);
 
     try {
         GRAPHICS_ENGINE_THROW(code, "Failed to read '{}'", "resource.bin");
@@ -89,6 +89,14 @@ TEST(Exception, AcceptsErrorCode) {
     }
 
     FAIL() << "GRAPHICS_ENGINE_THROW did not throw";
+}
+
+TEST(Error, ImplicitlyConvertsToErrorCode) {
+    const std::error_code code = NCommon::EError::INVALID_ARGUMENT;
+
+    EXPECT_EQ(code.value(), static_cast<int>(NCommon::EError::INVALID_ARGUMENT));
+
+    EXPECT_EQ(code.category().name(), std::string_view{"graphics_engine.common"});
 }
 
 } // namespace

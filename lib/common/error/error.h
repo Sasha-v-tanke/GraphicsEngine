@@ -1,6 +1,7 @@
 #pragma once
 
 #include <system_error>
+#include <type_traits>
 
 namespace NCommon {
 
@@ -16,6 +17,9 @@ enum class EError {
     NOT_IMPLEMENTED,
 };
 
-std::error_code MakeErrorCode(EError error) noexcept;
+std::error_code make_error_code(EError error) noexcept;
 
 } // namespace NCommon
+
+template<>
+struct std::is_error_code_enum<NCommon::EError>: true_type {};
