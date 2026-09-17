@@ -7,12 +7,10 @@
 namespace NWindow::NInternal {
 
 class IWindowEngine;
-class IWindowEventSink;
 
-using WindowEngineFactory = std::unique_ptr<IWindowEngine> (*)(const WindowConfig& config, IWindowEventSink& eventSink);
+using WindowEngineFactory = std::unique_ptr<IWindowEngine> (*)(const WindowConfig& config);
 
-[[nodiscard]] std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config,
-                                                                IWindowEventSink& eventSink);
+[[nodiscard]] std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config);
 
 void SetWindowEngineFactoryForTests(WindowEngineFactory factory);
 

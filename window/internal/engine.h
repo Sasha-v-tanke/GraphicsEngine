@@ -6,9 +6,14 @@
 
 namespace NWindow::NInternal {
 
+class IWindowEventSink;
+
 class IWindowEngine {
 public:
     virtual ~IWindowEngine() = default;
+
+    // Attaches the event sink without emitting callbacks synchronously.
+    virtual void AttachEventSink(IWindowEventSink& eventSink) = 0;
 
     virtual void SetTitle(std::string_view title) = 0;
 

@@ -13,7 +13,8 @@ class Window::Impl final: public NInternal::IWindowEventSink {
 public:
     Impl(Window& window, const WindowConfig& config)
         : m_window(window)
-        , m_engine(NInternal::CreateWindowEngine(config, *this)) {
+        , m_engine(NInternal::CreateWindowEngine(config)) {
+        m_engine->AttachEventSink(*this);
     }
 
     void SetTitle(std::string_view title) {
@@ -79,9 +80,9 @@ private:
 private:
     Window& m_window;
 
-    std::unique_ptr<NInternal::IWindowEngine> m_engine;
-
     bool m_closeNotified = false;
+
+    std::unique_ptr<NInternal::IWindowEngine> m_engine;
 };
 
 Window::Window(const WindowConfig& config)

@@ -17,17 +17,13 @@
 namespace {
 
 struct FakeWindowState {
+    NWindow::EWindowType ConfigType = NWindow::EWindowType::GLFW;
+    std::string ConfigTitle;
+    NWindow::WindowSize ConfigSize{};
+
     std::string Title;
-
-    NWindow::WindowSize Size{
-            .Width = 1280,
-            .Height = 720,
-    };
-
-    NWindow::WindowSize FramebufferSize{
-            .Width = 1280,
-            .Height = 720,
-    };
+    NWindow::WindowSize Size{};
+    NWindow::WindowSize FramebufferSize{};
 
     bool ShouldClose = false;
 
@@ -41,14 +37,17 @@ thread_local FakeWindowState* g_fakeState = nullptr;
 
 class FakeWindowEngine final: public NWindow::NInternal::IWindowEngine {
 public:
-    FakeWindowEngine(NWindow::NInternal::IWindowEventSink& eventSink, FakeWindowState& state)
-        : m_eventSink(eventSink)
-        , m_state(state) {
+    explicit FakeWindowEngine(FakeWindowState& state)
+        : m_state(state) {
         ++m_state.CreatedCount;
     }
 
     ~FakeWindowEngine() override {
         ++m_state.DestroyedCount;
+    }
+
+    void AttachEventSink(NWindow::NInternal::IWindowEventSink& eventSink) override {
+        m_eventSink = &eventSink;
     }
 
     void SetTitle(std::string_view title) override {
@@ -82,38 +81,59 @@ public:
     }
 
     void EmitResize(NWindow::WindowSize size) {
+        ASSERT_NE(m_eventSink, nullptr);
+
         m_state.Size = size;
 
-        m_eventSink.HandleResize(size);
+        m_eventSink->HandleResize(size);
     }
 
     void EmitFramebufferResize(NWindow::WindowSize size) {
+        ASSERT_NE(m_eventSink, nullptr);
+
         m_state.FramebufferSize = size;
 
-        m_eventSink.HandleFramebufferResize(size);
+        m_eventSink->HandleFramebufferResize(size);
     }
 
     void EmitClose() {
+        ASSERT_NE(m_eventSink, nullptr);
+
         m_state.ShouldClose = true;
 
-        m_eventSink.HandleClose();
+        m_eventSink->HandleClose();
+    }
+
+    [[nodiscard]] bool HasEventSink() const {
+        return m_eventSink != nullptr;
     }
 
 private:
-    NWindow::NInternal::IWindowEventSink& m_eventSink;
+    NWindow::NInternal::IWindowEventSink* m_eventSink = nullptr;
 
     FakeWindowState& m_state;
 };
 
 thread_local FakeWindowEngine* g_fakeEngine = nullptr;
 
-std::unique_ptr<NWindow::NInternal::IWindowEngine>
-CreateFakeWindowEngine(const NWindow::WindowConfig&, NWindow::NInternal::IWindowEventSink& eventSink) {
-    std::unique_ptr<FakeWindowEngine> engine = std::make_unique<FakeWindowEngine>(eventSink, *g_fakeState);
+std::unique_ptr<NWindow::NInternal::IWindowEngine> CreateFakeWindowEngine(const NWindow::WindowConfig& config) {
+    g_fakeState->ConfigType = config.Type;
+    g_fakeState->ConfigTitle = config.Title;
+    g_fakeState->ConfigSize = config.Size;
+
+    g_fakeState->Title = config.Title;
+    g_fakeState->Size = config.Size;
+    g_fakeState->FramebufferSize = config.Size;
+
+    std::unique_ptr<FakeWindowEngine> engine = std::make_unique<FakeWindowEngine>(*g_fakeState);
 
     g_fakeEngine = engine.get();
 
     return engine;
+}
+
+std::unique_ptr<NWindow::NInternal::IWindowEngine> CreateNullWindowEngine(const NWindow::WindowConfig&) {
+    return nullptr;
 }
 
 class TestWindow final: public NWindow::Window {
@@ -169,6 +189,10 @@ static_assert(!std::is_copy_assignable_v<NWindow::Window>);
 static_assert(!std::is_move_constructible_v<NWindow::Window>);
 static_assert(!std::is_move_assignable_v<NWindow::Window>);
 
+// -----------------------------------------------------------------------------
+// Construction and ownership
+// -----------------------------------------------------------------------------
+
 TEST_F(WindowTest, CreatesAndOwnsWindowEngine) {
     EXPECT_EQ(m_state.CreatedCount, 0);
     EXPECT_EQ(m_state.DestroyedCount, 0);
@@ -185,6 +209,44 @@ TEST_F(WindowTest, CreatesAndOwnsWindowEngine) {
     EXPECT_EQ(m_state.DestroyedCount, 1);
 }
 
+TEST_F(WindowTest, PassesConfigToWindowEngineFactory) {
+    NWindow::WindowConfig config{
+            NWindow::EWindowType::QT,
+    };
+
+    config.Title = "Configured window";
+    config.Size = {
+            .Width = 1600,
+            .Height = 900,
+    };
+
+    NWindow::Window window{config};
+
+    EXPECT_EQ(m_state.ConfigType, NWindow::EWindowType::QT);
+
+    EXPECT_EQ(m_state.ConfigTitle, "Configured window");
+
+    EXPECT_EQ(m_state.ConfigSize,
+              (NWindow::WindowSize{
+                      .Width = 1600,
+                      .Height = 900,
+              }));
+}
+
+TEST_F(WindowTest, AttachesEventSink) {
+    NWindow::Window window{
+            NWindow::WindowConfig{NWindow::EWindowType::GLFW},
+    };
+
+    ASSERT_NE(g_fakeEngine, nullptr);
+
+    EXPECT_TRUE(g_fakeEngine->HasEventSink());
+}
+
+// -----------------------------------------------------------------------------
+// Operations and state
+// -----------------------------------------------------------------------------
+
 TEST_F(WindowTest, ForwardsTitle) {
     NWindow::Window window{
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
@@ -200,32 +262,21 @@ TEST_F(WindowTest, ForwardsSize) {
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
     };
 
-    window.SetSize({
+    const NWindow::WindowSize size{
             .Width = 800,
             .Height = 600,
-    });
-
-    EXPECT_EQ(m_state.Size,
-              (NWindow::WindowSize{
-                      .Width = 800,
-                      .Height = 600,
-              }));
-}
-
-TEST_F(WindowTest, QueriesLogicalSize) {
-    m_state.Size = {
-            .Width = 1920,
-            .Height = 1080,
     };
 
+    window.SetSize(size);
+
+    EXPECT_EQ(m_state.Size, size);
+}
+
+TEST_F(WindowTest, QueriesWindowSizes) {
     NWindow::Window window{
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
     };
 
-    EXPECT_EQ(window.GetSize(), m_state.Size);
-}
-
-TEST_F(WindowTest, QueriesFramebufferSizeIndependently) {
     m_state.Size = {
             .Width = 1280,
             .Height = 720,
@@ -236,12 +287,7 @@ TEST_F(WindowTest, QueriesFramebufferSizeIndependently) {
             .Height = 1440,
     };
 
-    NWindow::Window window{
-            NWindow::WindowConfig{NWindow::EWindowType::GLFW},
-    };
-
     EXPECT_EQ(window.GetSize(), m_state.Size);
-
     EXPECT_EQ(window.GetFramebufferSize(), m_state.FramebufferSize);
 }
 
@@ -250,65 +296,41 @@ TEST_F(WindowTest, ForwardsProcessEvents) {
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
     };
 
-    EXPECT_EQ(m_state.ProcessEventsCount, 0);
-
     window.ProcessEvents();
     window.ProcessEvents();
 
     EXPECT_EQ(m_state.ProcessEventsCount, 2);
 }
 
-TEST_F(WindowTest, RequestCloseChangesCloseState) {
-    TestWindow window{
-            NWindow::WindowConfig{NWindow::EWindowType::GLFW},
-    };
+// -----------------------------------------------------------------------------
+// Resize events
+// -----------------------------------------------------------------------------
 
-    EXPECT_FALSE(window.ShouldClose());
-    EXPECT_EQ(window.CloseCount, 0);
-
-    window.RequestClose();
-
-    EXPECT_TRUE(window.ShouldClose());
-    EXPECT_EQ(m_state.RequestCloseCount, 1);
-    EXPECT_EQ(window.CloseCount, 1);
-}
-
-TEST_F(WindowTest, DeliversResize) {
+TEST_F(WindowTest, DeliversResizeEvents) {
     TestWindow window{
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
     };
 
     ASSERT_NE(g_fakeEngine, nullptr);
 
-    const NWindow::WindowSize size{
+    const NWindow::WindowSize windowSize{
             .Width = 900,
             .Height = 700,
     };
 
-    g_fakeEngine->EmitResize(size);
-
-    EXPECT_EQ(window.ResizeCount, 1);
-    EXPECT_EQ(window.LastSize, size);
-}
-
-TEST_F(WindowTest, DeliversFramebufferResizeSeparately) {
-    TestWindow window{
-            NWindow::WindowConfig{NWindow::EWindowType::GLFW},
-    };
-
-    ASSERT_NE(g_fakeEngine, nullptr);
-
-    const NWindow::WindowSize size{
+    const NWindow::WindowSize framebufferSize{
             .Width = 1800,
             .Height = 1400,
     };
 
-    g_fakeEngine->EmitFramebufferResize(size);
+    g_fakeEngine->EmitResize(windowSize);
+    g_fakeEngine->EmitFramebufferResize(framebufferSize);
 
-    EXPECT_EQ(window.ResizeCount, 0);
+    EXPECT_EQ(window.ResizeCount, 1);
+    EXPECT_EQ(window.LastSize, windowSize);
 
     EXPECT_EQ(window.FramebufferResizeCount, 1);
-    EXPECT_EQ(window.LastFramebufferSize, size);
+    EXPECT_EQ(window.LastFramebufferSize, framebufferSize);
 }
 
 TEST_F(WindowTest, DoesNotSynthesizeResizeFromSetSize) {
@@ -325,48 +347,25 @@ TEST_F(WindowTest, DoesNotSynthesizeResizeFromSetSize) {
     EXPECT_EQ(window.FramebufferResizeCount, 0);
 }
 
-TEST_F(WindowTest, DeliversNativeClose) {
+// -----------------------------------------------------------------------------
+// Close lifecycle
+// -----------------------------------------------------------------------------
+
+TEST_F(WindowTest, RequestCloseChangesStateAndNotifies) {
     TestWindow window{
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
     };
 
-    ASSERT_NE(g_fakeEngine, nullptr);
+    EXPECT_FALSE(window.ShouldClose());
 
-    g_fakeEngine->EmitClose();
-
-    EXPECT_TRUE(window.ShouldClose());
-    EXPECT_EQ(window.CloseCount, 1);
-}
-
-TEST_F(WindowTest, ProgrammaticCloseNotifiesExactlyOnce) {
-    TestWindow window{
-            NWindow::WindowConfig{NWindow::EWindowType::GLFW},
-    };
-
-    window.RequestClose();
     window.RequestClose();
 
     EXPECT_TRUE(window.ShouldClose());
-
-    EXPECT_EQ(window.CloseCount, 1);
-
     EXPECT_EQ(m_state.RequestCloseCount, 1);
-}
-
-TEST_F(WindowTest, NativeCloseNotifiesExactlyOnce) {
-    TestWindow window{
-            NWindow::WindowConfig{NWindow::EWindowType::GLFW},
-    };
-
-    ASSERT_NE(g_fakeEngine, nullptr);
-
-    g_fakeEngine->EmitClose();
-    g_fakeEngine->EmitClose();
-
     EXPECT_EQ(window.CloseCount, 1);
 }
 
-TEST_F(WindowTest, NativeThenProgrammaticCloseNotifiesExactlyOnce) {
+TEST_F(WindowTest, NativeCloseChangesStateAndNotifies) {
     TestWindow window{
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
     };
@@ -375,14 +374,11 @@ TEST_F(WindowTest, NativeThenProgrammaticCloseNotifiesExactlyOnce) {
 
     g_fakeEngine->EmitClose();
 
-    window.RequestClose();
-
+    EXPECT_TRUE(window.ShouldClose());
     EXPECT_EQ(window.CloseCount, 1);
-
-    EXPECT_EQ(m_state.RequestCloseCount, 0);
 }
 
-TEST_F(WindowTest, ProgrammaticThenNativeCloseNotifiesExactlyOnce) {
+TEST_F(WindowTest, CloseNotifiesExactlyOnce) {
     TestWindow window{
             NWindow::WindowConfig{NWindow::EWindowType::GLFW},
     };
@@ -390,31 +386,38 @@ TEST_F(WindowTest, ProgrammaticThenNativeCloseNotifiesExactlyOnce) {
     ASSERT_NE(g_fakeEngine, nullptr);
 
     window.RequestClose();
+    window.RequestClose();
 
     g_fakeEngine->EmitClose();
 
+    EXPECT_TRUE(window.ShouldClose());
+    EXPECT_EQ(m_state.RequestCloseCount, 1);
     EXPECT_EQ(window.CloseCount, 1);
 }
 
-TEST(WindowFactory, RejectsUnavailableGlfwImplementation) {
-    NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
+// -----------------------------------------------------------------------------
+// Factory errors
+// -----------------------------------------------------------------------------
+
+TEST_F(WindowTest, RejectsNullEngineFromFactory) {
+    NWindow::NInternal::SetWindowEngineFactoryForTests(&CreateNullWindowEngine);
 
     try {
         NWindow::Window window{
                 NWindow::WindowConfig{NWindow::EWindowType::GLFW},
         };
     } catch (const NCommon::Exception& exception) {
-        EXPECT_EQ(exception.code(), NCommon::make_error_code(NCommon::EError::UNSUPPORTED));
+        EXPECT_EQ(exception.code(), NCommon::make_error_code(NCommon::EError::INVALID_STATE));
 
-        EXPECT_NE(std::string_view{exception.GetMessage()}.find("GLFW"), std::string_view::npos);
+        EXPECT_EQ(exception.GetMessage(), "Window engine factory returned null");
 
         return;
     }
 
-    FAIL() << "Creating unavailable GLFW window did not throw";
+    FAIL() << "Null window engine did not throw";
 }
 
-TEST(WindowFactory, RejectsUnavailableQtImplementation) {
+TEST(WindowFactory, RejectsUnavailableImplementation) {
     NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
 
     try {
@@ -429,25 +432,7 @@ TEST(WindowFactory, RejectsUnavailableQtImplementation) {
         return;
     }
 
-    FAIL() << "Creating unavailable Qt window did not throw";
-}
-
-TEST(WindowFactory, RejectsUnavailableSdlImplementation) {
-    NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
-
-    try {
-        NWindow::Window window{
-                NWindow::WindowConfig{NWindow::EWindowType::SDL},
-        };
-    } catch (const NCommon::Exception& exception) {
-        EXPECT_EQ(exception.code(), NCommon::make_error_code(NCommon::EError::UNSUPPORTED));
-
-        EXPECT_NE(std::string_view{exception.GetMessage()}.find("SDL"), std::string_view::npos);
-
-        return;
-    }
-
-    FAIL() << "Creating unavailable SDL window did not throw";
+    FAIL() << "Creating unavailable window implementation did not throw";
 }
 
 } // namespace

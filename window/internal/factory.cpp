@@ -1,15 +1,24 @@
 #include "factory.h"
 
+#include <memory>
+
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 #include <window/internal/engine.h>
-#include <window/internal/event_sink.h>
 
 namespace NWindow::NInternal {
 
 namespace {
 
 thread_local WindowEngineFactory g_testFactory = nullptr;
+
+[[nodiscard]] std::unique_ptr<IWindowEngine> ValidateWindowEngine(std::unique_ptr<IWindowEngine> engine) {
+    if (engine == nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Window engine factory returned null");
+    }
+
+    return engine;
+}
 
 [[noreturn]] void ThrowUnavailable(EWindowType type) {
     switch (type) {
@@ -26,9 +35,9 @@ thread_local WindowEngineFactory g_testFactory = nullptr;
 
 } // namespace
 
-std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config, IWindowEventSink& eventSink) {
+std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config) {
     if (g_testFactory != nullptr) {
-        return g_testFactory(config, eventSink);
+        return ValidateWindowEngine(g_testFactory(config));
     }
 
     ThrowUnavailable(config.Type);
