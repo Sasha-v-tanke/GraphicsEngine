@@ -60,10 +60,13 @@ set_target_properties(
     GRAPHICS_ENGINE_EXPORTABLE TRUE
 )
 
-set_property(
-    TARGET GraphicsEngineExternalVulkan
-    APPEND
-    PROPERTY GRAPHICS_ENGINE_PACKAGE_DEPENDENCIES
+PACKAGE_DEPENDS(
+    GraphicsEngineExternalVulkan
     "Vulkan"
-    "volk|CONFIG"
+)
+
+PACKAGE_DEPENDS(
+    GraphicsEngineExternalVulkan
+    volk
+    CONFIG
 )

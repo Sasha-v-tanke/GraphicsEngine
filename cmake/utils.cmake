@@ -154,6 +154,7 @@ macro(MODULE name)
 
     add_library(
         ${moduleTarget}
+        STATIC
     )
 
     _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
@@ -495,16 +496,30 @@ macro(PRIVATE_DEPENDS)
             "${dependency}"
         )
 
-        target_link_libraries(
-            ${GRAPHICS_ENGINE_CURRENT_TARGET}
-            PRIVATE
-            ${resolvedDependency}
-        )
-
         _GRAPHICS_ENGINE_CANONICAL_TARGET(
             packageDependency
             "${resolvedDependency}"
         )
+
+        target_link_libraries(
+            ${GRAPHICS_ENGINE_CURRENT_TARGET}
+            PRIVATE
+            "$<BUILD_LOCAL_INTERFACE:${resolvedDependency}>"
+        )
+
+        get_target_property(
+            currentTargetType
+            "${GRAPHICS_ENGINE_CURRENT_TARGET}"
+            TYPE
+        )
+
+        if (currentTargetType STREQUAL "STATIC_LIBRARY")
+            target_link_libraries(
+                ${GRAPHICS_ENGINE_CURRENT_TARGET}
+                INTERFACE
+                "$<LINK_ONLY:${resolvedDependency}>"
+            )
+        endif ()
 
         set_property(
             TARGET ${GRAPHICS_ENGINE_CURRENT_TARGET}
@@ -791,5 +806,43 @@ macro(PACKAGE_COMPONENT name)
         APPEND
         PROPERTY GRAPHICS_ENGINE_PACKAGE_COMPONENTS
         "${name}"
+    )
+endmacro()
+
+macro(PACKAGE_DEPENDS target)
+    if (NOT TARGET "${target}")
+        message(FATAL_ERROR
+            "PACKAGE_DEPENDS: target '${target}' does not exist"
+        )
+    endif ()
+
+    get_target_property(
+        packageDependencyCount
+        "${target}"
+        GRAPHICS_ENGINE_PACKAGE_DEPENDENCY_COUNT
+    )
+
+    if (NOT packageDependencyCount)
+        set(packageDependencyCount 0)
+    endif ()
+
+    math(
+        EXPR
+        packageDependencyCount
+        "${packageDependencyCount} + 1"
+    )
+
+    set_property(
+        TARGET "${target}"
+        PROPERTY
+        GRAPHICS_ENGINE_PACKAGE_DEPENDENCY_COUNT
+        "${packageDependencyCount}"
+    )
+
+    set_property(
+        TARGET "${target}"
+        PROPERTY
+        "GRAPHICS_ENGINE_PACKAGE_DEPENDENCY_${packageDependencyCount}"
+        ${ARGN}
     )
 endmacro()

@@ -40,9 +40,8 @@ set_target_properties(
     GRAPHICS_ENGINE_EXPORTABLE TRUE
 )
 
-set_property(
-    TARGET GraphicsEngineExternalGLFW
-    APPEND
-    PROPERTY GRAPHICS_ENGINE_PACKAGE_DEPENDENCIES
-    "glfw3|CONFIG"
+PACKAGE_DEPENDS(
+    GraphicsEngineExternalGLFW
+    glfw3
+    CONFIG
 )

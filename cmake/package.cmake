@@ -10,7 +10,7 @@ include(CMakePackageConfigHelpers)
 function(
     _GRAPHICS_ENGINE_COLLECT_PACKAGE_GRAPH
     rootTarget
-    includePrivate
+    collectStaticPrivateDependencies
     output
 )
     set(pendingTargets
@@ -61,7 +61,18 @@ function(
             )
         endif ()
 
-        if (includePrivate)
+        if (collectStaticPrivateDependencies)
+            get_target_property(
+                targetType
+                "${currentTarget}"
+                TYPE
+            )
+        endif ()
+
+        if (
+            collectStaticPrivateDependencies
+            AND targetType STREQUAL "STATIC_LIBRARY"
+        )
             get_target_property(
                 privateDependencies
                 "${currentTarget}"
@@ -189,17 +200,36 @@ set(graphicsEnginePackageDependencies)
 
 foreach (target IN LISTS graphicsEngineLinkTargets)
     get_target_property(
-        packageDependencies
+        packageDependencyCount
         "${target}"
-        GRAPHICS_ENGINE_PACKAGE_DEPENDENCIES
+        GRAPHICS_ENGINE_PACKAGE_DEPENDENCY_COUNT
     )
 
-    if (packageDependencies)
-        list(APPEND
-            graphicsEnginePackageDependencies
-            ${packageDependencies}
-        )
+    if (NOT packageDependencyCount)
+        continue()
     endif ()
+
+    foreach (dependencyIndex RANGE 1 "${packageDependencyCount}")
+        get_target_property(
+            packageDependency
+            "${target}"
+            "GRAPHICS_ENGINE_PACKAGE_DEPENDENCY_${dependencyIndex}"
+        )
+
+        if (packageDependency)
+            list(
+                JOIN
+                packageDependency
+                " "
+                packageDependencyArguments
+            )
+
+            list(APPEND
+                graphicsEnginePackageDependencies
+                "${packageDependencyArguments}"
+            )
+        endif ()
+    endforeach ()
 endforeach ()
 
 list(
@@ -213,17 +243,9 @@ foreach (
     dependency
     IN LISTS graphicsEnginePackageDependencies
 )
-    string(
-        REPLACE
-        "|"
-        " "
-        dependencyArguments
-        "${dependency}"
-    )
-
     string(APPEND
         GRAPHICS_ENGINE_FIND_DEPENDENCIES
-        "find_dependency(${dependencyArguments})\n"
+        "find_dependency(${dependency})\n"
     )
 endforeach ()
 

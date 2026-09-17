@@ -40,9 +40,8 @@ set_target_properties(
     GRAPHICS_ENGINE_EXPORTABLE TRUE
 )
 
-set_property(
-    TARGET GraphicsEngineExternalGLM
-    APPEND
-    PROPERTY GRAPHICS_ENGINE_PACKAGE_DEPENDENCIES
-    "glm|CONFIG"
+PACKAGE_DEPENDS(
+    GraphicsEngineExternalGLM
+    glm
+    CONFIG
 )

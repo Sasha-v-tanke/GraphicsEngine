@@ -39,6 +39,10 @@ GraphicsEngineCore
 GraphicsEngine::Core
 ```
 
+Production modules are static libraries. This keeps `PRIVATE_DEPENDS` semantics stable regardless of
+`BUILD_SHARED_LIBS`: private dependencies remain part of the installed consumer link closure, but they do not extend the
+public header API.
+
 Extend an existing module from a child directory:
 
 ```cmake id="yox9wn"
@@ -288,7 +292,9 @@ PRIVATE_DEPENDS(
 
 Каталоги с именем `internal` всегда считаются implementation detail и их headers не устанавливаются.
 
-`PRIVATE_DEPENDS` может участвовать в установленном link graph, если зависимость необходима для корректной линковки библиотеки, но не расширяет публичный header API.
+`PRIVATE_DEPENDS` участвует в установленном link graph production-модулей, потому что production-модули являются
+`STATIC` libraries и private dependencies остаются частью consumer link closure. При этом `PRIVATE_DEPENDS` не расширяет
+публичный header API.
 
 ### `PACKAGE_COMPONENT`
 
@@ -299,6 +305,19 @@ PACKAGE_COMPONENT(Vulkan)
 Регистрирует capability установленной сборки. Component должен объявляться реализацией соответствующей возможности
 GraphicsEngine, а не external wrapper. Например, наличие Vulkan SDK или GLFW package само по себе не означает, что
 установленная сборка предоставляет components `Vulkan` или `GLFW`.
+
+### `PACKAGE_DEPENDS`
+
+```cmake
+PACKAGE_DEPENDS(
+    GraphicsEngineExternalGLFW
+    glfw3
+    CONFIG
+)
+```
+
+Регистрирует `find_dependency(...)`, который нужен установленному package для восстановления external wrapper target.
+Используется на wrapper targets, которые могут попасть в package link graph.
 
 ### Components
 
