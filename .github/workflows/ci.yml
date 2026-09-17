@@ -93,7 +93,7 @@ jobs:
             libgtest-dev
 
       - name: Run sanitizers
-        run: ./tests/test_sanitizers.sh
+        run: ./tests/run_sanitizers.sh
 
       - name: Show sanitizer log
         if: failure()

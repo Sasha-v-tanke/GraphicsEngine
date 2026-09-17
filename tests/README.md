@@ -18,7 +18,7 @@
 ./tests/test_small.sh
 ./tests/test_medium.sh
 ./tests/test_heavy.sh
-./tests/test_sanitizers.sh
+./tests/run_sanitizers.sh
 ```
 
 Отдельные группы тестов можно запускать через их локальные runner-скрипты, например:

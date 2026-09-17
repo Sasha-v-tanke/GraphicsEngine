@@ -1,3 +1,5 @@
+TESTS(VulkanLibs)
+
 TEST(VulkanLibs)
 
 SOURCES(

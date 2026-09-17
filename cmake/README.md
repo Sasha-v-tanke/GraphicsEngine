@@ -1,42 +1,79 @@
 # CMake Utilities
 
-`utils.cmake` provides a small DSL for declaring GraphicsEngine modules, sources, tests, and dependencies.
+`utils.cmake` provides a small DSL for declaring GraphicsEngine modules, tests, benchmarks, samples, sources, and
+dependencies.
 
-## Entry files
+The public API is:
 
-Directories participating in the build use one of four entry files:
+```cmake
+MODULE(name)
+SUBMODULE()
 
-```text id="6kk6k6"
-module.cmake
-submodule.cmake
-test_module.cmake
-test_submodule.cmake
+TESTS(name)
+TEST(name)
+TEST()
+
+BENCHMARKS(name)
+BENCHMARK(name)
+BENCHMARK()
+
+SAMPLE(name)
+
+SOURCES(...)
+PUBLIC_DEPENDS(...)
+PRIVATE_DEPENDS(...)
+
+TEST_LABELS(...)
+BENCHMARK_LABELS(...)
+
+RECURSE(...)
 ```
 
-`RECURSE()` automatically finds the appropriate entry file. A directory must contain exactly one of them.
+Tests and benchmarks do not infer production dependencies from their names. Link every required module explicitly with
+`PRIVATE_DEPENDS(...)`.
 
-## Production modules
+## Entry Files
+
+Directories participating in the build use one entry file:
+
+```text
+module.cmake
+submodule.cmake
+tests.cmake
+test.cmake
+benchmarks.cmake
+benchmark.cmake
+sample.cmake
+```
+
+`RECURSE()` automatically finds the entry file. A directory must contain exactly one supported entry file.
+
+## Production Modules
 
 Create a module:
 
-```cmake id="6i9ktx"
-MODULE(Core)
+```cmake
+MODULE(Window)
 
 SOURCES(
-    engine.cpp
+    window.cpp
+)
+
+PRIVATE_DEPENDS(
+    Common
 )
 
 RECURSE(
-    resource
+    internal
     test
 )
 ```
 
 This creates:
 
-```text id="b8dx3b"
-GraphicsEngineCore
-GraphicsEngine::Core
+```text
+GraphicsEngineWindow
+GraphicsEngine::Window
 ```
 
 Production modules are static libraries. This keeps `PRIVATE_DEPENDS` semantics stable regardless of
@@ -45,81 +82,166 @@ public header API.
 
 Extend an existing module from a child directory:
 
-```cmake id="yox9wn"
+```cmake
 SUBMODULE()
-
-SOURCES(
-    resource.cpp
-)
-```
-
-`SUBMODULE()` does not create another target.
-
-## Tests
-
-`MODULE(Core)` also creates the test target when tests are enabled:
-
-```text id="lndgo7"
-GraphicsEngineCoreTests
-GraphicsEngine::CoreTests
-```
-
-It automatically links against `GraphicsEngine::Core`.
-
-Root test directory:
-
-```cmake id="4p3hkh"
-TEST_MODULE(Core)
 
 SOURCES(
     engine.cpp
 )
-
-PRIVATE_DEPENDS(
-    GTest::gtest_main
-)
 ```
 
-Nested test directory:
+`SUBMODULE()` does not create another target. It adds sources and local headers to the current module target.
 
-```cmake id="gzxwhf"
-TEST_SUBMODULE(Core)
+## Tests
+
+Create a test suite:
+
+```cmake
+TESTS(Window)
+
+TEST(Window)
 
 SOURCES(
-    resource.cpp
+    window_test.cpp
+)
+
+PRIVATE_DEPENDS(
+    Window
+)
+
+TEST_LABELS(
+    small
+    cpp
+    window
 )
 ```
 
-Production `.cpp` files must not be added to test targets again. Tests use production code through the corresponding
-module dependency.
+This creates:
 
-## Sources and headers
+```text
+GraphicsEngineWindowTests
+GraphicsEngine::WindowTests
+```
+
+`TESTS(name)` creates the executable. `TEST(name)` starts a logical test group inside the current suite. `TEST()` from a
+child directory continues the active test group:
+
+```cmake
+TEST()
+
+SOURCES(
+    factory_test.cpp
+)
+```
+
+Standalone checks use the same shape:
+
+```cmake
+TESTS(CommonLibs)
+
+TEST(CommonLibs)
+
+SOURCES(
+    common_libs.cpp
+)
+
+PRIVATE_DEPENDS(
+    GLM
+    StbImage
+    TinyObj
+)
+
+TEST_LABELS(
+    medium
+    cpp
+    libs
+)
+```
+
+Test labels are CTest labels. They are used by runner scripts and custom targets to run batches such as all `small`
+tests, all `libs` tests, or all tests owned by a directory-specific label. `TEST_LABELS(...)` also adds automatic labels:
+
+```text
+dir:<relative-source-directory>
+test:<current-test-name>
+```
+
+Production `.cpp` files must not be added to test targets again. Tests use production code through explicit module
+dependencies.
+
+## Benchmarks
+
+Create a benchmark suite:
+
+```cmake
+BENCHMARKS(Main)
+
+RECURSE(
+    smoke
+)
+```
+
+Add a benchmark group:
+
+```cmake
+BENCHMARK(Smoke)
+
+SOURCES(
+    smoke.cpp
+)
+
+BENCHMARK_LABELS(
+    smoke
+)
+```
+
+`BENCHMARKS(name)` creates the executable. `BENCHMARK(name)` starts a logical benchmark group inside the current suite.
+`BENCHMARK()` from a child directory continues the active benchmark group. `BENCHMARK_LABELS(...)` also records automatic
+labels:
+
+```text
+dir:<relative-source-directory>
+benchmark:<current-benchmark-name>
+```
+
+Benchmarks are normally filtered at runtime by the benchmark runner, for example with `--benchmark_filter=Smoke`.
+
+## Samples
+
+Create a sample executable:
+
+```cmake
+SAMPLE(Base)
+
+SOURCES(
+    main.cpp
+)
+
+PRIVATE_DEPENDS(
+    Window
+)
+```
+
+Samples intentionally have no `SAMPLE_PART()` API until a sample grows enough structure to need it.
+
+## Sources And Headers
 
 `.cpp` files are always listed explicitly:
 
-```cmake id="4eknma"
+```cmake
 SOURCES(
-    resource.cpp
-    resource_manager.cpp
+    window.cpp
+    factory.cpp
 )
 ```
 
-`.h` files in the current directory are collected automatically by:
-
-```text id="v5opel"
-MODULE
-SUBMODULE
-TEST_MODULE
-TEST_SUBMODULE
-```
-
-Header collection is not recursive.
+`.h` files in the current directory are collected automatically by entry macros. Header collection is not recursive.
 
 ## Dependencies
 
 Implementation-only dependencies:
 
-```cmake id="6ed8b8"
+```cmake
 PRIVATE_DEPENDS(
     Vulkan::Vulkan
     Threads::Threads
@@ -128,101 +250,64 @@ PRIVATE_DEPENDS(
 
 Dependencies exposed through the public API:
 
-```cmake id="gy16dz"
+```cmake
 PUBLIC_DEPENDS(
-    Core
+    Common
 )
 ```
 
 Short project names are resolved automatically:
 
-```text id="7y8ur3"
-Core -> GraphicsEngine::Core
-Vulkan -> GraphicsEngine::Vulkan
+```text
+Common -> GraphicsEngine::Common
+Window -> GraphicsEngine::Window
 ```
 
 Qualified CMake targets remain unchanged:
 
-```text id="97rxlj"
+```text
 Vulkan::Vulkan
 Threads::Threads
 GTest::gtest_main
 ```
 
-## Example
-
-```text id="odjwdv"
-graphics/
-├── module.cmake
-├── graphics.h
-├── graphics.cpp
-├── resource/
-│   ├── submodule.cmake
-│   ├── resource.h
-│   ├── resource.cpp
-│   └── test/
-│       ├── test_submodule.cmake
-│       └── resource.cpp
-└── test/
-    ├── test_module.cmake
-    └── graphics.cpp
-```
-
-```cmake id="ulmhni"
-# graphics/module.cmake
-
-MODULE(Core)
-
-SOURCES(
-    graphics.cpp
-)
-
-RECURSE(
-    resource
-    test
-)
-```
-
-```cmake id="86u6g3"
-# graphics/resource/submodule.cmake
-
-SUBMODULE()
-
-SOURCES(
-    resource.cpp
-)
-
-RECURSE(
-    test
-)
-```
-
-```cmake id="3clwsf"
-# graphics/resource/test/test_submodule.cmake
-
-TEST_SUBMODULE(Core)
-
-SOURCES(
-    resource.cpp
-)
-```
-
-The utilities organize common module operations only. Anything outside this abstraction should use regular CMake
+The utilities organize common project operations only. Anything outside this abstraction should use regular CMake
 directly.
+
+## Internal Layout
+
+`cmake/utils.cmake` is the public include point. The implementation is split by responsibility:
+
+```text
+cmake/utils/context.cmake        # current DSL context and local header collection
+cmake/utils/target_options.cmake # project-wide target options
+cmake/utils/dependencies.cmake   # dependency resolution and public/private links
+cmake/utils/sources.cmake        # SOURCES(...)
+cmake/utils/modules.cmake        # MODULE(...), SUBMODULE()
+cmake/utils/tests.cmake          # TESTS(...), TEST(...), TEST_LABELS(...), TEST_TARGET(...)
+cmake/utils/benchmarks.cmake     # BENCHMARKS(...), BENCHMARK(...), BENCHMARK_LABELS(...)
+cmake/utils/samples.cmake        # SAMPLE(...)
+cmake/utils/recurse.cmake        # RECURSE(...) and entry-file discovery
+cmake/utils/external.cmake       # include_external(...)
+cmake/utils/package_api.cmake    # PACKAGE_ROOT(...), PACKAGE_COMPONENT(...), PACKAGE_DEPENDS(...)
+```
+
+Files under `cmake/utils/` are implementation details of the project DSL. Module entry files should include
+`cmake/utils.cmake` through the top-level project setup, not the internal files directly.
 
 ## Package
 
-GraphicsEngine может быть установлен как CMake package.
+GraphicsEngine can be installed as a CMake package.
 
-Публичной точкой подключения является единственный target:
+The public connection point is:
 
 ```cmake
 GraphicsEngine::GraphicsEngine
 ```
 
-Внутренние module targets не являются частью публичного CMake API.
+Internal module targets are not part of the public CMake API.
 
-Обычное подключение:
+Normal usage:
 
 ```cmake
 find_package(
@@ -236,7 +321,7 @@ target_link_libraries(
 )
 ```
 
-Если приложению нужна конкретная capability установленной сборки:
+If an application needs a specific installed capability:
 
 ```cmake
 find_package(
@@ -251,91 +336,4 @@ target_link_libraries(
 )
 ```
 
-Components проверяют capabilities установленной сборки и не добавляют отдельных публичных targets.
-
-### `PACKAGE_ROOT`
-
-```cmake
-PACKAGE_ROOT(Application)
-```
-
-Определяет корневой модуль устанавливаемого GraphicsEngine API.
-
-До появления `Application` в качестве временного package root может использоваться другой верхнеуровневый production-модуль.
-
-Package root может быть определён только один раз.
-
-### Public API graph
-
-Публичный C++ API определяется транзитивно от `PACKAGE_ROOT` только через `PUBLIC_DEPENDS`.
-
-Например:
-
-```cmake
-MODULE(Application)
-
-PUBLIC_DEPENDS(
-    Engine
-    Window
-)
-
-PRIVATE_DEPENDS(
-    Vulkan
-)
-```
-
-В публичный API входят `Application`, `Engine`, `Window` и их транзитивные `PUBLIC_DEPENDS`.
-
-`Vulkan` является implementation dependency и его headers в публичный API не входят.
-
-Все локальные `.h` production-модуля считаются API headers, если соответствующий модуль входит в public API graph.
-
-Каталоги с именем `internal` всегда считаются implementation detail и их headers не устанавливаются.
-
-`PRIVATE_DEPENDS` участвует в установленном link graph production-модулей, потому что production-модули являются
-`STATIC` libraries и private dependencies остаются частью consumer link closure. При этом `PRIVATE_DEPENDS` не расширяет
-публичный header API.
-
-### `PACKAGE_COMPONENT`
-
-```cmake
-PACKAGE_COMPONENT(Vulkan)
-```
-
-Регистрирует capability установленной сборки. Component должен объявляться реализацией соответствующей возможности
-GraphicsEngine, а не external wrapper. Например, наличие Vulkan SDK или GLFW package само по себе не означает, что
-установленная сборка предоставляет components `Vulkan` или `GLFW`.
-
-### `PACKAGE_DEPENDS`
-
-```cmake
-PACKAGE_DEPENDS(
-    GraphicsEngineExternalGLFW
-    glfw3
-    CONFIG
-)
-```
-
-Регистрирует `find_dependency(...)`, который нужен установленному package для восстановления external wrapper target.
-Используется на wrapper targets, которые могут попасть в package link graph.
-
-### Components
-
-`PACKAGE_COMPONENT` регистрирует capability установленной сборки:
-
-```cmake
-PACKAGE_COMPONENT(Vulkan)
-```
-
-Components используются через:
-
-```cmake
-find_package(
-    GraphicsEngine REQUIRED CONFIG
-    COMPONENTS Vulkan GLFW
-)
-```
-
-Component должен регистрироваться реализацией соответствующей возможности, а не только наличием внешней библиотеки.
-
-Например наличие Vulkan SDK само по себе не означает наличие component `Vulkan`; component появляется только когда собран Vulkan backend GraphicsEngine.
+Components check installed build capabilities and do not add separate public targets.

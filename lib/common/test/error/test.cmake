@@ -1,4 +1,4 @@
-TEST_SUBMODULE()
+TEST()
 
 SOURCES(
     error_test.cpp
