@@ -30,6 +30,27 @@ macro(_GRAPHICS_ENGINE_ADD_LOCAL_HEADERS)
             ${localHeaders}
         )
     endif ()
+
+    if (
+        localHeaders
+        AND GRAPHICS_ENGINE_CURRENT_CONTEXT STREQUAL "MODULE"
+    )
+        file(
+            RELATIVE_PATH
+            localDirectory
+            "${PROJECT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_LIST_DIR}"
+        )
+
+        if (NOT "/${localDirectory}/" MATCHES "/internal/")
+            set_property(
+                TARGET ${GRAPHICS_ENGINE_CURRENT_TARGET}
+                APPEND
+                PROPERTY GRAPHICS_ENGINE_API_HEADERS
+                ${localHeaders}
+            )
+        endif ()
+    endif ()
 endmacro()
 
 
@@ -52,6 +73,32 @@ macro(_GRAPHICS_ENGINE_RESOLVE_DEPENDENCY output dependency)
     endif ()
 endmacro()
 
+macro(_GRAPHICS_ENGINE_CANONICAL_TARGET output target)
+    if (TARGET "${target}")
+        get_target_property(
+            aliasedTarget
+            "${target}"
+            ALIASED_TARGET
+        )
+
+        if (aliasedTarget)
+            set(
+                ${output}
+                "${aliasedTarget}"
+            )
+        else ()
+            set(
+                ${output}
+                "${target}"
+            )
+        endif ()
+    else ()
+        set(
+            ${output}
+            "${target}"
+        )
+    endif ()
+endmacro()
 
 macro(_GRAPHICS_ENGINE_FIND_ENTRY output directory)
     set(entryFiles)
@@ -145,7 +192,15 @@ macro(MODULE name)
     target_include_directories(
         ${GRAPHICS_ENGINE_CURRENT_TARGET}
         PUBLIC
-        ${PROJECT_SOURCE_DIR}
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/GraphicsEngine>
+    )
+
+    set_target_properties(
+        ${moduleTarget}
+        PROPERTIES
+        EXPORT_NAME "_${name}"
+        GRAPHICS_ENGINE_MODULE TRUE
     )
 endmacro()
 
@@ -413,6 +468,18 @@ macro(PUBLIC_DEPENDS)
             PUBLIC
             ${resolvedDependency}
         )
+
+        _GRAPHICS_ENGINE_CANONICAL_TARGET(
+            packageDependency
+            "${resolvedDependency}"
+        )
+
+        set_property(
+            TARGET ${GRAPHICS_ENGINE_CURRENT_TARGET}
+            APPEND
+            PROPERTY GRAPHICS_ENGINE_PUBLIC_DEPENDENCIES
+            ${packageDependency}
+        )
     endforeach ()
 endmacro()
 
@@ -432,6 +499,18 @@ macro(PRIVATE_DEPENDS)
             ${GRAPHICS_ENGINE_CURRENT_TARGET}
             PRIVATE
             ${resolvedDependency}
+        )
+
+        _GRAPHICS_ENGINE_CANONICAL_TARGET(
+            packageDependency
+            "${resolvedDependency}"
+        )
+
+        set_property(
+            TARGET ${GRAPHICS_ENGINE_CURRENT_TARGET}
+            APPEND
+            PROPERTY GRAPHICS_ENGINE_PRIVATE_DEPENDENCIES
+            ${packageDependency}
         )
     endforeach ()
 endmacro()
@@ -642,7 +721,75 @@ macro(_GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS target)
     target_link_libraries(
         ${target}
         PRIVATE
-        GraphicsEngine::Warnings
-        GraphicsEngine::Sanitizers
+        "$<BUILD_INTERFACE:GraphicsEngine::Warnings>"
+        "$<BUILD_INTERFACE:GraphicsEngine::Sanitizers>"
+    )
+endmacro()
+
+# =============================================================================
+# Package
+# =============================================================================
+
+macro(PACKAGE_ROOT name)
+    get_property(
+        packageRootSet
+        GLOBAL
+        PROPERTY GRAPHICS_ENGINE_PACKAGE_ROOT
+        SET
+    )
+
+    if (packageRootSet)
+        message(FATAL_ERROR
+            "PACKAGE_ROOT: package root already defined"
+        )
+    endif ()
+
+    set(
+        packageRootTarget
+        "GraphicsEngine${name}"
+    )
+
+    if (NOT TARGET "${packageRootTarget}")
+        message(FATAL_ERROR
+            "PACKAGE_ROOT: module '${name}' does not exist"
+        )
+    endif ()
+
+    set_property(
+        GLOBAL
+        PROPERTY GRAPHICS_ENGINE_PACKAGE_ROOT
+        "${packageRootTarget}"
+    )
+
+    add_library(
+        GraphicsEnginePackage
+        INTERFACE
+    )
+
+    add_library(
+        GraphicsEngine::GraphicsEngine
+        ALIAS
+        GraphicsEnginePackage
+    )
+
+    set_target_properties(
+        GraphicsEnginePackage
+        PROPERTIES
+        EXPORT_NAME GraphicsEngine
+    )
+
+    target_link_libraries(
+        GraphicsEnginePackage
+        INTERFACE
+        ${packageRootTarget}
+    )
+endmacro()
+
+macro(PACKAGE_COMPONENT name)
+    set_property(
+        GLOBAL
+        APPEND
+        PROPERTY GRAPHICS_ENGINE_PACKAGE_COMPONENTS
+        "${name}"
     )
 endmacro()

@@ -37,13 +37,13 @@ add_library(
 target_sources(
     GraphicsEngineExternalVulkan
     INTERFACE
-    "${CMAKE_CURRENT_LIST_DIR}/vulkan.h"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/vulkan.h>"
 )
 
 target_include_directories(
     GraphicsEngineExternalVulkan
     INTERFACE
-    "${CMAKE_CURRENT_LIST_DIR}"
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
 )
 
 target_link_libraries(
@@ -51,4 +51,19 @@ target_link_libraries(
     INTERFACE
     Vulkan::Vulkan
     ${GraphicsEngineExternalVolkTarget}
+)
+
+set_target_properties(
+    GraphicsEngineExternalVulkan
+    PROPERTIES
+    EXPORT_NAME "_VulkanDependencies"
+    GRAPHICS_ENGINE_EXPORTABLE TRUE
+)
+
+set_property(
+    TARGET GraphicsEngineExternalVulkan
+    APPEND
+    PROPERTY GRAPHICS_ENGINE_PACKAGE_DEPENDENCIES
+    "Vulkan"
+    "volk|CONFIG"
 )

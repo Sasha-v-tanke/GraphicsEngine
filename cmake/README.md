@@ -205,3 +205,118 @@ SOURCES(
 
 The utilities organize common module operations only. Anything outside this abstraction should use regular CMake
 directly.
+
+## Package
+
+GraphicsEngine может быть установлен как CMake package.
+
+Публичной точкой подключения является единственный target:
+
+```cmake
+GraphicsEngine::GraphicsEngine
+```
+
+Внутренние module targets не являются частью публичного CMake API.
+
+Обычное подключение:
+
+```cmake
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+)
+
+target_link_libraries(
+    MyApplication
+    PRIVATE
+    GraphicsEngine::GraphicsEngine
+)
+```
+
+Если приложению нужна конкретная capability установленной сборки:
+
+```cmake
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+    COMPONENTS Vulkan GLFW
+)
+
+target_link_libraries(
+    MyApplication
+    PRIVATE
+    GraphicsEngine::GraphicsEngine
+)
+```
+
+Components проверяют capabilities установленной сборки и не добавляют отдельных публичных targets.
+
+### `PACKAGE_ROOT`
+
+```cmake
+PACKAGE_ROOT(Application)
+```
+
+Определяет корневой модуль устанавливаемого GraphicsEngine API.
+
+До появления `Application` в качестве временного package root может использоваться другой верхнеуровневый production-модуль.
+
+Package root может быть определён только один раз.
+
+### Public API graph
+
+Публичный C++ API определяется транзитивно от `PACKAGE_ROOT` только через `PUBLIC_DEPENDS`.
+
+Например:
+
+```cmake
+MODULE(Application)
+
+PUBLIC_DEPENDS(
+    Engine
+    Window
+)
+
+PRIVATE_DEPENDS(
+    Vulkan
+)
+```
+
+В публичный API входят `Application`, `Engine`, `Window` и их транзитивные `PUBLIC_DEPENDS`.
+
+`Vulkan` является implementation dependency и его headers в публичный API не входят.
+
+Все локальные `.h` production-модуля считаются API headers, если соответствующий модуль входит в public API graph.
+
+Каталоги с именем `internal` всегда считаются implementation detail и их headers не устанавливаются.
+
+`PRIVATE_DEPENDS` может участвовать в установленном link graph, если зависимость необходима для корректной линковки библиотеки, но не расширяет публичный header API.
+
+### `PACKAGE_COMPONENT`
+
+```cmake
+PACKAGE_COMPONENT(Vulkan)
+```
+
+Регистрирует capability установленной сборки. Component должен объявляться реализацией соответствующей возможности
+GraphicsEngine, а не external wrapper. Например, наличие Vulkan SDK или GLFW package само по себе не означает, что
+установленная сборка предоставляет components `Vulkan` или `GLFW`.
+
+### Components
+
+`PACKAGE_COMPONENT` регистрирует capability установленной сборки:
+
+```cmake
+PACKAGE_COMPONENT(Vulkan)
+```
+
+Components используются через:
+
+```cmake
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+    COMPONENTS Vulkan GLFW
+)
+```
+
+Component должен регистрироваться реализацией соответствующей возможности, а не только наличием внешней библиотеки.
+
+Например наличие Vulkan SDK само по себе не означает наличие component `Vulkan`; component появляется только когда собран Vulkan backend GraphicsEngine.

@@ -2,7 +2,16 @@ cmake_minimum_required(VERSION 3.31)
 
 project(
     GraphicsEngine
+    VERSION 0.1.0
     LANGUAGES CXX
+)
+
+include(GNUInstallDirs)
+
+option(
+    GRAPHICS_ENGINE_INSTALL
+    "Generate GraphicsEngine install rules"
+    ${PROJECT_IS_TOP_LEVEL}
 )
 
 option(
@@ -49,6 +58,12 @@ include(cmake/warnings.cmake)
 include(external/external.cmake)
 include(lib/lib.cmake)
 include(window/module.cmake)
+
+PACKAGE_ROOT(Window) # TODO temporary root (need to be moved to application)
+
+if (GRAPHICS_ENGINE_INSTALL)
+    include(cmake/package.cmake)
+endif ()
 
 if (GRAPHICS_ENGINE_BUILD_TESTS)
     enable_testing()

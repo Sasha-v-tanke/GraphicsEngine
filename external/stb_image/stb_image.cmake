@@ -19,5 +19,12 @@ target_sources(
 target_include_directories(
     GraphicsEngineExternalStbImage
     PUBLIC
-    "${CMAKE_CURRENT_LIST_DIR}"
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
+)
+
+set_target_properties(
+    GraphicsEngineExternalStbImage
+    PROPERTIES
+    EXPORT_NAME "_StbImage"
+    GRAPHICS_ENGINE_EXPORTABLE TRUE
 )
