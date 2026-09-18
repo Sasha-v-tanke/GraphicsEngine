@@ -1,3 +1,5 @@
+TESTS(GLFWLibs)
+
 TEST(GLFWLibs)
 
 SOURCES(

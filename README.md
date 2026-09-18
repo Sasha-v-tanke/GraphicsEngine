@@ -581,3 +581,52 @@ World N ──► Update Task Graph
 
 Backend сообщает ограничения своей модели исполнения. `TaskSystem` выполняет максимально возможную параллельную
 CPU-работу, а `FramesInFlight` управляет независимым pipeline CPU ↔ GPU.
+
+## Подключение GraphicsEngine
+
+GraphicsEngine устанавливается как CMake package и подключается через `find_package`.
+
+Минимальное подключение:
+
+```cmake
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+)
+
+target_link_libraries(
+    MyApplication
+    PRIVATE
+    GraphicsEngine::GraphicsEngine
+)
+```
+
+`GraphicsEngine::GraphicsEngine` является единственным публичным CMake target библиотеки.
+
+Внутреннее разделение GraphicsEngine на модули является implementation detail движка и не является частью публичного CMake API.
+
+### Components
+
+Graphics и window backends представлены как capabilities установленной сборки GraphicsEngine.
+
+Если приложению требуется конкретный backend, его можно указать через `COMPONENTS`:
+
+```cmake
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+    COMPONENTS Vulkan GLFW
+)
+```
+
+В этом случае конфигурация проекта успешно завершится только в том случае, если установленная сборка GraphicsEngine содержит поддержку всех запрошенных components.
+
+Components не являются отдельными библиотеками и не меняют способ линковки приложения. Независимо от выбранных components приложение всегда использует:
+
+```text
+GraphicsEngine::GraphicsEngine
+```
+
+Примеры возможных components: `Vulkan`, `OpenGL`, `GLFW`, `Qt`.
+
+Набор доступных components определяется конфигурацией, с которой был собран GraphicsEngine. Если приложение не требует конкретной реализации graphics или window backend, `COMPONENTS` указывать не требуется.
+
+До определения отдельной versioning и compatibility policy GraphicsEngine не гарантирует ABI compatibility между версиями.

@@ -18,17 +18,30 @@ add_library(
 target_sources(
     GraphicsEngineExternalGLFW
     INTERFACE
-    "${CMAKE_CURRENT_LIST_DIR}/glfw.h"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/glfw.h>"
 )
 
 target_include_directories(
     GraphicsEngineExternalGLFW
     INTERFACE
-    "${CMAKE_CURRENT_LIST_DIR}"
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
 )
 
 target_link_libraries(
     GraphicsEngineExternalGLFW
     INTERFACE
     glfw
+)
+
+set_target_properties(
+    GraphicsEngineExternalGLFW
+    PROPERTIES
+    EXPORT_NAME "_GLFWDependencies"
+    GRAPHICS_ENGINE_EXPORTABLE TRUE
+)
+
+PACKAGE_DEPENDS(
+    GraphicsEngineExternalGLFW
+    glfw3
+    CONFIG
 )

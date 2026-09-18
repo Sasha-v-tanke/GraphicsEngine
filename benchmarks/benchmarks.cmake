@@ -1,4 +1,4 @@
-BENCHMARK_MODULE()
+BENCHMARKS(Main)
 
 RECURSE(
     smoke

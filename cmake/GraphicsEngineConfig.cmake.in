@@ -1,0 +1,37 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+@GRAPHICS_ENGINE_FIND_DEPENDENCIES@
+
+include(
+    "${CMAKE_CURRENT_LIST_DIR}/GraphicsEngineTargets.cmake"
+)
+
+set(
+    GraphicsEngine_AVAILABLE_COMPONENTS
+    "@GRAPHICS_ENGINE_PACKAGE_COMPONENTS@"
+)
+
+foreach (
+    component
+    IN LISTS GraphicsEngine_FIND_COMPONENTS
+)
+    if (
+        component
+        IN_LIST
+        GraphicsEngine_AVAILABLE_COMPONENTS
+    )
+        set(
+            GraphicsEngine_${component}_FOUND
+            TRUE
+        )
+    else ()
+        set(
+            GraphicsEngine_${component}_FOUND
+            FALSE
+        )
+    endif ()
+endforeach ()
+
+check_required_components(GraphicsEngine)

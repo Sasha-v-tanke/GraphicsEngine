@@ -1,3 +1,5 @@
+TESTS(CommonLibs)
+
 TEST(CommonLibs)
 
 SOURCES(

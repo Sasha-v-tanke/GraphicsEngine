@@ -1,4 +1,10 @@
-TEST_MODULE(Common)
+TESTS(Common)
+
+TEST(Common)
+
+PRIVATE_DEPENDS(
+    Common
+)
 
 RECURSE(
     error
