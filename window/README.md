@@ -60,8 +60,36 @@ Concrete implementation не переносит window callbacks на worker thr
 `Window` не является thread-safe и не выполняет внутреннюю synchronization для
 доступа с нескольких потоков.
 
-Если конкретный framework имеет более строгие ограничения, например требует
-создания и обработки окон только на process main thread, concrete implementation
-обязана соблюдать это ограничение дополнительно.
+Если конкретный framework имеет более строгие ограничения, concrete
+implementation обязана соблюдать это ограничение дополнительно.
 
 Engine worker threads не должны напрямую вызывать Window API.
+
+## GLFW implementation
+
+GLFW является первой concrete implementation за внутренним `IWindowEngine`.
+
+Публичные headers `Window` не включают GLFW headers и не раскрывают `GLFWwindow*`.
+Callbacks GLFW преобразуются внутри модуля в `OnResize()`,
+`OnFramebufferResize()` и `OnClose()`.
+
+GLFW runtime инициализируется лениво при создании первого GLFW-window и
+завершается после уничтожения последнего active window. Несколько окон
+разделяют один runtime ownership и один GLFW main thread.
+
+Первый успешно созданный GLFW-window фиксирует runtime main thread. На этом же
+thread должны выполняться `glfwInit`, `glfwTerminate`, создание и уничтожение
+всех GLFW-window, а также event processing. GLFW implementation проверяет этот
+thread перед window operations.
+
+GLFW callbacks не вызывают пользовательские `Window::On*()` напрямую. Callback
+только кладёт framework-independent событие во внутреннюю очередь, а
+`ProcessEvents()` диспатчит накопленные события после возврата из
+`glfwPollEvents()`.
+
+Window не создаёт Vulkan surface и не создаёт OpenGL context. Для GLFW-window
+используется `GLFW_CLIENT_API = GLFW_NO_API`; связь window с graphics backend
+должна жить в отдельном integration layer.
+
+GLFW main-thread requirement остаётся требованием concrete implementation и не
+добавляет GLFW types/includes в framework-independent публичный API.

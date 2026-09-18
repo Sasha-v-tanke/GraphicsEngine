@@ -2,6 +2,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <lib/common/error/error.h>
@@ -9,6 +10,7 @@
 #include <window/internal/engine.h>
 #include <window/internal/event_sink.h>
 #include <window/internal/factory.h>
+#include <window/internal/glfw/event_queue.h>
 #include <window/window.h>
 #include <window/window_config.h>
 #include <window/window_size.h>
@@ -184,6 +186,27 @@ protected:
     FakeWindowState m_state;
 };
 
+class RecordingEventSink final: public NWindow::NInternal::IWindowEventSink {
+public:
+    void HandleResize(NWindow::WindowSize size) override {
+        Events.emplace_back("resize");
+        LastWindowSize = size;
+    }
+
+    void HandleFramebufferResize(NWindow::WindowSize size) override {
+        Events.emplace_back("framebuffer");
+        LastFramebufferSize = size;
+    }
+
+    void HandleClose() override {
+        Events.emplace_back("close");
+    }
+
+    std::vector<std::string> Events;
+    NWindow::WindowSize LastWindowSize{};
+    NWindow::WindowSize LastFramebufferSize{};
+};
+
 static_assert(!std::is_copy_constructible_v<NWindow::Window>);
 static_assert(!std::is_copy_assignable_v<NWindow::Window>);
 static_assert(!std::is_move_constructible_v<NWindow::Window>);
@@ -345,6 +368,56 @@ TEST_F(WindowTest, DoesNotSynthesizeResizeFromSetSize) {
 
     EXPECT_EQ(window.ResizeCount, 0);
     EXPECT_EQ(window.FramebufferResizeCount, 0);
+}
+
+TEST(WindowGlfwEventQueue, DispatchesQueuedEventsExplicitly) {
+    NWindow::NInternal::NGlfw::WindowEventQueue queue;
+    RecordingEventSink eventSink;
+
+    queue.Enqueue({
+            .Type = NWindow::NInternal::NGlfw::EWindowEventType::RESIZE,
+            .Size =
+                    {
+                            .Width = 640,
+                            .Height = 480,
+                    },
+    });
+
+    queue.Enqueue({
+            .Type = NWindow::NInternal::NGlfw::EWindowEventType::FRAMEBUFFER_RESIZE,
+            .Size =
+                    {
+                            .Width = 1280,
+                            .Height = 960,
+                    },
+    });
+
+    queue.Enqueue({
+            .Type = NWindow::NInternal::NGlfw::EWindowEventType::CLOSE,
+    });
+
+    EXPECT_TRUE(eventSink.Events.empty());
+    EXPECT_FALSE(queue.IsEmpty());
+
+    queue.Dispatch(eventSink);
+
+    EXPECT_TRUE(queue.IsEmpty());
+    EXPECT_EQ(eventSink.Events,
+              (std::vector<std::string>{
+                      "resize",
+                      "framebuffer",
+                      "close",
+              }));
+    EXPECT_EQ(eventSink.LastWindowSize,
+              (NWindow::WindowSize{
+                      .Width = 640,
+                      .Height = 480,
+              }));
+    EXPECT_EQ(eventSink.LastFramebufferSize,
+              (NWindow::WindowSize{
+                      .Width = 1280,
+                      .Height = 960,
+              }));
 }
 
 // -----------------------------------------------------------------------------
