@@ -8,6 +8,7 @@ PRIVATE_DEPENDS(
 
 RECURSE(
     error
+    wrapper
 )
 
 TEST_LABELS(
