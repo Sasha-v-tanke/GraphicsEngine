@@ -1,6 +1,6 @@
 include_guard(GLOBAL)
 
-macro(BENCHMARKS name)
+macro(BENCHMARK_SUITE name)
     if (NOT GRAPHICS_ENGINE_BUILD_BENCHMARKS)
         message(FATAL_ERROR
             "BENCHMARKS: benchmarks are disabled"
@@ -155,5 +155,5 @@ macro(BENCHMARK_LABELS)
 endmacro()
 
 macro(BENCHMARK_MODULE)
-    BENCHMARKS(Main)
+    BENCHMARK_SUITE(Main)
 endmacro()

@@ -1,4 +1,4 @@
-TESTS(GLFWLibs)
+TEST_SUITE(GLFWLibs)
 
 TEST(GLFWLibs)
 

@@ -1,6 +1,4 @@
-TESTS(Common)
-
-TEST(Common)
+TEST_SUITE(Common)
 
 PRIVATE_DEPENDS(
     Common

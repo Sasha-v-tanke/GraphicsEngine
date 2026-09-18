@@ -1,4 +1,4 @@
-TESTS(CommonLibs)
+TEST_SUITE(CommonLibs)
 
 TEST(CommonLibs)
 

@@ -1,6 +1,6 @@
 include_guard(GLOBAL)
 
-macro(TESTS name)
+macro(TEST_SUITE name)
     if (NOT GRAPHICS_ENGINE_BUILD_TESTS)
         message(FATAL_ERROR
             "TESTS: tests are disabled"
@@ -173,7 +173,7 @@ macro(TEST_LABELS)
 endmacro()
 
 macro(TEST_MODULE name)
-    TESTS(${name})
+    TEST_SUITE(${name})
 
     if (TARGET "GraphicsEngine::${name}")
         PRIVATE_DEPENDS(${name})
