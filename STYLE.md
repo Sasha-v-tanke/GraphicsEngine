@@ -359,7 +359,6 @@ Use project utility bases such as:
 
 ```cpp
 NCommon::NonCopyable
-NCommon::NonMoveable
 NCommon::NonTransferable
 ```
 

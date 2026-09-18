@@ -1,4 +1,4 @@
-BENCHMARKS(Main)
+BENCHMARK_SUITE(Main)
 
 RECURSE(
     smoke

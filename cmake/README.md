@@ -9,11 +9,11 @@ The public API is:
 MODULE(name)
 SUBMODULE()
 
-TESTS(name)
+TEST_SUITE(name)
 TEST(name)
 TEST()
 
-BENCHMARKS(name)
+BENCHMARK_SUITE(name)
 BENCHMARK(name)
 BENCHMARK()
 
@@ -97,7 +97,7 @@ SOURCES(
 Create a test suite:
 
 ```cmake
-TESTS(Window)
+TEST_SUITE(Window)
 
 TEST(Window)
 
@@ -123,7 +123,7 @@ GraphicsEngineWindowTests
 GraphicsEngine::WindowTests
 ```
 
-`TESTS(name)` creates the executable. `TEST(name)` starts a logical test group inside the current suite. `TEST()` from a
+`TEST_SUITE(name)` creates the executable. `TEST(name)` starts a logical test group inside the current suite. `TEST()` from a
 child directory continues the active test group:
 
 ```cmake
@@ -137,7 +137,7 @@ SOURCES(
 Standalone checks use the same shape:
 
 ```cmake
-TESTS(CommonLibs)
+TEST_SUITE(CommonLibs)
 
 TEST(CommonLibs)
 
@@ -174,7 +174,7 @@ dependencies.
 Create a benchmark suite:
 
 ```cmake
-BENCHMARKS(Main)
+BENCHMARK_SUITE(Main)
 
 RECURSE(
     smoke
@@ -195,7 +195,7 @@ BENCHMARK_LABELS(
 )
 ```
 
-`BENCHMARKS(name)` creates the executable. `BENCHMARK(name)` starts a logical benchmark group inside the current suite.
+`BENCHMARK_SUITE(name)` creates the executable. `BENCHMARK(name)` starts a logical benchmark group inside the current suite.
 `BENCHMARK()` from a child directory continues the active benchmark group. `BENCHMARK_LABELS(...)` also records automatic
 labels:
 
@@ -284,8 +284,8 @@ cmake/utils/target_options.cmake # project-wide target options
 cmake/utils/dependencies.cmake   # dependency resolution and public/private links
 cmake/utils/sources.cmake        # SOURCES(...)
 cmake/utils/modules.cmake        # MODULE(...), SUBMODULE()
-cmake/utils/tests.cmake          # TESTS(...), TEST(...), TEST_LABELS(...), TEST_TARGET(...)
-cmake/utils/benchmarks.cmake     # BENCHMARKS(...), BENCHMARK(...), BENCHMARK_LABELS(...)
+cmake/utils/tests.cmake          # TEST_SUITE(...), TEST(...), TEST_LABELS(...), TEST_TARGET(...)
+cmake/utils/benchmarks.cmake     # BENCHMARK_SUITE(...), BENCHMARK(...), BENCHMARK_LABELS(...)
 cmake/utils/samples.cmake        # SAMPLE(...)
 cmake/utils/recurse.cmake        # RECURSE(...) and entry-file discovery
 cmake/utils/external.cmake       # include_external(...)

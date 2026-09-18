@@ -1,4 +1,4 @@
-TESTS(VulkanLibs)
+TEST_SUITE(VulkanLibs)
 
 TEST(VulkanLibs)
 

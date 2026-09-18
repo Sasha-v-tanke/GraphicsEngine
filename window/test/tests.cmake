@@ -1,4 +1,4 @@
-TESTS(Window)
+TEST_SUITE(Window)
 
 TEST(Window)
 

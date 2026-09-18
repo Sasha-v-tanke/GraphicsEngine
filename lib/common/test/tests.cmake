@@ -1,6 +1,4 @@
-TESTS(Common)
-
-TEST(Common)
+TEST_SUITE(Common)
 
 PRIVATE_DEPENDS(
     Common
@@ -8,6 +6,7 @@ PRIVATE_DEPENDS(
 
 RECURSE(
     error
+    wrapper
 )
 
 TEST_LABELS(
