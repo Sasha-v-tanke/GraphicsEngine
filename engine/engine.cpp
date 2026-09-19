@@ -1,13 +1,13 @@
 #include "engine.h"
 
-#include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 #include <engine/controller/frame_scheduler.h>
 #include <engine/runtime/frame_runtime.h>
@@ -109,6 +109,8 @@ public:
         try {
             m_taskSystem = std::make_unique<NCommon::TaskSystem>(m_config.WorkerCount);
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
+            m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
+            m_nextDrawFrameIndex = 0;
         } catch (...) {
             RollbackStartLocked();
             throw;
@@ -116,16 +118,30 @@ public:
     }
 
     void Stop() noexcept {
+        const bool joinActiveStop = m_stopInProgressAtomic.load(std::memory_order_acquire);
         std::unique_ptr<NCommon::TaskSystem> taskSystem;
 
         {
-            std::lock_guard lock{m_mutex};
+            std::unique_lock lock{m_mutex};
 
-            if (m_state == EEngineState::CREATED || m_state == EEngineState::STOPPED) {
-                m_state = EEngineState::STOPPED;
+            if (joinActiveStop) {
+                m_stopCondition.wait(lock, [this] { return !m_stopInProgress; });
                 return;
             }
 
+            if (m_state == EEngineState::CREATED || m_state == EEngineState::STOPPED) {
+                m_state = EEngineState::STOPPED;
+                m_stopCondition.notify_all();
+                return;
+            }
+
+            if (m_stopInProgress) {
+                m_stopCondition.wait(lock, [this] { return !m_stopInProgress; });
+                return;
+            }
+
+            m_stopInProgress = true;
+            m_stopInProgressAtomic.store(true, std::memory_order_release);
             m_state = EEngineState::STOPPING;
             taskSystem = std::move(m_taskSystem);
         }
@@ -141,10 +157,14 @@ public:
         {
             std::lock_guard lock{m_mutex};
 
-            m_pendingFrames.clear();
+            ClearFrameRecordsLocked();
             m_frameScheduler.reset();
+            m_frameRecords.reset();
             taskSystem.reset();
             m_state = EEngineState::STOPPED;
+            m_stopInProgress = false;
+            m_stopInProgressAtomic.store(false, std::memory_order_release);
+            m_stopCondition.notify_all();
         }
     }
 
@@ -165,7 +185,6 @@ public:
         NCommon::TaskHandle updateTask;
 
         try {
-            m_pendingFrames.reserve(m_pendingFrames.size() + 1);
             updateTask = m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunUpdate(frame); });
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
@@ -173,10 +192,10 @@ public:
             throw;
         }
 
-        m_pendingFrames.push_back(PendingFrame{
-                .Frame = frame,
-                .UpdateTask = std::move(updateTask),
-        });
+        FrameRuntimeRecord& record = GetFrameRecordLocked(frame);
+        record.Frame = frame;
+        record.UpdateTask = std::move(updateTask);
+        record.HasUpdateTask = true;
 
         return true;
     }
@@ -185,24 +204,28 @@ public:
         std::lock_guard lock{m_mutex};
         RequireRunningLocked("draw");
 
-        if (m_pendingFrames.empty()) {
+        FrameRuntimeRecord& record =
+                m_frameRecords[static_cast<std::size_t>(m_nextDrawFrameIndex % m_frameScheduler->GetMaxActiveFrames())];
+
+        if (!record.HasUpdateTask || record.Frame.GetFrameIndex() != m_nextDrawFrameIndex) {
             return false;
         }
 
-        const PendingFrame pendingFrame = m_pendingFrames.front();
+        const NController::FrameHandle frame = record.Frame;
+        const NCommon::TaskHandle updateTask = record.UpdateTask;
 
         try {
-            const NCommon::TaskHandle dependencies[] = {pendingFrame.UpdateTask};
+            const NCommon::TaskHandle dependencies[] = {updateTask};
 
             static_cast<void>(
-                    m_taskSystem->Submit([this, frame = pendingFrame.Frame](NCommon::TaskContext&) { RunDraw(frame); },
-                                         dependencies));
+                    m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunDraw(frame); }, dependencies));
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
             throw;
         }
 
-        m_pendingFrames.erase(m_pendingFrames.begin());
+        record = {};
+        ++m_nextDrawFrameIndex;
 
         return true;
     }
@@ -226,9 +249,10 @@ public:
     }
 
 private:
-    struct PendingFrame {
+    struct FrameRuntimeRecord {
         NController::FrameHandle Frame;
         NCommon::TaskHandle UpdateTask;
+        bool HasUpdateTask = false;
     };
 
     static int ToInt(EEngineState state) noexcept {
@@ -246,13 +270,17 @@ private:
 
     void RollbackStartLocked() noexcept {
         try {
-            m_pendingFrames.clear();
+            ClearFrameRecordsLocked();
             m_frameScheduler.reset();
+            m_frameRecords.reset();
             m_taskSystem.reset();
         } catch (...) {
         }
 
         m_state = EEngineState::STOPPED;
+        m_stopInProgress = false;
+        m_stopInProgressAtomic.store(false, std::memory_order_release);
+        m_stopCondition.notify_all();
     }
 
     void RunUpdate(NController::FrameHandle frame) {
@@ -307,7 +335,7 @@ private:
 
             SetLastErrorLocked(MakeRuntimeError(error));
             m_state = EEngineState::STOPPING;
-            RemovePendingFrameLocked(frame);
+            ClearFrameRecordLocked(frame);
             m_frameScheduler->AbortFrame(frame);
         } catch (...) {
             SetLastError(MakeRuntimeError(std::current_exception()));
@@ -326,13 +354,25 @@ private:
         m_lastError = std::move(error);
     }
 
-    void RemovePendingFrameLocked(NController::FrameHandle frame) {
-        const auto it = std::ranges::find_if(m_pendingFrames, [frame](const PendingFrame& pendingFrame) {
-            return pendingFrame.Frame == frame;
-        });
+    [[nodiscard]] FrameRuntimeRecord& GetFrameRecordLocked(NController::FrameHandle frame) {
+        return m_frameRecords[frame.GetSlotIndex()];
+    }
 
-        if (it != m_pendingFrames.end()) {
-            m_pendingFrames.erase(it);
+    void ClearFrameRecordLocked(NController::FrameHandle frame) {
+        FrameRuntimeRecord& record = GetFrameRecordLocked(frame);
+
+        if (record.HasUpdateTask && record.Frame == frame) {
+            record = {};
+        }
+    }
+
+    void ClearFrameRecordsLocked() noexcept {
+        if (m_frameRecords == nullptr || m_frameScheduler == nullptr) {
+            return;
+        }
+
+        for (std::size_t index = 0; index < m_frameScheduler->GetMaxActiveFrames(); ++index) {
+            m_frameRecords[index] = {};
         }
     }
 
@@ -341,12 +381,16 @@ private:
     std::unique_ptr<NRuntime::IFrameRuntime> m_frameRuntime;
 
     mutable std::mutex m_mutex;
+    std::condition_variable m_stopCondition;
     EEngineState m_state = EEngineState::CREATED;
+    bool m_stopInProgress = false;
+    std::atomic_bool m_stopInProgressAtomic = false;
     std::optional<NCommon::ErrorInfo> m_lastError;
 
     std::unique_ptr<NCommon::TaskSystem> m_taskSystem;
     std::unique_ptr<NController::FrameScheduler> m_frameScheduler;
-    std::vector<PendingFrame> m_pendingFrames;
+    std::unique_ptr<FrameRuntimeRecord[]> m_frameRecords;
+    std::uint64_t m_nextDrawFrameIndex = 0;
 };
 
 Engine::Engine(EngineConfig config)

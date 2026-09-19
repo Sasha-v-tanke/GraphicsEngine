@@ -34,6 +34,9 @@ CREATED -> RUNNING -> STOPPING -> STOPPED
 `Update()` и `Draw()` не выполняют весь frame pipeline синхронно.
 Они только резервируют frame work и ставят его в `TaskSystem`.
 Backpressure приходит от `FrameScheduler`: если следующий frame slot занят, `Update()` возвращает `false`.
+Runtime bookkeeping хранится в fixed per-slot records, индексированных тем же slot/generation identity, что и
+`FrameHandle`.
+Engine не использует отдельную heap FIFO очередь frame tokens.
 
 ## Runtime errors
 
