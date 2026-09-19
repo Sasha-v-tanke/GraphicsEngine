@@ -44,6 +44,12 @@ macro(TEST_SUITE name)
         GraphicsEngine::Test
     )
 
+    target_include_directories(
+        ${testTarget}
+        PRIVATE
+        "${PROJECT_SOURCE_DIR}"
+    )
+
     add_test(
         NAME ${testTarget}
         COMMAND ${testTarget}
