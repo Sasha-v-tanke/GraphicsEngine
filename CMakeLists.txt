@@ -58,6 +58,7 @@ include(cmake/warnings.cmake)
 include(external/external.cmake)
 include(lib/lib.cmake)
 include(window/module.cmake)
+include(engine/module.cmake)
 
 PACKAGE_ROOT(Window) # TODO temporary root (need to be moved to application)
 
