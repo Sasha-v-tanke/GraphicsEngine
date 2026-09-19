@@ -4,14 +4,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <exception>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
+#include <lib/common/error/error.h>
 #include <lib/common/wrapper/non_copyable.h>
 
 namespace NCommon {
@@ -52,9 +54,7 @@ class TaskHandle final {
 public:
     TaskHandle() = default;
 
-    [[nodiscard]] bool IsValid() const noexcept {
-        return m_id != INVALID_ID;
-    }
+    [[nodiscard]] bool IsValid() const noexcept;
 
     [[nodiscard]] std::uint64_t GetId() const noexcept {
         return m_id;
@@ -63,13 +63,15 @@ public:
     [[nodiscard]] friend bool operator==(TaskHandle lhs, TaskHandle rhs) noexcept = default;
 
 private:
-    static constexpr std::uint64_t INVALID_ID = 0;
+    struct State;
 
-    explicit TaskHandle(std::uint64_t id) noexcept
-        : m_id(id) {
+    explicit TaskHandle(std::uint64_t id, std::shared_ptr<State> state) noexcept
+        : m_id(id)
+        , m_state(std::move(state)) {
     }
 
-    std::uint64_t m_id = INVALID_ID;
+    std::uint64_t m_id = 0;
+    std::shared_ptr<State> m_state;
 
     friend class TaskSystem;
 };
@@ -91,7 +93,7 @@ public:
 private:
     TaskContext(TaskSystem& taskSystem, TaskHandle task, WorkerIndex workerIndex) noexcept
         : m_taskSystem(&taskSystem)
-        , m_task(task)
+        , m_task(std::move(task))
         , m_workerIndex(workerIndex) {
     }
 
@@ -115,13 +117,15 @@ public:
     TaskHandle Submit(TaskFunction function, std::span<const TaskHandle> dependencies = {});
 
     [[nodiscard]] ETaskStatus GetStatus(TaskHandle task) const;
-    [[nodiscard]] std::exception_ptr GetError(TaskHandle task) const;
+    [[nodiscard]] std::optional<ErrorInfo> GetError(TaskHandle task) const;
 
     void Cancel(TaskHandle task);
     void Wait(TaskHandle task);
     void WaitIdle();
 
 private:
+    friend struct TaskHandle::State;
+
     struct Task {
         TaskHandle Handle;
         TaskFunction Function;
@@ -129,23 +133,25 @@ private:
         std::vector<TaskHandle> Dependencies;
         std::vector<TaskHandle> Dependents;
         std::size_t PendingDependencies = 0;
-        std::exception_ptr Error;
+        std::optional<ErrorInfo> Error;
     };
 
     [[nodiscard]] Task& GetTaskLocked(TaskHandle task);
     [[nodiscard]] const Task& GetTaskLocked(TaskHandle task) const;
-    [[nodiscard]] bool IsTerminalLocked(TaskHandle task) const;
-    [[nodiscard]] bool IsSuccessfulLocked(TaskHandle task) const;
+    [[nodiscard]] bool IsTerminalLocked(const Task& task) const noexcept;
+    [[nodiscard]] bool IsSuccessfulLocked(const Task& task) const noexcept;
 
     void MakeReadyLocked(Task& task);
-    void CompleteLocked(TaskHandle task, ETaskStatus status, std::exception_ptr error = nullptr);
-    void PropagateCancellationLocked(TaskHandle task);
+    void CompleteLocked(TaskHandle task, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
+    void PropagateCancellationLocked(Task& task);
+    void ReleaseExecutionPayloadLocked(Task& task);
+    void StopWorkers() noexcept;
     void WorkerLoop(WorkerIndex workerIndex) noexcept;
 
     mutable std::mutex m_mutex;
     std::condition_variable m_condition;
     std::condition_variable m_idleCondition;
-    std::vector<Task> m_tasks;
+    std::unordered_map<std::uint64_t, std::weak_ptr<TaskHandle::State>> m_activeTasks;
     std::deque<TaskHandle> m_readyTasks;
     std::vector<std::thread> m_workers;
     std::uint64_t m_nextTaskId = 1;

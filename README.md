@@ -219,8 +219,7 @@ GPU Execute N-1
 Backend-independent подготовка кадра выполняется через общий `TaskSystem`.
 
 `TaskSystem` — базовый backend-independent runtime для CPU-задач. Он не содержит renderer/resource/backend-specific API
-и
-используется как общий механизм планирования работы внутри engine.
+и используется как общий механизм планирования работы внутри engine.
 
 Жизненный цикл задачи:
 
@@ -231,20 +230,8 @@ CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
                          └───────────── CANCELLED
 ```
 
-- `TaskHandle` является стабильной ссылкой на опубликованную задачу.
-- `TaskContext` передаётся в выполняемую задачу и содержит текущий `TaskHandle`, стабильный `WorkerIndex` и возможность
-  создавать новые задачи из running task.
-- Список зависимостей копируется при публикации задачи. Последующие изменения контейнера, из которого был создан
-  `std::span`, не меняют dependency set задачи.
-- Задача становится `READY`, когда все её зависимости успешно завершены. Если зависимость завершается с ошибкой или
-  отменяется, зависимые задачи отменяются.
-- Независимые `READY` задачи не имеют гарантированного порядка выполнения.
-- Исключения не выходят за границу worker thread. Они перехватываются, сохраняются в задаче и переводят её в `FAILED`.
-- `WorkerIndex` стабилен для конкретного worker thread на время жизни `TaskSystem`.
-- `Wait()` и `WaitIdle()` являются blocking API для внешних потоков. Их вызов из worker thread того же `TaskSystem`
-  запрещён.
-- Зависимости между worker-задачами должны выражаться через dependency graph, а не через blocking wait внутри задачи.
-- `TaskContext::Spawn()` публикует новую независимую задачу и сам по себе не создаёт dependency между parent и child.
+Полный contract `TaskHandle`, task lifetime, dependency ordering, worker exception boundary и blocking API описан в
+[`lib/thread/README.md`](lib/thread/README.md).
 
 Пример графа:
 
