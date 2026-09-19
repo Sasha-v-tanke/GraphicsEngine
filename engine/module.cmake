@@ -4,12 +4,16 @@ SOURCES(
     engine.cpp
 )
 
-PRIVATE_DEPENDS(
+PUBLIC_DEPENDS(
     Common
+)
+
+PRIVATE_DEPENDS(
     Thread
 )
 
 RECURSE(
     controller
+    runtime
     test
 )

@@ -9,6 +9,12 @@
 
 namespace NEngine {
 
+namespace NRuntime {
+
+class EngineFactory;
+
+}
+
 enum class EEngineState {
     CREATED,
     RUNNING,
@@ -38,8 +44,12 @@ public:
 private:
     class Impl;
 
+    explicit Engine(std::unique_ptr<Impl> impl);
+
 private:
     std::unique_ptr<Impl> m_impl;
+
+    friend class NRuntime::EngineFactory;
 };
 
 } // namespace NEngine

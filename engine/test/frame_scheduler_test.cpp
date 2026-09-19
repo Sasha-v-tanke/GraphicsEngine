@@ -101,6 +101,66 @@ TEST(FrameScheduler, SupportsMultipleActiveFrames) {
     EXPECT_FALSE(scheduler.TryAcquireFrame().has_value());
 }
 
+TEST(FrameScheduler, AbortsFrameFromEveryNonFreeState) {
+    enum class EAbortPoint {
+        ACQUIRED,
+        WAITING_UPDATE,
+        UPDATING,
+        WAITING_DRAW,
+        FINALIZE,
+        COMPLETE,
+    };
+
+    const EAbortPoint abortPoints[] = {
+            EAbortPoint::ACQUIRED,
+            EAbortPoint::WAITING_UPDATE,
+            EAbortPoint::UPDATING,
+            EAbortPoint::WAITING_DRAW,
+            EAbortPoint::FINALIZE,
+            EAbortPoint::COMPLETE,
+    };
+
+    for (const EAbortPoint abortPoint: abortPoints) {
+        FrameScheduler scheduler{EngineConfig{
+                .MaxActiveFrames = 1,
+        }};
+
+        const FrameHandle frame = *scheduler.TryAcquireFrame();
+
+        if (abortPoint != EAbortPoint::ACQUIRED) {
+            scheduler.ArmFrame(frame);
+        }
+
+        if (abortPoint == EAbortPoint::UPDATING || abortPoint == EAbortPoint::WAITING_DRAW ||
+            abortPoint == EAbortPoint::FINALIZE || abortPoint == EAbortPoint::COMPLETE) {
+            scheduler.BeginUpdate(frame);
+        }
+
+        if (abortPoint == EAbortPoint::WAITING_DRAW || abortPoint == EAbortPoint::FINALIZE ||
+            abortPoint == EAbortPoint::COMPLETE) {
+            scheduler.EndUpdate(frame);
+        }
+
+        if (abortPoint == EAbortPoint::FINALIZE || abortPoint == EAbortPoint::COMPLETE) {
+            scheduler.BeginFinalize(frame);
+        }
+
+        if (abortPoint == EAbortPoint::COMPLETE) {
+            scheduler.CompleteFrame(frame);
+        }
+
+        scheduler.AbortFrame(frame);
+
+        ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(scheduler.GetState(frame)); });
+
+        const std::optional<FrameHandle> nextFrame = scheduler.TryAcquireFrame();
+
+        ASSERT_TRUE(nextFrame.has_value());
+        EXPECT_EQ(nextFrame->GetSlotIndex(), frame.GetSlotIndex());
+        EXPECT_NE(nextFrame->GetGeneration(), frame.GetGeneration());
+    }
+}
+
 TEST(FrameScheduler, UsesFrameIndexModuloSlotCount) {
     FrameScheduler scheduler{EngineConfig{
             .MaxActiveFrames = 2,

@@ -20,9 +20,3 @@ target_link_libraries(
     INTERFACE
     GTest::gtest_main
 )
-
-target_include_directories(
-    GraphicsEngineExternalTest
-    INTERFACE
-    "${PROJECT_SOURCE_DIR}"
-)

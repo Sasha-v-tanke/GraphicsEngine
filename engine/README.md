@@ -40,6 +40,9 @@ Backpressure приходит от `FrameScheduler`: если следующий
 Ошибки, возникшие внутри runtime work, сохраняются в Engine error channel.
 Последняя ошибка доступна через `GetLastError()`.
 `ClearLastError()` очищает канал.
+Если runtime stage падает, Engine записывает ошибку, переводит runtime в `STOPPING` и не принимает новый frame work.
+Исключение пробрасывается из worker callback дальше, поэтому `TaskSystem` помечает task как `FAILED`, а зависимые tasks
+не получают успешного dependency completion.
 
 ## Shutdown order
 
@@ -116,6 +119,11 @@ COMPLETE -> FREE
 ```
 
 и делает физический slot доступным следующему generation.
+
+`AbortFrame()` является аварийным runtime contract для частично пройденного frame.
+Он освобождает текущий generation из любого non-FREE состояния без прохождения обычных lifecycle transitions.
+Engine использует его только после runtime failure или failed publication, когда обычная стадия больше не может быть
+корректно завершена.
 
 ## Frame identity
 
