@@ -3,6 +3,7 @@
 #include <system_error>
 
 #include <gtest/gtest.h>
+#include <lib/common/error/assert.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -97,6 +98,23 @@ TEST(Error, ImplicitlyConvertsToErrorCode) {
     EXPECT_EQ(code.value(), static_cast<int>(NCommon::EError::INVALID_ARGUMENT));
 
     EXPECT_EQ(code.category().name(), std::string_view{"graphics_engine.common"});
+}
+
+TEST(Assertion, PassingAssertionDoesNotThrow) {
+    EXPECT_NO_THROW(GRAPHICS_ENGINE_ASSERT(true));
+}
+
+TEST(Assertion, FailedAssertionThrowsAssertionFailure) {
+    try {
+        GRAPHICS_ENGINE_ASSERT(false);
+    } catch (const NCommon::AssertionFailure& error) {
+        EXPECT_STREQ(error.what(), "Assertion failed: false");
+        EXPECT_TRUE(std::string_view{error.GetLocation().file_name()}.ends_with("error_test.cpp"));
+
+        return;
+    }
+
+    FAIL() << "GRAPHICS_ENGINE_ASSERT did not throw";
 }
 
 } // namespace
