@@ -4,8 +4,7 @@
 #include <engine/controller/frame_scheduler.h>
 #include <engine/engine_config.h>
 #include <gtest/gtest.h>
-#include <lib/common/error/error.h>
-#include <lib/common/error/exception.h>
+#include <tests/common/test_error.h>
 
 namespace {
 
@@ -13,6 +12,7 @@ using NEngine::EngineConfig;
 using NEngine::NController::EFrameState;
 using NEngine::NController::FrameHandle;
 using NEngine::NController::FrameScheduler;
+using NTest::ExpectError;
 
 void CompleteFrame(FrameScheduler& scheduler, FrameHandle frame) {
     scheduler.ArmFrame(frame);
@@ -22,33 +22,12 @@ void CompleteFrame(FrameScheduler& scheduler, FrameHandle frame) {
     scheduler.CompleteFrame(frame);
 }
 
-template<typename TCallable>
-void ExpectError(NCommon::EError expectedError, TCallable&& callable) {
-    try {
-        callable();
-    } catch (const NCommon::Exception& exception) {
-        EXPECT_EQ(exception.code(), NCommon::make_error_code(expectedError));
-
-        return;
-    }
-
-    FAIL() << "Expected NCommon::Exception";
-}
-
 TEST(FrameScheduler, RejectsZeroMaxActiveFrames) {
     const EngineConfig config{
             .MaxActiveFrames = 0,
     };
 
-    try {
-        FrameScheduler scheduler{config};
-    } catch (const NCommon::Exception& exception) {
-        EXPECT_EQ(exception.code(), NCommon::make_error_code(NCommon::EError::INVALID_ARGUMENT));
-
-        return;
-    }
-
-    FAIL() << "FrameScheduler accepted MaxActiveFrames == 0";
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { FrameScheduler scheduler{config}; });
 }
 
 TEST(FrameScheduler, AcquiresSingleSlot) {
