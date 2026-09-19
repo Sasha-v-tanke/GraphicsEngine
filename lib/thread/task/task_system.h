@@ -11,6 +11,7 @@
 #include <span>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <lib/common/error/error.h>
@@ -60,7 +61,7 @@ public:
         return m_id;
     }
 
-    [[nodiscard]] friend bool operator==(TaskHandle lhs, TaskHandle rhs) noexcept = default;
+    [[nodiscard]] friend bool operator==(const TaskHandle& lhs, const TaskHandle& rhs) noexcept = default;
 
 private:
     struct State;
@@ -114,45 +115,52 @@ public:
     TaskSystem(TaskSystem&&) noexcept = delete;
     TaskSystem& operator=(TaskSystem&&) noexcept = delete;
 
-    TaskHandle Submit(TaskFunction function, std::span<const TaskHandle> dependencies = {});
+    TaskHandle Submit(TaskFunction function, std::span<const TaskHandle> dependencies = {}) {
+        return SubmitImpl(std::move(function), dependencies);
+    }
 
-    [[nodiscard]] ETaskStatus GetStatus(TaskHandle task) const;
-    [[nodiscard]] std::optional<ErrorInfo> GetError(TaskHandle task) const;
+    [[nodiscard]] ETaskStatus GetStatus(const TaskHandle& task) const;
+    [[nodiscard]] std::optional<ErrorInfo> GetError(const TaskHandle& task) const;
 
-    void Cancel(TaskHandle task);
-    void Wait(TaskHandle task);
+    void Cancel(const TaskHandle& task);
+    void Wait(const TaskHandle& task);
     void WaitIdle();
 
 private:
+    struct OwnerToken;
     friend struct TaskHandle::State;
 
     struct Task {
-        TaskHandle Handle;
         TaskFunction Function;
         ETaskStatus Status = ETaskStatus::CREATED;
-        std::vector<TaskHandle> Dependencies;
-        std::vector<TaskHandle> Dependents;
+        std::vector<std::uint64_t> Dependencies;
+        std::vector<std::uint64_t> Dependents;
         std::size_t PendingDependencies = 0;
         std::optional<ErrorInfo> Error;
     };
 
-    [[nodiscard]] Task& GetTaskLocked(TaskHandle task);
-    [[nodiscard]] const Task& GetTaskLocked(TaskHandle task) const;
-    [[nodiscard]] bool IsTerminalLocked(const Task& task) const noexcept;
-    [[nodiscard]] bool IsSuccessfulLocked(const Task& task) const noexcept;
+    [[nodiscard]] Task& GetTaskLocked(const TaskHandle& task);
+    [[nodiscard]] const Task& GetTaskLocked(const TaskHandle& task) const;
+    [[nodiscard]] Task& GetTaskLocked(std::uint64_t taskId);
+    [[nodiscard]] static bool IsTerminalLocked(const Task& task) noexcept;
+    [[nodiscard]] static bool IsSuccessfulLocked(const Task& task) noexcept;
 
-    void MakeReadyLocked(Task& task);
-    void CompleteLocked(TaskHandle task, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
+    void MakeReadyLocked(std::uint64_t taskId, Task& task);
+    void CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
     void PropagateCancellationLocked(Task& task);
-    void ReleaseExecutionPayloadLocked(Task& task);
+    static void ReleaseExecutionPayloadLocked(Task& task);
     void StopWorkers() noexcept;
     void WorkerLoop(WorkerIndex workerIndex) noexcept;
 
+    TaskHandle SubmitImpl(TaskFunction function, std::span<const TaskHandle> dependencies);
+
+private:
     mutable std::mutex m_mutex;
     std::condition_variable m_condition;
     std::condition_variable m_idleCondition;
-    std::unordered_map<std::uint64_t, std::weak_ptr<TaskHandle::State>> m_activeTasks;
-    std::deque<TaskHandle> m_readyTasks;
+    std::shared_ptr<OwnerToken> m_ownerToken;
+    std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> m_activeTasks;
+    std::deque<std::uint64_t> m_readyTasks;
     std::vector<std::thread> m_workers;
     std::uint64_t m_nextTaskId = 1;
     std::size_t m_runningTasks = 0;

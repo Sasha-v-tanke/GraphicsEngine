@@ -20,43 +20,52 @@ struct WorkerThreadContext {
 
 thread_local WorkerThreadContext CurrentWorker;
 
-[[nodiscard]] ErrorInfo MakeFailureError(std::exception_ptr error) {
-    if (error == nullptr) {
-        return {
-                .Code = make_error_code(EError::UNKNOWN),
-                .Message = "Unknown task failure",
-        };
-    }
-
+[[nodiscard]] ErrorInfo MakeFailureError(const std::exception_ptr& error) noexcept {
     try {
-        std::rethrow_exception(error);
-    } catch (const NCommon::Exception& exception) {
-        return {
-                .Code = exception.code(),
-                .Message = exception.GetMessage(),
-        };
-    } catch (const std::system_error& exception) {
-        return {
-                .Code = exception.code(),
-                .Message = exception.what(),
-        };
-    } catch (const std::exception& exception) {
-        return {
-                .Code = make_error_code(EError::UNKNOWN),
-                .Message = exception.what(),
-        };
+        if (error == nullptr) {
+            return {
+                    .Code = make_error_code(EError::UNKNOWN),
+                    .Message = "Unknown task failure",
+            };
+        }
+
+        try {
+            std::rethrow_exception(error);
+        } catch (const NCommon::Exception& exception) {
+            return {
+                    .Code = exception.code(),
+                    .Message = exception.GetMessage(),
+            };
+        } catch (const std::system_error& exception) {
+            return {
+                    .Code = exception.code(),
+                    .Message = exception.what(),
+            };
+        } catch (const std::exception& exception) {
+            return {
+                    .Code = make_error_code(EError::UNKNOWN),
+                    .Message = exception.what(),
+            };
+        } catch (...) {
+            return {
+                    .Code = make_error_code(EError::UNKNOWN),
+                    .Message = "Unknown non-standard exception",
+            };
+        }
     } catch (...) {
         return {
-                .Code = make_error_code(EError::UNKNOWN),
-                .Message = "Unknown non-standard exception",
+                .Code = make_error_code(EError::OUT_OF_MEMORY),
+                .Message = {},
         };
     }
 }
 
 } // namespace
 
+struct TaskSystem::OwnerToken {};
+
 struct TaskHandle::State {
-    TaskSystem* Owner = nullptr;
+    std::shared_ptr<const TaskSystem::OwnerToken> Owner;
     std::uint64_t Id = 0;
     TaskSystem::Task Task;
 };
@@ -69,7 +78,8 @@ TaskHandle TaskContext::Spawn(TaskFunction function) {
     return m_taskSystem->Submit(std::move(function));
 }
 
-TaskSystem::TaskSystem(std::size_t workerCount) {
+TaskSystem::TaskSystem(std::size_t workerCount)
+    : m_ownerToken(std::make_shared<OwnerToken>()) {
     if (workerCount == 0) {
         workerCount = 1;
     }
@@ -90,7 +100,7 @@ TaskSystem::~TaskSystem() {
     StopWorkers();
 }
 
-TaskHandle TaskSystem::Submit(TaskFunction function, std::span<const TaskHandle> dependencies) {
+TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHandle> dependencies) {
     if (!function) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Task function is empty");
     }
@@ -103,73 +113,106 @@ TaskHandle TaskSystem::Submit(TaskFunction function, std::span<const TaskHandle>
 
     Task task;
     task.Function = std::move(function);
-    task.Dependencies.assign(dependencies.begin(), dependencies.end());
+    task.Dependencies.reserve(dependencies.size());
 
-    for (std::size_t index = 0; index < task.Dependencies.size(); ++index) {
-        const TaskHandle dependency = task.Dependencies[index];
+    for (const TaskHandle& dependency: dependencies) {
+        task.Dependencies.push_back(dependency.GetId());
+    }
+
+    for (std::size_t index = 0; index < dependencies.size(); ++index) {
+        const TaskHandle& dependency = dependencies[index];
 
         static_cast<void>(GetTaskLocked(dependency));
 
-        if (std::ranges::find(task.Dependencies.begin(),
-                              task.Dependencies.begin() + static_cast<std::ptrdiff_t>(index),
-                              dependency) != task.Dependencies.begin() + static_cast<std::ptrdiff_t>(index)) {
+        if (std::ranges::find(dependencies.begin(),
+                              dependencies.begin() + static_cast<std::ptrdiff_t>(index),
+                              dependency) != dependencies.begin() + static_cast<std::ptrdiff_t>(index)) {
             GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT,
                                   "Task {} is specified more than once as a dependency",
                                   dependency.GetId());
         }
     }
 
-    const std::uint64_t id = m_nextTaskId++;
     auto state = std::make_shared<TaskHandle::State>();
-    state->Owner = this;
+    const std::uint64_t id = m_nextTaskId++;
+    state->Owner = m_ownerToken;
     state->Id = id;
-    task.Handle = TaskHandle{id, state};
 
-    for (TaskHandle dependency: task.Dependencies) {
-        Task& dependencyTask = GetTaskLocked(dependency);
+    std::vector<std::uint64_t> linkedDependencies;
 
-        if (!IsTerminalLocked(dependencyTask)) {
-            ++task.PendingDependencies;
-            dependencyTask.Dependents.push_back(task.Handle);
-        } else if (!IsSuccessfulLocked(dependencyTask)) {
-            task.Status = ETaskStatus::CANCELLED;
+    try {
+        linkedDependencies.reserve(dependencies.size());
+
+        for (const TaskHandle& dependency: dependencies) {
+            Task& dependencyTask = GetTaskLocked(dependency);
+
+            if (!IsTerminalLocked(dependencyTask)) {
+                dependencyTask.Dependents.push_back(id);
+                linkedDependencies.push_back(dependency.GetId());
+                ++task.PendingDependencies;
+            } else if (!IsSuccessfulLocked(dependencyTask)) {
+                task.Status = ETaskStatus::CANCELLED;
+            }
         }
+
+        if (task.Status != ETaskStatus::CANCELLED) {
+            task.Status = task.PendingDependencies == 0 ? ETaskStatus::READY : ETaskStatus::WAITING;
+        }
+
+        const TaskHandle handle{id, state};
+        state->Task = std::move(task);
+        m_activeTasks.emplace(id, state);
+
+        Task& storedTask = state->Task;
+
+        if (storedTask.Status == ETaskStatus::READY) {
+            MakeReadyLocked(id, storedTask);
+        } else if (storedTask.Status == ETaskStatus::CANCELLED) {
+            ReleaseExecutionPayloadLocked(storedTask);
+            m_activeTasks.erase(id);
+            m_idleCondition.notify_all();
+        }
+
+        return handle;
+    } catch (...) {
+        for (const std::uint64_t dependencyId: linkedDependencies) {
+            const auto dependencyIt = m_activeTasks.find(dependencyId);
+
+            if (dependencyIt == m_activeTasks.end()) {
+                continue;
+            }
+
+            std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
+            const auto dependentIt = std::ranges::find(dependents, id);
+
+            if (dependentIt != dependents.end()) {
+                dependents.erase(dependentIt);
+            }
+        }
+
+        m_activeTasks.erase(id);
+
+        if (m_nextTaskId == id + 1) {
+            --m_nextTaskId;
+        }
+
+        throw;
     }
-
-    if (task.Status != ETaskStatus::CANCELLED) {
-        task.Status = task.PendingDependencies == 0 ? ETaskStatus::READY : ETaskStatus::WAITING;
-    }
-
-    const TaskHandle handle = task.Handle;
-    state->Task = std::move(task);
-    m_activeTasks.emplace(id, state);
-
-    Task& storedTask = state->Task;
-
-    if (storedTask.Status == ETaskStatus::READY) {
-        MakeReadyLocked(storedTask);
-    } else if (storedTask.Status == ETaskStatus::CANCELLED) {
-        ReleaseExecutionPayloadLocked(storedTask);
-        m_activeTasks.erase(storedTask.Handle.GetId());
-        m_idleCondition.notify_all();
-    }
-
-    return handle;
 }
 
-ETaskStatus TaskSystem::GetStatus(TaskHandle task) const {
+ETaskStatus TaskSystem::GetStatus(const TaskHandle& task) const {
     std::lock_guard lock{m_mutex};
 
     return GetTaskLocked(task).Status;
 }
 
-std::optional<ErrorInfo> TaskSystem::GetError(TaskHandle task) const {
+std::optional<ErrorInfo> TaskSystem::GetError(const TaskHandle& task) const {
     std::lock_guard lock{m_mutex};
 
     return GetTaskLocked(task).Error;
 }
 
-void TaskSystem::Cancel(TaskHandle task) {
+void TaskSystem::Cancel(const TaskHandle& task) {
     std::lock_guard lock{m_mutex};
 
     Task& storedTask = GetTaskLocked(task);
@@ -182,10 +225,10 @@ void TaskSystem::Cancel(TaskHandle task) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Running task cannot be cancelled");
     }
 
-    CompleteLocked(task, ETaskStatus::CANCELLED);
+    CompleteLocked(task.GetId(), ETaskStatus::CANCELLED);
 }
 
-void TaskSystem::Wait(TaskHandle task) {
+void TaskSystem::Wait(const TaskHandle& task) {
     if (CurrentWorker.System == this) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,
                               "TaskSystem::Wait cannot be called from a worker thread of the same TaskSystem");
@@ -206,67 +249,83 @@ void TaskSystem::WaitIdle() {
 
     std::unique_lock lock{m_mutex};
 
-    m_idleCondition.wait(lock, [this] { return m_readyTasks.empty() && m_runningTasks == 0 && m_activeTasks.empty(); });
+    m_idleCondition.wait(lock, [this] { return m_runningTasks == 0 && m_activeTasks.empty(); });
 }
 
-TaskSystem::Task& TaskSystem::GetTaskLocked(TaskHandle task) {
+TaskSystem::Task& TaskSystem::GetTaskLocked(const TaskHandle& task) {
     if (!task.IsValid()) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Invalid task handle");
     }
 
-    const auto state = task.m_state;
+    const auto& state = task.m_state;
 
-    if (state->Owner != this || state->Id != task.GetId()) {
+    if (state->Owner != m_ownerToken || state->Id != task.GetId()) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Task {} belongs to another TaskSystem", task.GetId());
     }
 
     return state->Task;
 }
 
-const TaskSystem::Task& TaskSystem::GetTaskLocked(TaskHandle task) const {
+const TaskSystem::Task& TaskSystem::GetTaskLocked(const TaskHandle& task) const {
     if (!task.IsValid()) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Invalid task handle");
     }
 
-    const auto state = task.m_state;
+    const auto& state = task.m_state;
 
-    if (state->Owner != this || state->Id != task.GetId()) {
+    if (state->Owner != m_ownerToken || state->Id != task.GetId()) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Task {} belongs to another TaskSystem", task.GetId());
     }
 
     return state->Task;
 }
 
-bool TaskSystem::IsTerminalLocked(const Task& task) const noexcept {
+TaskSystem::Task& TaskSystem::GetTaskLocked(std::uint64_t taskId) {
+    const auto it = m_activeTasks.find(taskId);
+
+    if (it == m_activeTasks.end()) {
+        GRAPHICS_ENGINE_THROW(EError::NOT_FOUND, "Task {} was not found", taskId);
+    }
+
+    return it->second->Task;
+}
+
+bool TaskSystem::IsTerminalLocked(const Task& task) noexcept {
     return task.Status == ETaskStatus::COMPLETED || task.Status == ETaskStatus::FAILED ||
            task.Status == ETaskStatus::CANCELLED;
 }
 
-bool TaskSystem::IsSuccessfulLocked(const Task& task) const noexcept {
+bool TaskSystem::IsSuccessfulLocked(const Task& task) noexcept {
     return task.Status == ETaskStatus::COMPLETED;
 }
 
-void TaskSystem::MakeReadyLocked(Task& task) {
+void TaskSystem::MakeReadyLocked(std::uint64_t taskId, Task& task) {
     task.Status = ETaskStatus::READY;
-    m_readyTasks.push_back(task.Handle);
+    m_readyTasks.push_back(taskId);
     m_condition.notify_one();
 }
 
-void TaskSystem::CompleteLocked(TaskHandle task, ETaskStatus status, std::optional<ErrorInfo> error) {
-    Task& storedTask = GetTaskLocked(task);
+void TaskSystem::CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error) {
+    Task& storedTask = GetTaskLocked(taskId);
     storedTask.Status = status;
     storedTask.Error = std::move(error);
 
     if (status != ETaskStatus::COMPLETED) {
         PropagateCancellationLocked(storedTask);
         ReleaseExecutionPayloadLocked(storedTask);
-        m_activeTasks.erase(storedTask.Handle.GetId());
+        m_activeTasks.erase(taskId);
         m_idleCondition.notify_all();
         return;
     }
 
-    for (TaskHandle dependent: storedTask.Dependents) {
-        Task& dependentTask = GetTaskLocked(dependent);
+    for (const std::uint64_t dependent: storedTask.Dependents) {
+        const auto dependentIt = m_activeTasks.find(dependent);
+
+        if (dependentIt == m_activeTasks.end()) {
+            continue;
+        }
+
+        Task& dependentTask = dependentIt->second->Task;
 
         if (dependentTask.Status != ETaskStatus::WAITING) {
             continue;
@@ -275,18 +334,24 @@ void TaskSystem::CompleteLocked(TaskHandle task, ETaskStatus status, std::option
         --dependentTask.PendingDependencies;
 
         if (dependentTask.PendingDependencies == 0) {
-            MakeReadyLocked(dependentTask);
+            MakeReadyLocked(dependent, dependentTask);
         }
     }
 
     ReleaseExecutionPayloadLocked(storedTask);
-    m_activeTasks.erase(storedTask.Handle.GetId());
+    m_activeTasks.erase(taskId);
     m_idleCondition.notify_all();
 }
 
 void TaskSystem::PropagateCancellationLocked(Task& task) {
-    for (TaskHandle dependent: task.Dependents) {
-        Task& dependentTask = GetTaskLocked(dependent);
+    for (const std::uint64_t dependent: task.Dependents) {
+        const auto dependentIt = m_activeTasks.find(dependent);
+
+        if (dependentIt == m_activeTasks.end()) {
+            continue;
+        }
+
+        Task& dependentTask = dependentIt->second->Task;
 
         if (IsTerminalLocked(dependentTask) || dependentTask.Status == ETaskStatus::RUNNING) {
             continue;
@@ -295,7 +360,7 @@ void TaskSystem::PropagateCancellationLocked(Task& task) {
         dependentTask.Status = ETaskStatus::CANCELLED;
         PropagateCancellationLocked(dependentTask);
         ReleaseExecutionPayloadLocked(dependentTask);
-        m_activeTasks.erase(dependentTask.Handle.GetId());
+        m_activeTasks.erase(dependent);
     }
 }
 
@@ -326,6 +391,8 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
     CurrentWorker.Index = workerIndex;
 
     while (true) {
+        std::uint64_t taskId = 0;
+        bool taskIsRunning = false;
         TaskHandle task;
         TaskFunction function;
 
@@ -339,18 +406,28 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
                     return;
                 }
 
-                task = m_readyTasks.front();
+                taskId = m_readyTasks.front();
                 m_readyTasks.pop_front();
 
-                Task& storedTask = GetTaskLocked(task);
+                const auto stateIt = m_activeTasks.find(taskId);
+
+                if (stateIt == m_activeTasks.end()) {
+                    m_idleCondition.notify_all();
+                    continue;
+                }
+
+                Task& storedTask = stateIt->second->Task;
 
                 if (storedTask.Status != ETaskStatus::READY) {
+                    m_idleCondition.notify_all();
                     continue;
                 }
 
                 storedTask.Status = ETaskStatus::RUNNING;
-                function = std::move(storedTask.Function);
+                task = TaskHandle{taskId, stateIt->second};
                 ++m_runningTasks;
+                taskIsRunning = true;
+                function = std::move(storedTask.Function);
             }
 
             std::optional<ErrorInfo> error;
@@ -366,15 +443,23 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
                 std::lock_guard lock{m_mutex};
 
                 --m_runningTasks;
-                CompleteLocked(task,
+                taskIsRunning = false;
+                CompleteLocked(taskId,
                                error.has_value() ? ETaskStatus::FAILED : ETaskStatus::COMPLETED,
                                std::move(error));
             }
         } catch (...) {
-            if (task.IsValid()) {
-                std::lock_guard lock{m_mutex};
+            std::lock_guard lock{m_mutex};
 
-                CompleteLocked(task, ETaskStatus::FAILED, MakeFailureError(std::current_exception()));
+            if (taskIsRunning) {
+                --m_runningTasks;
+                taskIsRunning = false;
+            }
+
+            if (taskId != 0 && m_activeTasks.contains(taskId)) {
+                CompleteLocked(taskId, ETaskStatus::FAILED, MakeFailureError(std::current_exception()));
+            } else {
+                m_idleCondition.notify_all();
             }
         }
     }

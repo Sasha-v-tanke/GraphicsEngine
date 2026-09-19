@@ -28,14 +28,18 @@ CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
 
 ### Handles And Lifetime
 
-`TaskHandle` - стабильная ссылка на опубликованную задачу. Handle привязан к конкретному `TaskSystem` и opaque task
-state; локальный числовой id используется только для диагностики. Handle из другого `TaskSystem` никогда не alias-ит
+`TaskHandle` - стабильная ссылка на опубликованную задачу. Handle привязан к конкретному instance identity
+`TaskSystem` и opaque task state; локальный числовой id используется только для диагностики. Handle из другого
+`TaskSystem`, включая уничтоженный scheduler и новый scheduler, созданный по тому же адресу памяти, никогда не alias-ит
 локальную задачу и отклоняется как invalid argument.
 
-Terminal state остаётся доступным через `TaskHandle`, пока пользователь хранит handle. Scheduler при переходе в terminal
-state удаляет задачу из active lookup и освобождает execution payload: callback, dependency edges и captured resources,
-которые удерживались только callback-ом. Поэтому память scheduler не растёт пропорционально total submissions за всё
-время жизни `TaskSystem`.
+Terminal state остаётся доступным через `TaskHandle`, пока пользователь хранит handle и соответствующий `TaskSystem`
+жив. Scheduler при переходе в terminal state удаляет задачу из active lookup и освобождает execution payload: callback,
+dependency edges и captured resources, которые удерживались только callback-ом. Поэтому память scheduler не растёт
+пропорционально total submissions за всё время жизни `TaskSystem`.
+
+После уничтожения `TaskSystem` оставшийся `TaskHandle` является stale value object. Использовать его с новым или другим
+`TaskSystem` нельзя; такой handle должен быть отвергнут.
 
 `TaskContext` живёт только во время callback. Его нельзя сохранять или использовать после возврата из `TaskFunction`.
 `TaskContext::GetTask()` возвращает handle текущей задачи, `TaskContext::GetWorkerIndex()` - stable index worker thread,
@@ -73,8 +77,9 @@ Dependency set копируется при `Submit()`. Последующие и
 `Wait(task)` блокирует caller до terminal state задачи. Он не бросает из-за `FAILED` или `CANCELLED`: итог нужно читать
 через `GetStatus()` и `GetError()`.
 
-`WaitIdle()` блокирует caller до момента, когда нет ready/running/active scheduler tasks. Terminal task state может
-оставаться живым во внешних handles.
+`WaitIdle()` блокирует caller до момента, когда нет running/active scheduler tasks. Внутренние tombstones в очередях,
+оставшиеся после cancellation, не считаются outstanding work. Terminal task state может оставаться живым во внешних
+handles.
 
 ### Ownership And Shutdown
 

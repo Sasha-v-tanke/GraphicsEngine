@@ -1,7 +1,10 @@
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -38,8 +41,13 @@ public:
         return m_condition.wait_for(lock, 2s, [this] { return m_open; });
     }
 
+    [[nodiscard]] bool IsOpen() const {
+        std::lock_guard lock{m_mutex};
+        return m_open;
+    }
+
 private:
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
     std::condition_variable m_condition;
     bool m_open = false;
 };
@@ -68,24 +76,33 @@ TEST(TaskSystem, RunsTaskLifecycleToCompletion) {
 }
 
 TEST(TaskSystem, ProvidesTaskHandleAndStableWorkerIndexInContext) {
-    NCommon::TaskSystem taskSystem{2};
+    constexpr std::size_t workerCount = 2;
+    NCommon::TaskSystem taskSystem{workerCount};
 
     std::optional<NCommon::TaskHandle> observedTask;
-    std::optional<NCommon::WorkerIndex> firstIndex;
-    std::optional<NCommon::WorkerIndex> secondIndex;
-    std::thread::id firstThread;
-    std::thread::id secondThread;
     bool childHandleWasValid = false;
+    std::mutex observationsMutex;
+    std::map<std::thread::id, NCommon::WorkerIndex> workerIndices;
+
+    const auto observeWorker = [&](NCommon::TaskContext& context) {
+        std::lock_guard lock{observationsMutex};
+        const std::thread::id threadId = std::this_thread::get_id();
+        const NCommon::WorkerIndex workerIndex = context.GetWorkerIndex();
+        const auto [it, inserted] = workerIndices.emplace(threadId, workerIndex);
+
+        if (!inserted) {
+            EXPECT_EQ(it->second, workerIndex);
+        }
+
+        EXPECT_LT(workerIndex.GetValue(), workerCount);
+    };
 
     const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext& context) {
         observedTask = context.GetTask();
-        firstIndex = context.GetWorkerIndex();
-        firstThread = std::this_thread::get_id();
+        observeWorker(context);
 
-        const NCommon::TaskHandle child = context.Spawn([&](NCommon::TaskContext& childContext) {
-            secondIndex = childContext.GetWorkerIndex();
-            secondThread = std::this_thread::get_id();
-        });
+        const NCommon::TaskHandle child =
+                context.Spawn([&](NCommon::TaskContext& childContext) { observeWorker(childContext); });
 
         childHandleWasValid = child.IsValid();
     });
@@ -94,15 +111,26 @@ TEST(TaskSystem, ProvidesTaskHandleAndStableWorkerIndexInContext) {
     taskSystem.WaitIdle();
 
     ASSERT_TRUE(observedTask.has_value());
-    ASSERT_TRUE(firstIndex.has_value());
-    ASSERT_TRUE(secondIndex.has_value());
     EXPECT_TRUE(childHandleWasValid);
     EXPECT_EQ(*observedTask, task);
-    EXPECT_LT(firstIndex->GetValue(), 2U);
-    EXPECT_LT(secondIndex->GetValue(), 2U);
+    EXPECT_FALSE(workerIndices.empty());
 
-    if (firstThread == secondThread) {
-        EXPECT_EQ(*firstIndex, *secondIndex);
+    std::vector<NCommon::TaskHandle> tasks;
+    tasks.reserve(16);
+
+    for (std::size_t index = 0; index < 16; ++index) {
+        tasks.push_back(taskSystem.Submit([&](NCommon::TaskContext& context) { observeWorker(context); }));
+    }
+
+    for (const NCommon::TaskHandle& handle: tasks) {
+        taskSystem.Wait(handle);
+    }
+
+    taskSystem.WaitIdle();
+
+    for (const auto& [threadId, workerIndex]: workerIndices) {
+        static_cast<void>(threadId);
+        EXPECT_LT(workerIndex.GetValue(), workerCount);
     }
 }
 
@@ -122,6 +150,23 @@ TEST(TaskSystem, RejectsInvalidAndForeignHandles) {
 
     const std::vector<NCommon::TaskHandle> dependencies{secondTask};
     EXPECT_THROW(firstSystem.Submit([](NCommon::TaskContext&) {}, dependencies), NCommon::Exception);
+}
+
+TEST(TaskSystem, RejectsHandleFromDestroyedSystemRecreatedInSameStorage) {
+    alignas(NCommon::TaskSystem) std::byte storage[sizeof(NCommon::TaskSystem)];
+
+    auto* firstSystem = new (&storage) NCommon::TaskSystem{1};
+    const NCommon::TaskHandle staleTask = firstSystem->Submit([](NCommon::TaskContext&) {});
+    firstSystem->Wait(staleTask);
+    firstSystem->~TaskSystem();
+
+    auto* secondSystem = new (&storage) NCommon::TaskSystem{1};
+    const NCommon::TaskHandle secondTask = secondSystem->Submit([](NCommon::TaskContext&) {});
+    secondSystem->Wait(secondTask);
+
+    EXPECT_THROW({ static_cast<void>(secondSystem->GetStatus(staleTask)); }, NCommon::Exception);
+
+    secondSystem->~TaskSystem();
 }
 
 TEST(TaskSystem, RejectsDuplicateDependency) {
@@ -213,6 +258,40 @@ TEST(TaskSystem, CancelsReadyAndWaitingTasks) {
     blockerFinish.Open();
     taskSystem.Wait(blocker);
     taskSystem.WaitIdle();
+}
+
+TEST(TaskSystem, WaitIdleCompletesAfterCancelledReadyTaskLeavesOnlyQueueTombstone) {
+    NCommon::TaskSystem taskSystem{1};
+    Gate blockerStarted;
+    Gate blockerFinish;
+    Gate waitIdleStarted;
+    Gate waitIdleFinished;
+
+    const NCommon::TaskHandle blocker = taskSystem.Submit([&](NCommon::TaskContext&) {
+        blockerStarted.Open();
+        blockerFinish.Wait();
+    });
+    const NCommon::TaskHandle ready = taskSystem.Submit([](NCommon::TaskContext&) {});
+
+    ASSERT_TRUE(blockerStarted.WaitForOpen());
+    EXPECT_EQ(taskSystem.GetStatus(ready), NCommon::ETaskStatus::READY);
+
+    std::thread waiter{[&] {
+        waitIdleStarted.Open();
+        taskSystem.WaitIdle();
+        waitIdleFinished.Open();
+    }};
+
+    ASSERT_TRUE(waitIdleStarted.WaitForOpen());
+    taskSystem.Cancel(ready);
+    EXPECT_EQ(taskSystem.GetStatus(ready), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_FALSE(waitIdleFinished.IsOpen());
+
+    blockerFinish.Open();
+
+    EXPECT_TRUE(waitIdleFinished.WaitForOpen());
+    waiter.join();
+    taskSystem.Wait(blocker);
 }
 
 TEST(TaskSystem, CopiesDependencySetWhenTaskIsPublished) {
