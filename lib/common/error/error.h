@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <system_error>
 #include <type_traits>
 
@@ -18,6 +19,11 @@ enum class EError {
 };
 
 std::error_code make_error_code(EError error) noexcept;
+
+struct ErrorInfo {
+    std::error_code Code;
+    std::string Message;
+};
 
 } // namespace NCommon
 

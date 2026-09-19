@@ -218,6 +218,21 @@ GPU Execute N-1
 
 Backend-independent подготовка кадра выполняется через общий `TaskSystem`.
 
+`TaskSystem` — базовый backend-independent runtime для CPU-задач. Он не содержит renderer/resource/backend-specific API
+и используется как общий механизм планирования работы внутри engine.
+
+Жизненный цикл задачи:
+
+```text
+CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
+                         │          │
+                         │          └── FAILED
+                         └───────────── CANCELLED
+```
+
+Полный contract `TaskHandle`, task lifetime, dependency ordering, worker exception boundary и blocking API описан в
+[`lib/thread/README.md`](lib/thread/README.md).
+
 Пример графа:
 
 ```text
@@ -602,7 +617,8 @@ target_link_libraries(
 
 `GraphicsEngine::GraphicsEngine` является единственным публичным CMake target библиотеки.
 
-Внутреннее разделение GraphicsEngine на модули является implementation detail движка и не является частью публичного CMake API.
+Внутреннее разделение GraphicsEngine на модули является implementation detail движка и не является частью публичного
+CMake API.
 
 ### Components
 
@@ -617,9 +633,11 @@ find_package(
 )
 ```
 
-В этом случае конфигурация проекта успешно завершится только в том случае, если установленная сборка GraphicsEngine содержит поддержку всех запрошенных components.
+В этом случае конфигурация проекта успешно завершится только в том случае, если установленная сборка GraphicsEngine
+содержит поддержку всех запрошенных components.
 
-Components не являются отдельными библиотеками и не меняют способ линковки приложения. Независимо от выбранных components приложение всегда использует:
+Components не являются отдельными библиотеками и не меняют способ линковки приложения. Независимо от выбранных
+components приложение всегда использует:
 
 ```text
 GraphicsEngine::GraphicsEngine
@@ -627,6 +645,8 @@ GraphicsEngine::GraphicsEngine
 
 Примеры возможных components: `Vulkan`, `OpenGL`, `GLFW`, `Qt`.
 
-Набор доступных components определяется конфигурацией, с которой был собран GraphicsEngine. Если приложение не требует конкретной реализации graphics или window backend, `COMPONENTS` указывать не требуется.
+Набор доступных components определяется конфигурацией, с которой был собран GraphicsEngine. Если приложение не требует
+конкретной реализации graphics или window backend, `COMPONENTS` указывать не требуется.
 
-До определения отдельной versioning и compatibility policy GraphicsEngine не гарантирует ABI compatibility между версиями.
+До определения отдельной versioning и compatibility policy GraphicsEngine не гарантирует ABI compatibility между
+версиями.
