@@ -1,6 +1,8 @@
 #include "engine.h"
 
+#include <algorithm>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <system_error>
@@ -8,6 +10,7 @@
 #include <vector>
 
 #include <engine/controller/frame_scheduler.h>
+#include <engine/runtime/frame_runtime.h>
 #include <lib/common/error/exception.h>
 #include <lib/thread/task/task_system.h>
 
@@ -57,10 +60,36 @@ namespace {
 
 } // namespace
 
+namespace NRuntime {
+
+class DefaultFrameRuntime final: public IFrameRuntime {
+public:
+    void Update(NController::FrameScheduler& frameScheduler, NController::FrameHandle frame) override {
+        frameScheduler.BeginUpdate(frame);
+        frameScheduler.EndUpdate(frame);
+    }
+
+    void Draw(NController::FrameScheduler& frameScheduler, NController::FrameHandle frame) override {
+        frameScheduler.BeginFinalize(frame);
+        frameScheduler.CompleteFrame(frame);
+        frameScheduler.RecycleFrame(frame);
+    }
+};
+
+std::unique_ptr<IFrameRuntime> MakeDefaultFrameRuntime() {
+    return std::make_unique<DefaultFrameRuntime>();
+}
+
+} // namespace NRuntime
+
 class Engine::Impl final: private NCommon::NonTransferable {
 public:
-    explicit Impl(EngineConfig config)
-        : m_config(config) {
+    Impl(EngineConfig config, std::unique_ptr<NRuntime::IFrameRuntime> frameRuntime)
+        : m_config(config)
+        , m_frameRuntime(std::move(frameRuntime)) {
+        if (m_frameRuntime == nullptr) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Engine frame runtime is null");
+        }
     }
 
     ~Impl() {
@@ -136,10 +165,11 @@ public:
         NCommon::TaskHandle updateTask;
 
         try {
+            m_pendingFrames.reserve(m_pendingFrames.size() + 1);
             updateTask = m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunUpdate(frame); });
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            RecycleFailedFrameLocked(frame);
+            m_frameScheduler->AbortFrame(frame);
             throw;
         }
 
@@ -159,9 +189,7 @@ public:
             return false;
         }
 
-        PendingFrame pendingFrame;
-        pendingFrame = std::move(m_pendingFrames.front());
-        m_pendingFrames.erase(m_pendingFrames.begin());
+        const PendingFrame pendingFrame = m_pendingFrames.front();
 
         try {
             const NCommon::TaskHandle dependencies[] = {pendingFrame.UpdateTask};
@@ -171,9 +199,10 @@ public:
                                          dependencies));
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            RecycleFailedFrameLocked(pendingFrame.Frame);
             throw;
         }
+
+        m_pendingFrames.erase(m_pendingFrames.begin());
 
         return true;
     }
@@ -226,42 +255,60 @@ private:
         m_state = EEngineState::STOPPED;
     }
 
-    void RunUpdate(NController::FrameHandle frame) noexcept {
+    void RunUpdate(NController::FrameHandle frame) {
         try {
-            std::lock_guard lock{m_mutex};
+            NController::FrameScheduler* frameScheduler = nullptr;
+            NRuntime::IFrameRuntime* frameRuntime = nullptr;
 
-            if (m_state != EEngineState::RUNNING && m_state != EEngineState::STOPPING) {
-                return;
+            {
+                std::lock_guard lock{m_mutex};
+
+                if (m_state != EEngineState::RUNNING && m_state != EEngineState::STOPPING) {
+                    return;
+                }
+
+                frameScheduler = m_frameScheduler.get();
+                frameRuntime = m_frameRuntime.get();
             }
 
-            m_frameScheduler->BeginUpdate(frame);
-            m_frameScheduler->EndUpdate(frame);
+            frameRuntime->Update(*frameScheduler, frame);
         } catch (...) {
-            SetLastError(MakeRuntimeError(std::current_exception()));
+            LatchRuntimeFailure(frame, std::current_exception());
+            throw;
         }
     }
 
-    void RunDraw(NController::FrameHandle frame) noexcept {
+    void RunDraw(NController::FrameHandle frame) {
         try {
-            std::lock_guard lock{m_mutex};
+            NController::FrameScheduler* frameScheduler = nullptr;
+            NRuntime::IFrameRuntime* frameRuntime = nullptr;
 
-            if (m_state != EEngineState::RUNNING && m_state != EEngineState::STOPPING) {
-                return;
+            {
+                std::lock_guard lock{m_mutex};
+
+                if (m_state != EEngineState::RUNNING && m_state != EEngineState::STOPPING) {
+                    return;
+                }
+
+                frameScheduler = m_frameScheduler.get();
+                frameRuntime = m_frameRuntime.get();
             }
 
-            m_frameScheduler->BeginFinalize(frame);
-            m_frameScheduler->CompleteFrame(frame);
-            m_frameScheduler->RecycleFrame(frame);
+            frameRuntime->Draw(*frameScheduler, frame);
         } catch (...) {
-            SetLastError(MakeRuntimeError(std::current_exception()));
+            LatchRuntimeFailure(frame, std::current_exception());
+            throw;
         }
     }
 
-    void RecycleFailedFrame(NController::FrameHandle frame) noexcept {
+    void LatchRuntimeFailure(NController::FrameHandle frame, const std::exception_ptr& error) noexcept {
         try {
             std::lock_guard lock{m_mutex};
 
-            RecycleFailedFrameLocked(frame);
+            SetLastErrorLocked(MakeRuntimeError(error));
+            m_state = EEngineState::STOPPING;
+            RemovePendingFrameLocked(frame);
+            m_frameScheduler->AbortFrame(frame);
         } catch (...) {
             SetLastError(MakeRuntimeError(std::current_exception()));
         }
@@ -275,20 +322,23 @@ private:
         }
     }
 
-    void RecycleFailedFrameLocked(NController::FrameHandle frame) {
-        m_frameScheduler->BeginUpdate(frame);
-        m_frameScheduler->EndUpdate(frame);
-        m_frameScheduler->BeginFinalize(frame);
-        m_frameScheduler->CompleteFrame(frame);
-        m_frameScheduler->RecycleFrame(frame);
-    }
-
     void SetLastErrorLocked(NCommon::ErrorInfo error) {
         m_lastError = std::move(error);
     }
 
+    void RemovePendingFrameLocked(NController::FrameHandle frame) {
+        const auto it = std::ranges::find_if(m_pendingFrames, [frame](const PendingFrame& pendingFrame) {
+            return pendingFrame.Frame == frame;
+        });
+
+        if (it != m_pendingFrames.end()) {
+            m_pendingFrames.erase(it);
+        }
+    }
+
 private:
     const EngineConfig m_config;
+    std::unique_ptr<NRuntime::IFrameRuntime> m_frameRuntime;
 
     mutable std::mutex m_mutex;
     EEngineState m_state = EEngineState::CREATED;
@@ -300,7 +350,11 @@ private:
 };
 
 Engine::Engine(EngineConfig config)
-    : m_impl(std::make_unique<Impl>(config)) {
+    : m_impl(std::make_unique<Impl>(config, NRuntime::MakeDefaultFrameRuntime())) {
+}
+
+Engine::Engine(std::unique_ptr<Impl> impl)
+    : m_impl(std::move(impl)) {
 }
 
 Engine::~Engine() = default;
@@ -332,5 +386,13 @@ std::optional<NCommon::ErrorInfo> Engine::GetLastError() const {
 void Engine::ClearLastError() {
     m_impl->ClearLastError();
 }
+
+namespace NRuntime {
+
+std::unique_ptr<Engine> EngineFactory::Create(EngineConfig config, std::unique_ptr<IFrameRuntime> frameRuntime) {
+    return std::unique_ptr<Engine>{new Engine{std::make_unique<Engine::Impl>(config, std::move(frameRuntime))}};
+}
+
+} // namespace NRuntime
 
 } // namespace NEngine

@@ -85,6 +85,8 @@ public:
 
     void RecycleFrame(FrameHandle frame);
 
+    void AbortFrame(FrameHandle frame);
+
     [[nodiscard]] EFrameState GetState(FrameHandle frame) const;
 
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);

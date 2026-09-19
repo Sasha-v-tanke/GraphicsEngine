@@ -1,12 +1,128 @@
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <exception>
+#include <future>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
 
 #include <engine/engine.h>
+#include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
+#include <lib/common/error/exception.h>
 #include <tests/common/test_error.h>
 
 namespace {
 
 using NTest::ExpectError;
+using namespace std::chrono_literals;
+
+class ThrowingFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    explicit ThrowingFrameRuntime(std::promise<void>& updateStarted)
+        : m_updateStarted(updateStarted) {
+    }
+
+    void Update(NEngine::NController::FrameScheduler&, NEngine::NController::FrameHandle) override {
+        m_updateStarted.set_value();
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected update failure");
+    }
+
+    void Draw(NEngine::NController::FrameScheduler&, NEngine::NController::FrameHandle) override {
+        ++m_drawCount;
+    }
+
+    [[nodiscard]] int GetDrawCount() const noexcept {
+        return m_drawCount;
+    }
+
+private:
+    std::promise<void>& m_updateStarted;
+    int m_drawCount = 0;
+};
+
+class BlockingFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    void Update(NEngine::NController::FrameScheduler& frameScheduler,
+                NEngine::NController::FrameHandle frame) override {
+        {
+            std::lock_guard lock{m_mutex};
+            m_updateEntered = true;
+        }
+
+        m_condition.notify_all();
+
+        std::unique_lock lock{m_mutex};
+        m_condition.wait(lock, [this] { return m_finishUpdate; });
+        lock.unlock();
+
+        frameScheduler.BeginUpdate(frame);
+        frameScheduler.EndUpdate(frame);
+    }
+
+    void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
+        frameScheduler.BeginFinalize(frame);
+        frameScheduler.CompleteFrame(frame);
+        frameScheduler.RecycleFrame(frame);
+    }
+
+    [[nodiscard]] bool WaitUpdateEntered(std::chrono::milliseconds timeout) {
+        std::unique_lock lock{m_mutex};
+        return m_condition.wait_for(lock, timeout, [this] { return m_updateEntered; });
+    }
+
+    void FinishUpdate() {
+        {
+            std::lock_guard lock{m_mutex};
+            m_finishUpdate = true;
+        }
+
+        m_condition.notify_all();
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    bool m_updateEntered = false;
+    bool m_finishUpdate = false;
+};
+
+class FinishUpdateGuard final {
+public:
+    explicit FinishUpdateGuard(BlockingFrameRuntime& runtime) noexcept
+        : m_runtime(&runtime) {
+    }
+
+    ~FinishUpdateGuard() {
+        if (m_runtime != nullptr) {
+            m_runtime->FinishUpdate();
+        }
+    }
+
+    void Release() noexcept {
+        m_runtime = nullptr;
+    }
+
+private:
+    BlockingFrameRuntime* m_runtime = nullptr;
+};
+
+[[nodiscard]] bool
+WaitForState(const NEngine::Engine& engine, NEngine::EEngineState expectedState, std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (engine.GetState() != expectedState) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+
+        std::this_thread::yield();
+    }
+
+    return true;
+}
 
 TEST(Engine, FollowsLifecycleStates) {
     NEngine::Engine engine{NEngine::EngineConfig{
@@ -56,43 +172,76 @@ TEST(Engine, RollsBackPartialStartFailure) {
 }
 
 TEST(Engine, StopWaitsForPendingWork) {
-    NEngine::Engine engine{NEngine::EngineConfig{
-            .MaxActiveFrames = 64,
-            .WorkerCount = 1,
-    }};
+    auto runtime = std::make_unique<BlockingFrameRuntime>();
+    BlockingFrameRuntime& runtimeRef = *runtime;
 
-    engine.Start();
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 64,
+                    .WorkerCount = 1,
+            },
+            std::move(runtime));
 
-    for (std::size_t index = 0; index < 64; ++index) {
-        EXPECT_TRUE(engine.Update());
-    }
+    engine->Start();
 
-    engine.Stop();
+    EXPECT_TRUE(engine->Update());
+    FinishUpdateGuard finishUpdateGuard{runtimeRef};
+    ASSERT_TRUE(runtimeRef.WaitUpdateEntered(2s));
 
-    EXPECT_EQ(engine.GetState(), NEngine::EEngineState::STOPPED);
-    EXPECT_FALSE(engine.GetLastError().has_value());
+    std::future<void> stopResult = std::async(std::launch::async, [&] { engine->Stop(); });
 
-    engine.Start();
-    EXPECT_TRUE(engine.Update());
-    EXPECT_TRUE(engine.Draw());
-    engine.Stop();
+    EXPECT_TRUE(WaitForState(*engine, NEngine::EEngineState::STOPPING, 2s));
+
+    EXPECT_EQ(stopResult.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine->Update()); });
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine->Draw()); });
+
+    runtimeRef.FinishUpdate();
+    finishUpdateGuard.Release();
+    ASSERT_EQ(stopResult.wait_for(2s), std::future_status::ready);
+    stopResult.get();
+
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
+    EXPECT_FALSE(engine->GetLastError().has_value());
 }
 
-TEST(Engine, KeepsRuntimeErrorChannel) {
-    NEngine::Engine engine{NEngine::EngineConfig{
-            .MaxActiveFrames = 1,
-            .WorkerCount = 1,
-    }};
+TEST(Engine, LatchesRuntimeErrorAndFailsDependentWork) {
+    std::promise<void> updateStarted;
+    std::future<void> updateStartedResult = updateStarted.get_future();
+    auto runtime = std::make_unique<ThrowingFrameRuntime>(updateStarted);
+    ThrowingFrameRuntime& runtimeRef = *runtime;
 
-    engine.Start();
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 1,
+                    .WorkerCount = 1,
+            },
+            std::move(runtime));
 
-    EXPECT_FALSE(engine.GetLastError().has_value());
+    engine->Start();
 
-    engine.ClearLastError();
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
 
-    EXPECT_FALSE(engine.GetLastError().has_value());
+    ASSERT_EQ(updateStartedResult.wait_for(2s), std::future_status::ready);
+    updateStartedResult.get();
+    EXPECT_TRUE(WaitForState(*engine, NEngine::EEngineState::STOPPING, 2s));
 
-    engine.Stop();
+    std::optional<NCommon::ErrorInfo> error = engine->GetLastError();
+
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->Code, NCommon::make_error_code(NCommon::EError::INVALID_STATE));
+    EXPECT_EQ(error->Message, "Injected update failure");
+    EXPECT_EQ(runtimeRef.GetDrawCount(), 0);
+
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine->Update()); });
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine->Draw()); });
+
+    engine->ClearLastError();
+    EXPECT_FALSE(engine->GetLastError().has_value());
+
+    engine->Stop();
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
 }
 
 } // namespace

@@ -112,6 +112,24 @@ void FrameScheduler::RecycleFrame(FrameHandle frame) {
     slot.State = EFrameState::FREE;
 }
 
+void FrameScheduler::AbortFrame(FrameHandle frame) {
+    std::lock_guard lock{m_mutex};
+
+    FrameExecutionSlot& slot = GetSlotLocked(frame);
+
+    if (slot.State == EFrameState::FREE) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame {} in slot {} cannot be aborted from state {}",
+                              frame.GetFrameIndex(),
+                              frame.GetSlotIndex(),
+                              static_cast<int>(slot.State));
+    }
+
+    slot.Arena.Reset();
+    slot.FrameIndex = FrameHandle::INVALID_FRAME_INDEX;
+    slot.State = EFrameState::FREE;
+}
+
 EFrameState FrameScheduler::GetState(FrameHandle frame) const {
     std::lock_guard lock{m_mutex};
 
