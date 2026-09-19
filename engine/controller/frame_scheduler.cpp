@@ -1,12 +1,15 @@
 #include "frame_scheduler.h"
 
+#include <atomic>
+
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
-namespace NEngine::NInternal {
+namespace NEngine::NController {
 
 FrameScheduler::FrameScheduler(const EngineConfig& config)
-    : m_maxActiveFrames(config.MaxActiveFrames) {
+    : m_ownerId(AcquireOwnerId())
+    , m_maxActiveFrames(config.MaxActiveFrames) {
     if (m_maxActiveFrames == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                               "EngineConfig.MaxActiveFrames must be greater than zero");
@@ -40,6 +43,7 @@ std::optional<FrameHandle> FrameScheduler::TryAcquireFrame() {
     slot.State = EFrameState::ACQUIRED;
 
     const FrameHandle frame{
+            m_ownerId,
             m_nextFrameIndex,
             slotIndex,
             slot.Generation,
@@ -120,6 +124,25 @@ std::pmr::memory_resource& FrameScheduler::GetMemoryResource(FrameHandle frame) 
     return GetSlotLocked(frame).Arena.GetMemoryResource();
 }
 
+std::uint64_t FrameScheduler::AcquireOwnerId() {
+    static std::atomic<std::uint64_t> nextOwnerId{1};
+
+    std::uint64_t current = nextOwnerId.load(std::memory_order_relaxed);
+
+    while (true) {
+        if (current == std::numeric_limits<std::uint64_t>::max()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "FrameScheduler identity space is exhausted");
+        }
+
+        if (nextOwnerId.compare_exchange_weak(current,
+                                              current + 1,
+                                              std::memory_order_relaxed,
+                                              std::memory_order_relaxed)) {
+            return current;
+        }
+    }
+}
+
 FrameScheduler::FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHandle frame) {
     return const_cast<FrameExecutionSlot&>(static_cast<const FrameScheduler&>(*this).GetSlotLocked(frame));
 }
@@ -127,6 +150,10 @@ FrameScheduler::FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHandle fr
 const FrameScheduler::FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHandle frame) const {
     if (!frame.IsValid()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame handle");
+    }
+
+    if (frame.m_ownerId != m_ownerId) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Frame handle belongs to another FrameScheduler");
     }
 
     if (frame.GetSlotIndex() >= m_maxActiveFrames) {
@@ -165,4 +192,4 @@ void FrameScheduler::TransitionLocked(FrameHandle frame,
     slot.State = nextState;
 }
 
-} // namespace NEngine::NInternal
+} // namespace NEngine::NController

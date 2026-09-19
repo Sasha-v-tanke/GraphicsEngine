@@ -8,6 +8,7 @@ The public API is:
 ```cmake
 MODULE(name)
 SUBMODULE()
+PRIVATE_SUBMODULE()
 
 TEST_SUITE(name)
 TEST(name)
@@ -123,7 +124,8 @@ GraphicsEngineWindowTests
 GraphicsEngine::WindowTests
 ```
 
-`TEST_SUITE(name)` creates the executable. `TEST(name)` starts a logical test group inside the current suite. `TEST()` from a
+`TEST_SUITE(name)` creates the executable. `TEST(name)` starts a logical test group inside the current suite. `TEST()`
+from a
 child directory continues the active test group:
 
 ```cmake
@@ -159,7 +161,8 @@ TEST_LABELS(
 ```
 
 Test labels are CTest labels. They are used by runner scripts and custom targets to run batches such as all `small`
-tests, all `libs` tests, or all tests owned by a directory-specific label. `TEST_LABELS(...)` also adds automatic labels:
+tests, all `libs` tests, or all tests owned by a directory-specific label. `TEST_LABELS(...)` also adds automatic
+labels:
 
 ```text
 dir:<relative-source-directory>
@@ -195,8 +198,10 @@ BENCHMARK_LABELS(
 )
 ```
 
-`BENCHMARK_SUITE(name)` creates the executable. `BENCHMARK(name)` starts a logical benchmark group inside the current suite.
-`BENCHMARK()` from a child directory continues the active benchmark group. `BENCHMARK_LABELS(...)` also records automatic
+`BENCHMARK_SUITE(name)` creates the executable. `BENCHMARK(name)` starts a logical benchmark group inside the current
+suite.
+`BENCHMARK()` from a child directory continues the active benchmark group. `BENCHMARK_LABELS(...)` also records
+automatic
 labels:
 
 ```text

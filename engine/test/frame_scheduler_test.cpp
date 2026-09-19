@@ -1,8 +1,8 @@
 #include <cstddef>
 #include <memory_resource>
 
-#include <engine/engine_config.h>
 #include <engine/controller/frame_scheduler.h>
+#include <engine/engine_config.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
@@ -10,9 +10,9 @@
 namespace {
 
 using NEngine::EngineConfig;
-using NEngine::NInternal::EFrameState;
-using NEngine::NInternal::FrameHandle;
-using NEngine::NInternal::FrameScheduler;
+using NEngine::NController::EFrameState;
+using NEngine::NController::FrameHandle;
+using NEngine::NController::FrameScheduler;
 
 void CompleteFrame(FrameScheduler& scheduler, FrameHandle frame) {
     scheduler.ArmFrame(frame);
@@ -20,6 +20,19 @@ void CompleteFrame(FrameScheduler& scheduler, FrameHandle frame) {
     scheduler.EndUpdate(frame);
     scheduler.BeginFinalize(frame);
     scheduler.CompleteFrame(frame);
+}
+
+template<typename TCallable>
+void ExpectError(NCommon::EError expectedError, TCallable&& callable) {
+    try {
+        callable();
+    } catch (const NCommon::Exception& exception) {
+        EXPECT_EQ(exception.code(), NCommon::make_error_code(expectedError));
+
+        return;
+    }
+
+    FAIL() << "Expected NCommon::Exception";
 }
 
 TEST(FrameScheduler, RejectsZeroMaxActiveFrames) {
@@ -164,7 +177,7 @@ TEST(FrameScheduler, RejectsStaleHandleAfterRecycle) {
     CompleteFrame(scheduler, frame);
     scheduler.RecycleFrame(frame);
 
-    EXPECT_THROW(static_cast<void>(scheduler.GetState(frame)), NCommon::Exception);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(scheduler.GetState(frame)); });
 }
 
 TEST(FrameScheduler, RejectsStaleHandleAfterSlotReuse) {
@@ -183,6 +196,53 @@ TEST(FrameScheduler, RejectsStaleHandleAfterSlotReuse) {
     EXPECT_NE(first.GetGeneration(), second.GetGeneration());
 
     EXPECT_THROW(scheduler.ArmFrame(first), NCommon::Exception);
+}
+
+TEST(FrameScheduler, RejectsForeignHandle) {
+    FrameScheduler firstScheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    FrameScheduler secondScheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    const FrameHandle firstFrame = *firstScheduler.TryAcquireFrame();
+    const FrameHandle secondFrame = *secondScheduler.TryAcquireFrame();
+
+    EXPECT_NE(firstFrame, secondFrame);
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(secondScheduler.GetState(firstFrame)); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { secondScheduler.ArmFrame(firstFrame); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { secondScheduler.RecycleFrame(firstFrame); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { static_cast<void>(secondScheduler.GetMemoryResource(firstFrame)); });
+}
+
+TEST(FrameScheduler, ReusesSlotOwnedMemoryResourceAcrossGenerations) {
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    const FrameHandle first = *scheduler.TryAcquireFrame();
+
+    std::pmr::memory_resource* firstResource = &scheduler.GetMemoryResource(first);
+
+    CompleteFrame(scheduler, first);
+    scheduler.RecycleFrame(first);
+
+    const FrameHandle second = *scheduler.TryAcquireFrame();
+
+    std::pmr::memory_resource* secondResource = &scheduler.GetMemoryResource(second);
+
+    EXPECT_EQ(first.GetSlotIndex(), second.GetSlotIndex());
+    EXPECT_NE(first.GetGeneration(), second.GetGeneration());
+    EXPECT_EQ(firstResource, secondResource);
+
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(scheduler.GetMemoryResource(first)); });
 }
 
 TEST(FrameScheduler, FollowsRequiredStateLifecycle) {
@@ -211,7 +271,10 @@ TEST(FrameScheduler, FollowsRequiredStateLifecycle) {
 
     scheduler.RecycleFrame(frame);
 
-    EXPECT_FALSE(scheduler.TryAcquireFrame()->GetGeneration() == frame.GetGeneration());
+    const std::optional<FrameHandle> nextFrame = scheduler.TryAcquireFrame();
+
+    ASSERT_TRUE(nextFrame.has_value());
+    EXPECT_NE(nextFrame->GetGeneration(), frame.GetGeneration());
 }
 
 TEST(FrameScheduler, RejectsIllegalStateTransitions) {

@@ -11,7 +11,7 @@
 #include <engine/engine_config.h>
 #include <lib/common/wrapper/non_transferable.h>
 
-namespace NEngine::NInternal {
+namespace NEngine::NController {
 
 enum class EFrameState {
     FREE,
@@ -28,7 +28,7 @@ public:
     FrameHandle() = default;
 
     [[nodiscard]] bool IsValid() const noexcept {
-        return m_generation != 0;
+        return m_ownerId != 0 && m_generation != 0;
     }
 
     [[nodiscard]] std::uint64_t GetFrameIndex() const noexcept {
@@ -49,12 +49,17 @@ private:
     static constexpr std::uint64_t INVALID_FRAME_INDEX = std::numeric_limits<std::uint64_t>::max();
     static constexpr std::size_t INVALID_SLOT_INDEX = std::numeric_limits<std::size_t>::max();
 
-    FrameHandle(std::uint64_t frameIndex, std::size_t slotIndex, std::uint64_t generation) noexcept
-        : m_frameIndex(frameIndex)
+    FrameHandle(std::uint64_t ownerId,
+                std::uint64_t frameIndex,
+                std::size_t slotIndex,
+                std::uint64_t generation) noexcept
+        : m_ownerId(ownerId)
+        , m_frameIndex(frameIndex)
         , m_slotIndex(slotIndex)
         , m_generation(generation) {
     }
 
+    std::uint64_t m_ownerId = 0;
     std::uint64_t m_frameIndex = INVALID_FRAME_INDEX;
     std::size_t m_slotIndex = INVALID_SLOT_INDEX;
     std::uint64_t m_generation = 0;
@@ -110,6 +115,8 @@ private:
         FrameArena Arena;
     };
 
+    [[nodiscard]] static std::uint64_t AcquireOwnerId();
+
     [[nodiscard]] FrameExecutionSlot& GetSlotLocked(FrameHandle frame);
 
     [[nodiscard]] const FrameExecutionSlot& GetSlotLocked(FrameHandle frame) const;
@@ -120,10 +127,12 @@ private:
 private:
     mutable std::mutex m_mutex;
 
+    const std::uint64_t m_ownerId;
     const std::size_t m_maxActiveFrames;
+
     std::unique_ptr<FrameExecutionSlot[]> m_slots;
 
     std::uint64_t m_nextFrameIndex = 0;
 };
 
-} // namespace NEngine::NInternal
+} // namespace NEngine::NController

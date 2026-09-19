@@ -79,3 +79,32 @@ macro(SUBMODULE)
 
     _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
 endmacro()
+
+macro(PRIVATE_SUBMODULE)
+    _GRAPHICS_ENGINE_REQUIRE_CONTEXT(
+        "PRIVATE_SUBMODULE"
+    )
+
+    if (NOT GRAPHICS_ENGINE_CURRENT_CONTEXT STREQUAL "MODULE")
+        message(FATAL_ERROR
+            "PRIVATE_SUBMODULE: current context is not a production module"
+        )
+    endif ()
+
+    set(
+        savedContext
+        "${GRAPHICS_ENGINE_CURRENT_CONTEXT}"
+    )
+
+    set(
+        GRAPHICS_ENGINE_CURRENT_CONTEXT
+        "PRIVATE_SUBMODULE"
+    )
+
+    _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
+
+    set(
+        GRAPHICS_ENGINE_CURRENT_CONTEXT
+        "${savedContext}"
+    )
+endmacro()
