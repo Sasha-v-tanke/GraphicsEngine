@@ -277,6 +277,34 @@ TEST(FrameScheduler, FollowsRequiredStateLifecycle) {
     EXPECT_NE(nextFrame->GetGeneration(), frame.GetGeneration());
 }
 
+TEST(FrameScheduler, RejectsHandleFromDestroyedSchedulerReusedAtSameAddress) {
+    std::optional<FrameScheduler> scheduler;
+
+    scheduler.emplace(EngineConfig{
+            .MaxActiveFrames = 1,
+    });
+
+    const FrameScheduler* firstAddress = &*scheduler;
+    const FrameHandle staleHandle = *scheduler->TryAcquireFrame();
+
+    scheduler.reset();
+
+    scheduler.emplace(EngineConfig{
+            .MaxActiveFrames = 1,
+    });
+
+    EXPECT_EQ(&*scheduler, firstAddress);
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(scheduler->GetState(staleHandle)); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { scheduler->ArmFrame(staleHandle); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { scheduler->RecycleFrame(staleHandle); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { static_cast<void>(scheduler->GetMemoryResource(staleHandle)); });
+}
+
 TEST(FrameScheduler, RejectsIllegalStateTransitions) {
     FrameScheduler scheduler{EngineConfig{
             .MaxActiveFrames = 1,
@@ -284,23 +312,37 @@ TEST(FrameScheduler, RejectsIllegalStateTransitions) {
 
     const FrameHandle frame = *scheduler.TryAcquireFrame();
 
-    EXPECT_THROW(scheduler.BeginUpdate(frame), NCommon::Exception);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.BeginUpdate(frame); });
 
     scheduler.ArmFrame(frame);
 
-    EXPECT_THROW(scheduler.ArmFrame(frame), NCommon::Exception);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.ArmFrame(frame); });
 
     scheduler.BeginUpdate(frame);
 
-    EXPECT_THROW(scheduler.BeginFinalize(frame), NCommon::Exception);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.BeginFinalize(frame); });
 
     scheduler.EndUpdate(frame);
 
-    EXPECT_THROW(scheduler.CompleteFrame(frame), NCommon::Exception);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.CompleteFrame(frame); });
 
     scheduler.BeginFinalize(frame);
 
-    EXPECT_THROW(scheduler.RecycleFrame(frame), NCommon::Exception);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.RecycleFrame(frame); });
+}
+
+TEST(FrameScheduler, RejectsDefaultHandleAsInvalidArgument) {
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    const FrameHandle frame;
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(scheduler.GetState(frame)); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { scheduler.ArmFrame(frame); });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(scheduler.GetMemoryResource(frame)); });
 }
 
 TEST(FrameScheduler, KeepsNextMappedSlotAsBackpressureBoundary) {
