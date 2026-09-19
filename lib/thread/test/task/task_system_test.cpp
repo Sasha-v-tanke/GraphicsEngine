@@ -272,9 +272,8 @@ TEST(TaskSystem, NormalizesZeroWorkerCountToOne) {
     EXPECT_EQ(taskSystem.GetWorkerCount(), 1U);
 
     NCommon::WorkerIndex workerIndex{taskSystem.GetWorkerCount()};
-    const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext& context) {
-        workerIndex = context.GetWorkerIndex();
-    });
+    const NCommon::TaskHandle task =
+            taskSystem.Submit([&](NCommon::TaskContext& context) { workerIndex = context.GetWorkerIndex(); });
 
     taskSystem.Wait(task);
 
