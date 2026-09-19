@@ -159,7 +159,6 @@ TEST(TaskSystem, ProvidesTaskHandleAndStableWorkerIndexInContext) {
 
 TEST(TaskSystem, RunsIndependentReadyTasksConcurrentlyOnWorkers) {
     constexpr std::size_t workerCount = 4;
-    NCommon::TaskSystem taskSystem{workerCount};
     CountedGate entered;
     Gate finish;
 
@@ -167,33 +166,40 @@ TEST(TaskSystem, RunsIndependentReadyTasksConcurrentlyOnWorkers) {
     std::mutex observationsMutex;
     std::vector<std::thread::id> threadIds;
     std::vector<NCommon::WorkerIndex> workerIndices;
-    std::vector<NCommon::TaskHandle> tasks;
-    tasks.reserve(workerCount);
+    bool allTasksEntered = false;
 
-    for (std::size_t index = 0; index < workerCount; ++index) {
-        tasks.push_back(taskSystem.Submit([&](NCommon::TaskContext& context) {
-            enteredCount.fetch_add(1);
+    {
+        NCommon::TaskSystem taskSystem{workerCount};
+        std::vector<NCommon::TaskHandle> tasks;
+        tasks.reserve(workerCount);
 
-            {
-                std::lock_guard lock{observationsMutex};
-                threadIds.push_back(std::this_thread::get_id());
-                workerIndices.push_back(context.GetWorkerIndex());
+        for (std::size_t index = 0; index < workerCount; ++index) {
+            tasks.push_back(taskSystem.Submit([&](NCommon::TaskContext& context) {
+                enteredCount.fetch_add(1);
+
+                {
+                    std::lock_guard lock{observationsMutex};
+                    threadIds.push_back(std::this_thread::get_id());
+                    workerIndices.push_back(context.GetWorkerIndex());
+                }
+
+                entered.Arrive();
+                finish.Wait();
+            }));
+        }
+
+        allTasksEntered = entered.WaitForCount(workerCount);
+        finish.Open();
+
+        if (allTasksEntered) {
+            for (const NCommon::TaskHandle& task: tasks) {
+                taskSystem.Wait(task);
             }
-
-            entered.Arrive();
-            finish.Wait();
-        }));
+        }
     }
 
-    ASSERT_TRUE(entered.WaitForCount(workerCount));
+    ASSERT_TRUE(allTasksEntered);
     EXPECT_EQ(enteredCount.load(), workerCount);
-
-    finish.Open();
-
-    for (const NCommon::TaskHandle& task: tasks) {
-        taskSystem.Wait(task);
-    }
-
     ASSERT_EQ(threadIds.size(), workerCount);
     ASSERT_EQ(workerIndices.size(), workerCount);
 
@@ -202,31 +208,38 @@ TEST(TaskSystem, RunsIndependentReadyTasksConcurrentlyOnWorkers) {
     }
 
     for (const NCommon::WorkerIndex workerIndex: workerIndices) {
-        EXPECT_LT(workerIndex.GetValue(), taskSystem.GetWorkerCount());
+        EXPECT_LT(workerIndex.GetValue(), workerCount);
     }
 }
 
 TEST(TaskSystem, IdleWorkerSleepsAndWakesForSubmittedTask) {
-    NCommon::TaskSystem taskSystem{2};
-    EXPECT_EQ(taskSystem.GetWorkerCount(), 2U);
-    taskSystem.WaitIdle();
-
     const std::thread::id applicationThread = std::this_thread::get_id();
     std::thread::id executionThread;
-    NCommon::WorkerIndex workerIndex{taskSystem.GetWorkerCount()};
+    NCommon::WorkerIndex workerIndex{2};
     Gate taskRan;
+    bool taskStarted = false;
 
-    const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext& context) {
-        workerIndex = context.GetWorkerIndex();
-        executionThread = std::this_thread::get_id();
-        taskRan.Open();
-    });
+    {
+        NCommon::TaskSystem taskSystem{2};
+        EXPECT_EQ(taskSystem.GetWorkerCount(), 2U);
+        taskSystem.WaitIdle();
 
-    EXPECT_TRUE(taskRan.WaitForOpen());
-    taskSystem.Wait(task);
+        const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext& context) {
+            workerIndex = context.GetWorkerIndex();
+            executionThread = std::this_thread::get_id();
+            taskRan.Open();
+        });
 
+        taskStarted = taskRan.WaitForOpen();
+
+        if (taskStarted) {
+            taskSystem.Wait(task);
+        }
+    }
+
+    ASSERT_TRUE(taskStarted);
     EXPECT_NE(executionThread, applicationThread);
-    EXPECT_LT(workerIndex.GetValue(), taskSystem.GetWorkerCount());
+    EXPECT_LT(workerIndex.GetValue(), 2U);
 }
 
 TEST(TaskSystem, RepeatedStartStopKeepsWorkerCountAndExecutesWork) {
