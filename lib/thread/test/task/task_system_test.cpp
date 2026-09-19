@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -131,6 +132,100 @@ TEST(TaskSystem, ProvidesTaskHandleAndStableWorkerIndexInContext) {
     for (const auto& [threadId, workerIndex]: workerIndices) {
         static_cast<void>(threadId);
         EXPECT_LT(workerIndex.GetValue(), workerCount);
+    }
+}
+
+TEST(TaskSystem, RunsIndependentReadyTasksConcurrentlyOnWorkers) {
+    constexpr std::size_t workerCount = 4;
+    NCommon::TaskSystem taskSystem{workerCount};
+    Gate finish;
+
+    std::atomic<std::size_t> entered = 0;
+    std::atomic<std::size_t> maxConcurrent = 0;
+    std::mutex threadMutex;
+    std::vector<std::thread::id> threadIds;
+    std::vector<NCommon::TaskHandle> tasks;
+    tasks.reserve(workerCount);
+
+    for (std::size_t index = 0; index < workerCount; ++index) {
+        tasks.push_back(taskSystem.Submit([&](NCommon::TaskContext& context) {
+            EXPECT_LT(context.GetWorkerIndex().GetValue(), taskSystem.GetWorkerCount());
+
+            {
+                std::lock_guard lock{threadMutex};
+                threadIds.push_back(std::this_thread::get_id());
+            }
+
+            const std::size_t current = entered.fetch_add(1) + 1;
+            std::size_t observed = maxConcurrent.load();
+            while (observed < current && !maxConcurrent.compare_exchange_weak(observed, current)) {
+            }
+
+            finish.Wait();
+        }));
+    }
+
+    while (entered.load() < workerCount) {
+        std::this_thread::yield();
+    }
+
+    EXPECT_EQ(maxConcurrent.load(), workerCount);
+
+    finish.Open();
+
+    for (const NCommon::TaskHandle& task: tasks) {
+        taskSystem.Wait(task);
+    }
+
+    for (const std::thread::id threadId: threadIds) {
+        EXPECT_NE(threadId, std::this_thread::get_id());
+    }
+}
+
+TEST(TaskSystem, IdleWorkerSleepsAndWakesForSubmittedTask) {
+    NCommon::TaskSystem taskSystem{2};
+    EXPECT_EQ(taskSystem.GetWorkerCount(), 2U);
+    taskSystem.WaitIdle();
+
+    const std::thread::id applicationThread = std::this_thread::get_id();
+    std::thread::id executionThread;
+    Gate taskRan;
+
+    const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext& context) {
+        EXPECT_LT(context.GetWorkerIndex().GetValue(), taskSystem.GetWorkerCount());
+        executionThread = std::this_thread::get_id();
+        taskRan.Open();
+    });
+
+    EXPECT_TRUE(taskRan.WaitForOpen());
+    taskSystem.Wait(task);
+
+    EXPECT_NE(executionThread, applicationThread);
+}
+
+TEST(TaskSystem, RepeatedStartStopKeepsWorkerCountAndExecutesWork) {
+    constexpr std::size_t workerCount = 3;
+
+    for (std::size_t iteration = 0; iteration < 16; ++iteration) {
+        NCommon::TaskSystem taskSystem{workerCount};
+        EXPECT_EQ(taskSystem.GetWorkerCount(), workerCount);
+
+        std::atomic<std::size_t> completed = 0;
+        std::vector<NCommon::TaskHandle> tasks;
+        tasks.reserve(workerCount * 2);
+
+        for (std::size_t index = 0; index < workerCount * 2; ++index) {
+            tasks.push_back(taskSystem.Submit([&](NCommon::TaskContext& context) {
+                EXPECT_LT(context.GetWorkerIndex().GetValue(), workerCount);
+                completed.fetch_add(1);
+            }));
+        }
+
+        for (const NCommon::TaskHandle& task: tasks) {
+            taskSystem.Wait(task);
+        }
+
+        EXPECT_EQ(completed.load(), workerCount * 2);
     }
 }
 
