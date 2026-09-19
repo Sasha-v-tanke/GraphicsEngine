@@ -121,6 +121,9 @@ public:
 
     [[nodiscard]] ETaskStatus GetStatus(const TaskHandle& task) const;
     [[nodiscard]] std::optional<ErrorInfo> GetError(const TaskHandle& task) const;
+    [[nodiscard]] std::size_t GetWorkerCount() const noexcept {
+        return m_workerCount;
+    }
 
     void Cancel(const TaskHandle& task);
     void Wait(const TaskHandle& task);
@@ -159,6 +162,7 @@ private:
     std::condition_variable m_condition;
     std::condition_variable m_idleCondition;
     std::shared_ptr<OwnerToken> m_ownerToken;
+    const std::size_t m_workerCount;
     std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> m_activeTasks;
     std::deque<std::uint64_t> m_readyTasks;
     std::vector<std::thread> m_workers;

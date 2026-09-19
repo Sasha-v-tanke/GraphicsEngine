@@ -45,6 +45,10 @@ dependency edges и captured resources, которые удерживались 
 `TaskContext::GetTask()` возвращает handle текущей задачи, `TaskContext::GetWorkerIndex()` - stable index worker thread,
 на котором выполняется callback.
 
+`TaskSystem` фиксирует `WorkerCount` при construction. Значение `0` нормализуется в `1`, после запуска pool размер не
+меняется и доступен через `GetWorkerCount()`. `WorkerIndex` всегда находится в диапазоне `[0, GetWorkerCount())` и
+стабилен для конкретного worker thread.
+
 ### Dependencies And Ordering
 
 Dependency set копируется при `Submit()`. Последующие изменения контейнера, из которого был создан `std::span`, не
@@ -56,6 +60,10 @@ Dependency set копируется при `Submit()`. Последующие и
 
 Для независимых `READY` задач порядок выполнения не гарантируется. Зависимости между worker-задачами должны выражаться
 через graph, а не через blocking wait внутри callback.
+
+`READY` задачи находятся в общей очереди scheduler. Workers не привязаны к frame, subsystem или rendering stage:
+любой idle worker может взять любую `READY` задачу. Application thread не выполняет worker callbacks; он только
+публикует задачи, читает состояние и блокируется в `Wait()`/`WaitIdle()`.
 
 ### Error Boundary
 
@@ -80,6 +88,9 @@ Dependency set копируется при `Submit()`. Последующие и
 `WaitIdle()` блокирует caller до момента, когда нет running/active scheduler tasks. Внутренние tombstones в очередях,
 оставшиеся после cancellation, не считаются outstanding work. Terminal task state может оставаться живым во внешних
 handles.
+
+Idle workers блокируются на scheduler wakeup primitive и просыпаются при публикации новой `READY` задачи или shutdown.
+Ожидание idle state не требует busy spin.
 
 ### Ownership And Shutdown
 
