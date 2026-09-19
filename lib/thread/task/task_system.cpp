@@ -79,15 +79,12 @@ TaskHandle TaskContext::Spawn(TaskFunction function) {
 }
 
 TaskSystem::TaskSystem(std::size_t workerCount)
-    : m_ownerToken(std::make_shared<OwnerToken>()) {
-    if (workerCount == 0) {
-        workerCount = 1;
-    }
-
-    m_workers.reserve(workerCount);
+    : m_ownerToken(std::make_shared<OwnerToken>())
+    , m_workerCount(workerCount == 0 ? 1 : workerCount) {
+    m_workers.reserve(m_workerCount);
 
     try {
-        for (std::size_t index = 0; index < workerCount; ++index) {
+        for (std::size_t index = 0; index < m_workerCount; ++index) {
             m_workers.emplace_back([this, workerIndex = WorkerIndex{index}] { WorkerLoop(workerIndex); });
         }
     } catch (...) {

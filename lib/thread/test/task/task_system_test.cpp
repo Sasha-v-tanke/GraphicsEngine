@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -50,6 +51,28 @@ private:
     mutable std::mutex m_mutex;
     std::condition_variable m_condition;
     bool m_open = false;
+};
+
+class CountedGate final {
+public:
+    void Arrive() {
+        {
+            std::lock_guard lock{m_mutex};
+            ++m_count;
+        }
+
+        m_condition.notify_all();
+    }
+
+    [[nodiscard]] bool WaitForCount(std::size_t expected) {
+        std::unique_lock lock{m_mutex};
+        return m_condition.wait_for(lock, 2s, [this, expected] { return m_count >= expected; });
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    std::size_t m_count = 0;
 };
 
 TEST(TaskSystem, RunsTaskLifecycleToCompletion) {
@@ -132,6 +155,142 @@ TEST(TaskSystem, ProvidesTaskHandleAndStableWorkerIndexInContext) {
         static_cast<void>(threadId);
         EXPECT_LT(workerIndex.GetValue(), workerCount);
     }
+}
+
+TEST(TaskSystem, RunsIndependentReadyTasksConcurrentlyOnWorkers) {
+    constexpr std::size_t workerCount = 4;
+    CountedGate entered;
+    Gate finish;
+
+    std::atomic<std::size_t> enteredCount = 0;
+    std::mutex observationsMutex;
+    std::vector<std::thread::id> threadIds;
+    std::vector<NCommon::WorkerIndex> workerIndices;
+    bool allTasksEntered = false;
+
+    {
+        NCommon::TaskSystem taskSystem{workerCount};
+        std::vector<NCommon::TaskHandle> tasks;
+        tasks.reserve(workerCount);
+
+        for (std::size_t index = 0; index < workerCount; ++index) {
+            tasks.push_back(taskSystem.Submit([&](NCommon::TaskContext& context) {
+                enteredCount.fetch_add(1);
+
+                {
+                    std::lock_guard lock{observationsMutex};
+                    threadIds.push_back(std::this_thread::get_id());
+                    workerIndices.push_back(context.GetWorkerIndex());
+                }
+
+                entered.Arrive();
+                finish.Wait();
+            }));
+        }
+
+        allTasksEntered = entered.WaitForCount(workerCount);
+        finish.Open();
+
+        if (allTasksEntered) {
+            for (const NCommon::TaskHandle& task: tasks) {
+                taskSystem.Wait(task);
+            }
+        }
+    }
+
+    ASSERT_TRUE(allTasksEntered);
+    EXPECT_EQ(enteredCount.load(), workerCount);
+    ASSERT_EQ(threadIds.size(), workerCount);
+    ASSERT_EQ(workerIndices.size(), workerCount);
+
+    for (const std::thread::id threadId: threadIds) {
+        EXPECT_NE(threadId, std::this_thread::get_id());
+    }
+
+    for (const NCommon::WorkerIndex workerIndex: workerIndices) {
+        EXPECT_LT(workerIndex.GetValue(), workerCount);
+    }
+}
+
+TEST(TaskSystem, IdleWorkerSleepsAndWakesForSubmittedTask) {
+    const std::thread::id applicationThread = std::this_thread::get_id();
+    std::thread::id executionThread;
+    NCommon::WorkerIndex workerIndex{2};
+    Gate taskRan;
+    bool taskStarted = false;
+
+    {
+        NCommon::TaskSystem taskSystem{2};
+        EXPECT_EQ(taskSystem.GetWorkerCount(), 2U);
+        taskSystem.WaitIdle();
+
+        const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext& context) {
+            workerIndex = context.GetWorkerIndex();
+            executionThread = std::this_thread::get_id();
+            taskRan.Open();
+        });
+
+        taskStarted = taskRan.WaitForOpen();
+
+        if (taskStarted) {
+            taskSystem.Wait(task);
+        }
+    }
+
+    ASSERT_TRUE(taskStarted);
+    EXPECT_NE(executionThread, applicationThread);
+    EXPECT_LT(workerIndex.GetValue(), 2U);
+}
+
+TEST(TaskSystem, RepeatedStartStopKeepsWorkerCountAndExecutesWork) {
+    constexpr std::size_t workerCount = 3;
+
+    for (std::size_t iteration = 0; iteration < 16; ++iteration) {
+        NCommon::TaskSystem taskSystem{workerCount};
+        EXPECT_EQ(taskSystem.GetWorkerCount(), workerCount);
+
+        std::atomic<std::size_t> completed = 0;
+        std::mutex observationsMutex;
+        std::vector<NCommon::WorkerIndex> workerIndices;
+        std::vector<NCommon::TaskHandle> tasks;
+        tasks.reserve(workerCount * 2);
+        workerIndices.reserve(workerCount * 2);
+
+        for (std::size_t index = 0; index < workerCount * 2; ++index) {
+            tasks.push_back(taskSystem.Submit([&](NCommon::TaskContext& context) {
+                {
+                    std::lock_guard lock{observationsMutex};
+                    workerIndices.push_back(context.GetWorkerIndex());
+                }
+
+                completed.fetch_add(1);
+            }));
+        }
+
+        for (const NCommon::TaskHandle& task: tasks) {
+            taskSystem.Wait(task);
+        }
+
+        EXPECT_EQ(completed.load(), workerCount * 2);
+
+        ASSERT_EQ(workerIndices.size(), workerCount * 2);
+        for (const NCommon::WorkerIndex workerIndex: workerIndices) {
+            EXPECT_LT(workerIndex.GetValue(), workerCount);
+        }
+    }
+}
+
+TEST(TaskSystem, NormalizesZeroWorkerCountToOne) {
+    NCommon::TaskSystem taskSystem{0};
+    EXPECT_EQ(taskSystem.GetWorkerCount(), 1U);
+
+    NCommon::WorkerIndex workerIndex{taskSystem.GetWorkerCount()};
+    const NCommon::TaskHandle task =
+            taskSystem.Submit([&](NCommon::TaskContext& context) { workerIndex = context.GetWorkerIndex(); });
+
+    taskSystem.Wait(task);
+
+    EXPECT_EQ(workerIndex.GetValue(), 0U);
 }
 
 TEST(TaskSystem, RejectsInvalidAndForeignHandles) {
