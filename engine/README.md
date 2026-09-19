@@ -1,5 +1,53 @@
 # Engine
 
+## Engine ownership
+
+`Engine` является owner/orchestrator CPU runtime.
+Он владеет runtime subsystems и задаёт их lifetime:
+
+- `TaskSystem`;
+- `FrameScheduler`;
+- будущие `World`;
+- будущие `Resources`;
+- будущие `Renderer`;
+- будущие `Graphics`.
+
+Подключение новых subsystems должно происходить как расширение owned runtime состава Engine.
+Роль Engine при этом не меняется: он создаёт subsystems, запускает frame work, хранит runtime error channel и
+останавливает runtime в безопасном порядке.
+
+Публичный API Engine не содержит GLFW, Vulkan или других backend-specific типов.
+Backend integration должна оставаться за private runtime/subsystem boundary.
+
+## Lifecycle
+
+Engine имеет состояния:
+
+```text
+CREATED -> RUNNING -> STOPPING -> STOPPED
+```
+
+`Start()` создаёт owned subsystems.
+Если создание одного из subsystems падает, уже созданные части уничтожаются, Engine переходит в `STOPPED`, а исходная
+ошибка пробрасывается вызывающему коду.
+
+`Update()` и `Draw()` не выполняют весь frame pipeline синхронно.
+Они только резервируют frame work и ставят его в `TaskSystem`.
+Backpressure приходит от `FrameScheduler`: если следующий frame slot занят, `Update()` возвращает `false`.
+
+## Runtime errors
+
+Ошибки, возникшие внутри runtime work, сохраняются в Engine error channel.
+Последняя ошибка доступна через `GetLastError()`.
+`ClearLastError()` очищает канал.
+
+## Shutdown order
+
+`Stop()` переводит Engine в `STOPPING`, запрещая новый публичный frame work, затем ждёт завершения pending work в
+`TaskSystem`.
+После этого Engine очищает pending frame handles, уничтожает frame/runtime subsystems и переходит в `STOPPED`.
+Такой порядок нужен, чтобы frame-local данные и будущие renderer/resource owners не переживали свои runtime owners.
+
 ## FrameScheduler
 
 `FrameScheduler` управляет bounded lifetime одновременно активных кадров Engine.
