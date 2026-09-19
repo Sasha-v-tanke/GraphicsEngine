@@ -1,9 +1,9 @@
 #include <cstddef>
 #include <memory_resource>
 
-#include <gtest/gtest.h>
 #include <engine/engine_config.h>
-#include <engine/internal/frame_scheduler.h>
+#include <engine/controller/frame_scheduler.h>
+#include <gtest/gtest.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -30,9 +30,7 @@ TEST(FrameScheduler, RejectsZeroMaxActiveFrames) {
     try {
         FrameScheduler scheduler{config};
     } catch (const NCommon::Exception& exception) {
-        EXPECT_EQ(
-                exception.code(),
-                NCommon::make_error_code(NCommon::EError::INVALID_ARGUMENT));
+        EXPECT_EQ(exception.code(), NCommon::make_error_code(NCommon::EError::INVALID_ARGUMENT));
 
         return;
     }
@@ -166,9 +164,7 @@ TEST(FrameScheduler, RejectsStaleHandleAfterRecycle) {
     CompleteFrame(scheduler, frame);
     scheduler.RecycleFrame(frame);
 
-    EXPECT_THROW(
-            static_cast<void>(scheduler.GetState(frame)),
-            NCommon::Exception);
+    EXPECT_THROW(static_cast<void>(scheduler.GetState(frame)), NCommon::Exception);
 }
 
 TEST(FrameScheduler, RejectsStaleHandleAfterSlotReuse) {
@@ -186,9 +182,7 @@ TEST(FrameScheduler, RejectsStaleHandleAfterSlotReuse) {
     EXPECT_EQ(first.GetSlotIndex(), second.GetSlotIndex());
     EXPECT_NE(first.GetGeneration(), second.GetGeneration());
 
-    EXPECT_THROW(
-            scheduler.ArmFrame(first),
-            NCommon::Exception);
+    EXPECT_THROW(scheduler.ArmFrame(first), NCommon::Exception);
 }
 
 TEST(FrameScheduler, FollowsRequiredStateLifecycle) {
@@ -227,33 +221,23 @@ TEST(FrameScheduler, RejectsIllegalStateTransitions) {
 
     const FrameHandle frame = *scheduler.TryAcquireFrame();
 
-    EXPECT_THROW(
-            scheduler.BeginUpdate(frame),
-            NCommon::Exception);
+    EXPECT_THROW(scheduler.BeginUpdate(frame), NCommon::Exception);
 
     scheduler.ArmFrame(frame);
 
-    EXPECT_THROW(
-            scheduler.ArmFrame(frame),
-            NCommon::Exception);
+    EXPECT_THROW(scheduler.ArmFrame(frame), NCommon::Exception);
 
     scheduler.BeginUpdate(frame);
 
-    EXPECT_THROW(
-            scheduler.BeginFinalize(frame),
-            NCommon::Exception);
+    EXPECT_THROW(scheduler.BeginFinalize(frame), NCommon::Exception);
 
     scheduler.EndUpdate(frame);
 
-    EXPECT_THROW(
-            scheduler.CompleteFrame(frame),
-            NCommon::Exception);
+    EXPECT_THROW(scheduler.CompleteFrame(frame), NCommon::Exception);
 
     scheduler.BeginFinalize(frame);
 
-    EXPECT_THROW(
-            scheduler.RecycleFrame(frame),
-            NCommon::Exception);
+    EXPECT_THROW(scheduler.RecycleFrame(frame), NCommon::Exception);
 }
 
 TEST(FrameScheduler, KeepsNextMappedSlotAsBackpressureBoundary) {
@@ -288,17 +272,13 @@ TEST(FrameScheduler, OwnsIndependentFrameMemoryResources) {
     const FrameHandle first = *scheduler.TryAcquireFrame();
     const FrameHandle second = *scheduler.TryAcquireFrame();
 
-    std::pmr::memory_resource& firstResource =
-            scheduler.GetMemoryResource(first);
+    std::pmr::memory_resource& firstResource = scheduler.GetMemoryResource(first);
 
-    std::pmr::memory_resource& secondResource =
-            scheduler.GetMemoryResource(second);
+    std::pmr::memory_resource& secondResource = scheduler.GetMemoryResource(second);
 
     EXPECT_NE(&firstResource, &secondResource);
 
-    EXPECT_EQ(
-            &firstResource,
-            &scheduler.GetMemoryResource(first));
+    EXPECT_EQ(&firstResource, &scheduler.GetMemoryResource(first));
 }
 
 TEST(FrameScheduler, RejectsMemoryAccessThroughStaleHandle) {
@@ -311,9 +291,7 @@ TEST(FrameScheduler, RejectsMemoryAccessThroughStaleHandle) {
     CompleteFrame(scheduler, frame);
     scheduler.RecycleFrame(frame);
 
-    EXPECT_THROW(
-            static_cast<void>(scheduler.GetMemoryResource(frame)),
-            NCommon::Exception);
+    EXPECT_THROW(static_cast<void>(scheduler.GetMemoryResource(frame)), NCommon::Exception);
 }
 
 TEST(FrameScheduler, ReportsConfiguredSlotCount) {

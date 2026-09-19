@@ -114,11 +114,8 @@ private:
 
     [[nodiscard]] const FrameExecutionSlot& GetSlotLocked(FrameHandle frame) const;
 
-    void TransitionLocked(
-            FrameHandle frame,
-            FrameExecutionSlot& slot,
-            EFrameState expectedState,
-            EFrameState nextState);
+    void
+    TransitionLocked(FrameHandle frame, FrameExecutionSlot& slot, EFrameState expectedState, EFrameState nextState);
 
 private:
     mutable std::mutex m_mutex;
