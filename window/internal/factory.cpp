@@ -6,6 +6,10 @@
 #include <lib/common/error/exception.h>
 #include <window/internal/engine.h>
 
+#ifdef GRAPHICS_ENGINE_WINDOW_HAS_GLFW
+    #include <window/internal/glfw/window_engine.h>
+#endif
+
 namespace NWindow::NInternal {
 
 namespace {
@@ -39,6 +43,12 @@ std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config) {
     if (g_testFactory != nullptr) {
         return ValidateWindowEngine(g_testFactory(config));
     }
+
+#ifdef GRAPHICS_ENGINE_WINDOW_HAS_GLFW
+    if (config.Type == EWindowType::GLFW) {
+        return ValidateWindowEngine(NGlfw::CreateWindowEngine(config));
+    }
+#endif
 
     ThrowUnavailable(config.Type);
 }
