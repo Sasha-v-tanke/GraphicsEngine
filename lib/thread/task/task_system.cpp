@@ -383,6 +383,21 @@ void TaskSystem::PropagateCancellationLocked(Task& task) {
     }
 }
 
+void TaskSystem::CancelPendingTasksLocked() noexcept {
+    for (auto taskIt = m_activeTasks.begin(); taskIt != m_activeTasks.end();) {
+        Task& task = taskIt->second->Task;
+
+        if (task.Status != ETaskStatus::WAITING && task.Status != ETaskStatus::READY) {
+            ++taskIt;
+            continue;
+        }
+
+        task.Status = ETaskStatus::CANCELLED;
+        ReleaseExecutionPayloadLocked(task);
+        taskIt = m_activeTasks.erase(taskIt);
+    }
+}
+
 void TaskSystem::ReleaseExecutionPayloadLocked(Task& task) {
     task.Function = {};
     task.Dependencies.clear();
@@ -455,9 +470,11 @@ void TaskSystem::StopWorkers() noexcept {
     {
         std::lock_guard lock{m_mutex};
         m_stopping = true;
+        CancelPendingTasksLocked();
     }
 
     m_condition.notify_all();
+    m_idleCondition.notify_all();
 
     for (std::thread& worker: m_workers) {
         if (worker.joinable()) {
