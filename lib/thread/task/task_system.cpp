@@ -6,7 +6,7 @@
 #include <string>
 #include <system_error>
 #ifndef NDEBUG
-#include <unordered_set>
+    #include <unordered_set>
 #endif
 #include <utility>
 
@@ -160,9 +160,8 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
         }
 
         if (task.Status != ETaskStatus::CANCELLED) {
-            task.Status =
-                    task.RemainingDependencies.load(std::memory_order_relaxed) == 0 ? ETaskStatus::READY
-                                                                                    : ETaskStatus::WAITING;
+            task.Status = task.RemainingDependencies.load(std::memory_order_relaxed) == 0 ? ETaskStatus::READY
+                                                                                          : ETaskStatus::WAITING;
         }
 
         const TaskHandle handle{id, state};
@@ -347,10 +346,7 @@ void TaskSystem::CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::o
                 dependentTask.RemainingDependencies.fetch_sub(1, std::memory_order_acq_rel);
 
         if (previousRemaining == 0) {
-            GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,
-                                  "Task {} dependency counter underflow while completing task {}",
-                                  dependent,
-                                  taskId);
+            FailDagInvariantLocked("Task dependency counter underflow while completing prerequisite");
         }
 
         if (previousRemaining == 1) {
@@ -394,6 +390,10 @@ void TaskSystem::ReleaseExecutionPayloadLocked(Task& task) {
     task.RemainingDependencies.store(0, std::memory_order_relaxed);
 }
 
+[[noreturn]] void TaskSystem::FailDagInvariantLocked([[maybe_unused]] const char* message) noexcept {
+    std::terminate();
+}
+
 #ifndef NDEBUG
 void TaskSystem::ValidateDagLocked() const {
     for (const auto& [taskId, state]: m_activeTasks) {
@@ -403,10 +403,7 @@ void TaskSystem::ValidateDagLocked() const {
 
         for (const std::uint64_t dependencyId: task.Dependencies) {
             if (!uniqueDependencies.insert(dependencyId).second) {
-                GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,
-                                      "Task {} has duplicate dependency {}",
-                                      taskId,
-                                      dependencyId);
+                FailDagInvariantLocked("Task has duplicate dependency");
             }
 
             const auto dependencyIt = m_activeTasks.find(dependencyId);
@@ -418,10 +415,7 @@ void TaskSystem::ValidateDagLocked() const {
             const std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
 
             if (std::ranges::find(dependents, taskId) == dependents.end()) {
-                GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,
-                                      "Task {} dependency {} does not link back to dependent",
-                                      taskId,
-                                      dependencyId);
+                FailDagInvariantLocked("Task dependency does not link back to dependent");
             }
 
             if (!IsSuccessfulLocked(dependencyIt->second->Task)) {
@@ -431,19 +425,14 @@ void TaskSystem::ValidateDagLocked() const {
 
         if (task.Status == ETaskStatus::WAITING &&
             task.RemainingDependencies.load(std::memory_order_relaxed) != unfinishedDependencies) {
-            GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,
-                                  "Task {} remaining dependency counter is inconsistent",
-                                  taskId);
+            FailDagInvariantLocked("Task remaining dependency counter is inconsistent");
         }
 
         std::unordered_set<std::uint64_t> uniqueDependents;
 
         for (const std::uint64_t dependentId: task.Dependents) {
             if (!uniqueDependents.insert(dependentId).second) {
-                GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,
-                                      "Task {} has duplicate dependent {}",
-                                      taskId,
-                                      dependentId);
+                FailDagInvariantLocked("Task has duplicate dependent");
             }
 
             const auto dependentIt = m_activeTasks.find(dependentId);
@@ -455,10 +444,7 @@ void TaskSystem::ValidateDagLocked() const {
             const std::vector<std::uint64_t>& dependencies = dependentIt->second->Task.Dependencies;
 
             if (std::ranges::find(dependencies, taskId) == dependencies.end()) {
-                GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,
-                                      "Task {} dependent {} does not link back to dependency",
-                                      taskId,
-                                      dependentId);
+                FailDagInvariantLocked("Task dependent does not link back to dependency");
             }
         }
     }

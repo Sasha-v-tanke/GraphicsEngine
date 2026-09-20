@@ -181,6 +181,7 @@ private:
     void CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
     void PropagateCancellationLocked(Task& task);
     static void ReleaseExecutionPayloadLocked(Task& task);
+    [[noreturn]] static void FailDagInvariantLocked(const char* message) noexcept;
 #ifndef NDEBUG
     void ValidateDagLocked() const;
 #endif
