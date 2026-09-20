@@ -396,6 +396,112 @@ TEST(TaskSystem, RunsDependentTaskAfterMultiplePrerequisitesComplete) {
     EXPECT_EQ(order.back(), 3);
 }
 
+TEST(TaskSystem, RunsDependencyChainsInOrder) {
+    NCommon::TaskSystem taskSystem{3};
+
+    std::atomic<int> completedStage = 0;
+    NCommon::TaskHandle previous = taskSystem.Submit([&](NCommon::TaskContext&) { completedStage.store(1); });
+
+    for (int stage = 2; stage <= 8; ++stage) {
+        const std::vector<NCommon::TaskHandle> dependencies{previous};
+        previous = taskSystem.Submit(
+                [&, stage](NCommon::TaskContext&) {
+                    EXPECT_EQ(completedStage.load(), stage - 1);
+                    completedStage.store(stage);
+                },
+                dependencies);
+    }
+
+    taskSystem.Wait(previous);
+
+    EXPECT_EQ(completedStage.load(), 8);
+}
+
+TEST(TaskSystem, RunsFanOutDependentsAfterSharedDependencyCompletes) {
+    NCommon::TaskSystem taskSystem{4};
+    Gate dependencyFinish;
+
+    const NCommon::TaskHandle dependency = taskSystem.Submit([&](NCommon::TaskContext&) { dependencyFinish.Wait(); });
+    const std::vector<NCommon::TaskHandle> dependencies{dependency};
+
+    std::atomic<std::size_t> dependentsCompleted = 0;
+    std::vector<NCommon::TaskHandle> dependents;
+    dependents.reserve(12);
+
+    for (std::size_t index = 0; index < 12; ++index) {
+        dependents.push_back(taskSystem.Submit(
+                [&](NCommon::TaskContext&) {
+                    EXPECT_EQ(taskSystem.GetStatus(dependency), NCommon::ETaskStatus::COMPLETED);
+                    dependentsCompleted.fetch_add(1);
+                },
+                dependencies));
+    }
+
+    for (const NCommon::TaskHandle& dependent: dependents) {
+        EXPECT_EQ(taskSystem.GetStatus(dependent), NCommon::ETaskStatus::WAITING);
+    }
+
+    dependencyFinish.Open();
+
+    for (const NCommon::TaskHandle& dependent: dependents) {
+        taskSystem.Wait(dependent);
+    }
+
+    EXPECT_EQ(dependentsCompleted.load(), dependents.size());
+}
+
+TEST(TaskSystem, RunningTaskPublishesDynamicChildWithDependencies) {
+    NCommon::TaskSystem taskSystem{2};
+    Gate dependencyFinish;
+
+    const NCommon::TaskHandle dependency = taskSystem.Submit([&](NCommon::TaskContext&) { dependencyFinish.Wait(); });
+    std::optional<NCommon::TaskHandle> child;
+    bool childSawDependency = false;
+
+    const NCommon::TaskHandle parent = taskSystem.Submit([&](NCommon::TaskContext& context) {
+        const std::vector<NCommon::TaskHandle> dependencies{dependency};
+        child = context.Spawn(
+                [&](NCommon::TaskContext&) {
+                    childSawDependency = taskSystem.GetStatus(dependency) == NCommon::ETaskStatus::COMPLETED;
+                },
+                dependencies);
+    });
+
+    taskSystem.Wait(parent);
+    ASSERT_TRUE(child.has_value());
+    EXPECT_EQ(taskSystem.GetStatus(*child), NCommon::ETaskStatus::WAITING);
+
+    dependencyFinish.Open();
+    taskSystem.Wait(*child);
+
+    EXPECT_TRUE(childSawDependency);
+}
+
+TEST(TaskSystem, HandlesConcurrentDependencyCompletionAndDependentPublication) {
+    constexpr std::size_t iterations = 128;
+
+    for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
+        NCommon::TaskSystem taskSystem{2};
+        Gate dependencyFinish;
+
+        const NCommon::TaskHandle dependency =
+                taskSystem.Submit([&](NCommon::TaskContext&) { dependencyFinish.Wait(); });
+
+        std::optional<NCommon::TaskHandle> dependent;
+        std::thread publisher{[&] {
+            const std::vector<NCommon::TaskHandle> dependencies{dependency};
+            dependent = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+        }};
+
+        dependencyFinish.Open();
+        publisher.join();
+
+        ASSERT_TRUE(dependent.has_value());
+        taskSystem.Wait(*dependent);
+        EXPECT_EQ(taskSystem.GetStatus(*dependent), NCommon::ETaskStatus::COMPLETED);
+    }
+}
+
 TEST(TaskSystem, CancelsReadyAndWaitingTasks) {
     NCommon::TaskSystem taskSystem{1};
     Gate blockerFinish;

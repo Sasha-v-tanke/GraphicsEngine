@@ -52,11 +52,17 @@ dependency edges и captured resources, которые удерживались 
 ### Dependencies And Ordering
 
 Dependency set копируется при `Submit()`. Последующие изменения контейнера, из которого был создан `std::span`, не
-меняют dependency graph.
+меняют dependency graph. После publication dependency edges задачи immutable: новые ordering constraints выражаются
+только публикацией новой задачи с собственным dependency set.
 
 Задача становится `READY`, когда все prerequisites завершились `COMPLETED`. Если любой prerequisite завершился
 `FAILED` или `CANCELLED`, dependent task переходит в `CANCELLED`. Несколько dependents и несколько prerequisites
-поддерживаются.
+поддерживаются: fan-in хранится как `RemainingDependencies`, fan-out - как список dependents у каждой prerequisite.
+Завершающаяся prerequisite atomically уменьшает `RemainingDependencies` каждого dependent; task, которая последней
+довела счётчик до `0`, переводит dependent в `READY`.
+
+Running task может публиковать новые задачи через `TaskContext::Spawn()`. Если child зависит от уже существующих задач,
+нужно передать dependencies в `Spawn(function, dependencies)`, а не блокировать worker ожиданием.
 
 Для независимых `READY` задач порядок выполнения не гарантируется. Зависимости между worker-задачами должны выражаться
 через graph, а не через blocking wait внутри callback.
@@ -91,6 +97,9 @@ handles.
 
 Idle workers блокируются на scheduler wakeup primitive и просыпаются при публикации новой `READY` задачи или shutdown.
 Ожидание idle state не требует busy spin.
+
+Debug builds выполняют lightweight validation DAG invariants при изменении graph/state: duplicate edges, обратные
+dependency/dependent links и consistency `RemainingDependencies`. Эти проверки не входят в release hot path.
 
 ### Ownership And Shutdown
 

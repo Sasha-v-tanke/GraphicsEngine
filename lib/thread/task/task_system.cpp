@@ -5,6 +5,9 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#ifndef NDEBUG
+    #include <unordered_set>
+#endif
 #include <utility>
 
 #include <lib/common/error/exception.h>
@@ -78,6 +81,10 @@ TaskHandle TaskContext::Spawn(TaskFunction function) {
     return m_taskSystem->Submit(std::move(function));
 }
 
+TaskHandle TaskContext::Spawn(TaskFunction function, std::span<const TaskHandle> dependencies) {
+    return m_taskSystem->Submit(std::move(function), dependencies);
+}
+
 TaskSystem::TaskSystem(std::size_t workerCount)
     : m_ownerToken(std::make_shared<OwnerToken>())
     , m_workerCount(workerCount == 0 ? 1 : workerCount) {
@@ -146,14 +153,15 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
             if (!IsTerminalLocked(dependencyTask)) {
                 dependencyTask.Dependents.push_back(id);
                 linkedDependencies.push_back(dependency.GetId());
-                ++task.PendingDependencies;
+                task.RemainingDependencies.fetch_add(1, std::memory_order_relaxed);
             } else if (!IsSuccessfulLocked(dependencyTask)) {
                 task.Status = ETaskStatus::CANCELLED;
             }
         }
 
         if (task.Status != ETaskStatus::CANCELLED) {
-            task.Status = task.PendingDependencies == 0 ? ETaskStatus::READY : ETaskStatus::WAITING;
+            task.Status = task.RemainingDependencies.load(std::memory_order_relaxed) == 0 ? ETaskStatus::READY
+                                                                                          : ETaskStatus::WAITING;
         }
 
         const TaskHandle handle{id, state};
@@ -170,6 +178,9 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
             m_idleCondition.notify_all();
         }
 
+#ifndef NDEBUG
+        ValidateDagLocked();
+#endif
         return handle;
     } catch (...) {
         for (const std::uint64_t dependencyId: linkedDependencies) {
@@ -311,6 +322,9 @@ void TaskSystem::CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::o
         PropagateCancellationLocked(storedTask);
         ReleaseExecutionPayloadLocked(storedTask);
         m_activeTasks.erase(taskId);
+#ifndef NDEBUG
+        ValidateDagLocked();
+#endif
         m_idleCondition.notify_all();
         return;
     }
@@ -328,15 +342,23 @@ void TaskSystem::CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::o
             continue;
         }
 
-        --dependentTask.PendingDependencies;
+        const std::size_t previousRemaining =
+                dependentTask.RemainingDependencies.fetch_sub(1, std::memory_order_acq_rel);
 
-        if (dependentTask.PendingDependencies == 0) {
+        if (previousRemaining == 0) {
+            FailDagInvariantLocked("Task dependency counter underflow while completing prerequisite");
+        }
+
+        if (previousRemaining == 1) {
             MakeReadyLocked(dependent, dependentTask);
         }
     }
 
     ReleaseExecutionPayloadLocked(storedTask);
     m_activeTasks.erase(taskId);
+#ifndef NDEBUG
+    ValidateDagLocked();
+#endif
     m_idleCondition.notify_all();
 }
 
@@ -365,8 +387,69 @@ void TaskSystem::ReleaseExecutionPayloadLocked(Task& task) {
     task.Function = {};
     task.Dependencies.clear();
     task.Dependents.clear();
-    task.PendingDependencies = 0;
+    task.RemainingDependencies.store(0, std::memory_order_relaxed);
 }
+
+[[noreturn]] void TaskSystem::FailDagInvariantLocked([[maybe_unused]] const char* message) noexcept {
+    std::terminate();
+}
+
+#ifndef NDEBUG
+void TaskSystem::ValidateDagLocked() const {
+    for (const auto& [taskId, state]: m_activeTasks) {
+        const Task& task = state->Task;
+        std::unordered_set<std::uint64_t> uniqueDependencies;
+        std::size_t unfinishedDependencies = 0;
+
+        for (const std::uint64_t dependencyId: task.Dependencies) {
+            if (!uniqueDependencies.insert(dependencyId).second) {
+                FailDagInvariantLocked("Task has duplicate dependency");
+            }
+
+            const auto dependencyIt = m_activeTasks.find(dependencyId);
+
+            if (dependencyIt == m_activeTasks.end()) {
+                continue;
+            }
+
+            const std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
+
+            if (std::ranges::find(dependents, taskId) == dependents.end()) {
+                FailDagInvariantLocked("Task dependency does not link back to dependent");
+            }
+
+            if (!IsSuccessfulLocked(dependencyIt->second->Task)) {
+                ++unfinishedDependencies;
+            }
+        }
+
+        if (task.Status == ETaskStatus::WAITING &&
+            task.RemainingDependencies.load(std::memory_order_relaxed) != unfinishedDependencies) {
+            FailDagInvariantLocked("Task remaining dependency counter is inconsistent");
+        }
+
+        std::unordered_set<std::uint64_t> uniqueDependents;
+
+        for (const std::uint64_t dependentId: task.Dependents) {
+            if (!uniqueDependents.insert(dependentId).second) {
+                FailDagInvariantLocked("Task has duplicate dependent");
+            }
+
+            const auto dependentIt = m_activeTasks.find(dependentId);
+
+            if (dependentIt == m_activeTasks.end()) {
+                continue;
+            }
+
+            const std::vector<std::uint64_t>& dependencies = dependentIt->second->Task.Dependencies;
+
+            if (std::ranges::find(dependencies, taskId) == dependencies.end()) {
+                FailDagInvariantLocked("Task dependent does not link back to dependency");
+            }
+        }
+    }
+}
+#endif
 
 void TaskSystem::StopWorkers() noexcept {
     {
