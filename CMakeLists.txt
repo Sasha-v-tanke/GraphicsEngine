@@ -59,8 +59,9 @@ include(external/external.cmake)
 include(lib/lib.cmake)
 include(window/module.cmake)
 include(engine/module.cmake)
+include(application/module.cmake)
 
-PACKAGE_ROOT(Window) # TODO temporary root (need to be moved to application)
+PACKAGE_ROOT(Application)
 
 if (GRAPHICS_ENGINE_INSTALL)
     include(cmake/package.cmake)

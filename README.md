@@ -72,6 +72,54 @@ Window system и graphics backend являются независимыми по
 Места, где необходима информация сразу о двух сторонах, например создание Vulkan surface для GLFW, выносятся в отдельный
 integration layer.
 
+### Application main loop
+
+`Application` является единственным внешним владельцем main loop. Пользователь создаёт наследника, задаёт
+`ApplicationConfig`, переопределяет `OnUpdate()` и `OnDraw()`, затем вызывает `Run()`:
+
+```cpp
+#include <application/application.h>
+#include <window/window_type.h>
+
+class MyApplication final: public NApplication::Application {
+public:
+    MyApplication()
+        : Application({
+                  .Window = NWindow::WindowConfig{NWindow::EWindowType::GLFW},
+          }) {
+    }
+
+private:
+    void OnUpdate() override {
+    }
+
+    void OnDraw() override {
+    }
+};
+
+int main() {
+    MyApplication application;
+    application.Run();
+}
+```
+
+Каждый кадр выполняется в фиксированном порядке:
+
+```text
+Window events
+user OnUpdate()
+Engine Update checkpoint
+user OnDraw()
+Engine Draw checkpoint
+```
+
+Два `Update` checkpoint подряд запрещены, как и `Draw` checkpoint без предшествующего `Update`. При выходе
+`Application` сначала останавливает `Engine`, затем уничтожает `Window`.
+
+`Application`, Window events и пользовательские callbacks имеют affinity к application/main thread. Этот поток не
+является worker-потоком `TaskSystem`: workers выполняют только задачи engine/runtime, а user callbacks и Window API не
+должны исполняться из worker callbacks.
+
 ### Границы абстракций
 
 - ECS не знает о Render, Vulkan или OpenGL.
