@@ -648,6 +648,96 @@ TEST(TaskSystem, CancelsMultipleDependentsWhenDependencyFails) {
     EXPECT_EQ(taskSystem.GetStatus(third), NCommon::ETaskStatus::CANCELLED);
 }
 
+TEST(TaskSystem, CancelsFailedDependencyTree) {
+    NCommon::TaskSystem taskSystem{2};
+
+    const NCommon::TaskHandle root = taskSystem.Submit(
+            [](NCommon::TaskContext&) { GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "root"); });
+
+    const std::vector<NCommon::TaskHandle> rootDependencies{root};
+    const NCommon::TaskHandle left = taskSystem.Submit([](NCommon::TaskContext&) {}, rootDependencies);
+    const NCommon::TaskHandle right = taskSystem.Submit([](NCommon::TaskContext&) {}, rootDependencies);
+
+    const std::vector<NCommon::TaskHandle> childDependencies{left, right};
+    const NCommon::TaskHandle leaf = taskSystem.Submit([](NCommon::TaskContext&) {}, childDependencies);
+
+    taskSystem.Wait(leaf);
+
+    EXPECT_EQ(taskSystem.GetStatus(root), NCommon::ETaskStatus::FAILED);
+    EXPECT_EQ(taskSystem.GetStatus(left), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_EQ(taskSystem.GetStatus(right), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_EQ(taskSystem.GetStatus(leaf), NCommon::ETaskStatus::CANCELLED);
+}
+
+TEST(TaskSystem, CancelsDependentsWhenDependencyIsCancelled) {
+    NCommon::TaskSystem taskSystem{1};
+    Gate blockerFinish;
+
+    const NCommon::TaskHandle blocker = taskSystem.Submit([&](NCommon::TaskContext&) { blockerFinish.Wait(); });
+    const std::vector<NCommon::TaskHandle> blockerDependencies{blocker};
+    const NCommon::TaskHandle dependency = taskSystem.Submit([](NCommon::TaskContext&) {}, blockerDependencies);
+    const std::vector<NCommon::TaskHandle> dependencies{dependency};
+    const NCommon::TaskHandle dependent = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+
+    taskSystem.Cancel(dependency);
+    blockerFinish.Open();
+
+    taskSystem.Wait(dependent);
+
+    EXPECT_EQ(taskSystem.GetStatus(dependency), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_EQ(taskSystem.GetStatus(dependent), NCommon::ETaskStatus::CANCELLED);
+}
+
+TEST(TaskSystem, ShutdownCancelsPendingWorkAndLetsRunningTasksFinish) {
+    auto* taskSystem = new NCommon::TaskSystem{2};
+
+    CountedGate runningEntered;
+    Gate finishRunning;
+    Gate deleteStarted;
+    std::atomic<std::size_t> runningFinished = 0;
+    std::atomic<std::size_t> queuedRan = 0;
+    std::atomic<bool> stoppingRejectedSubmission = false;
+
+    for (std::size_t index = 0; index < 2; ++index) {
+        taskSystem->Submit([&, index](NCommon::TaskContext& context) {
+            runningEntered.Arrive();
+            finishRunning.Wait();
+
+            if (index == 0) {
+                while (!stoppingRejectedSubmission.load()) {
+                    try {
+                        context.Spawn([](NCommon::TaskContext&) {});
+                        std::this_thread::yield();
+                    } catch (const NCommon::Exception&) {
+                        stoppingRejectedSubmission = true;
+                    }
+                }
+            }
+
+            runningFinished.fetch_add(1);
+        });
+    }
+
+    ASSERT_TRUE(runningEntered.WaitForCount(2));
+
+    for (std::size_t index = 0; index < 32; ++index) {
+        taskSystem->Submit([&](NCommon::TaskContext&) { queuedRan.fetch_add(1); });
+    }
+
+    std::thread destroyer{[&] {
+        deleteStarted.Open();
+        delete taskSystem;
+    }};
+
+    ASSERT_TRUE(deleteStarted.WaitForOpen());
+    finishRunning.Open();
+    destroyer.join();
+
+    EXPECT_EQ(runningFinished.load(), 2U);
+    EXPECT_EQ(queuedRan.load(), 0U);
+    EXPECT_TRUE(stoppingRejectedSubmission.load());
+}
+
 TEST(TaskSystem, ReleasesCallablePayloadAfterTerminalState) {
     NCommon::TaskSystem taskSystem{1};
     std::weak_ptr<int> weakPayload;

@@ -82,6 +82,10 @@ Running task может публиковать новые задачи чере�
 
 `GetError()` возвращает `std::optional<ErrorInfo>`. Для `COMPLETED` и `CANCELLED` задач ошибки нет.
 
+`FAILED` и `CANCELLED` являются terminal states. По умолчанию `FAILED` или `CANCELLED` prerequisite каскадно отменяет
+все non-running dependents. Running task не прерывается принудительно: она сама доходит до callback boundary, а итог
+фиксируется как `COMPLETED` или `FAILED`.
+
 ### Thread Safety
 
 `Submit()`, `GetStatus()`, `GetError()`, `Cancel()`, `Wait()` и `WaitIdle()` можно вызывать с внешних потоков
@@ -106,5 +110,7 @@ dependency/dependent links и consistency `RemainingDependencies`. Эти про
 `TaskSystem` владеет worker threads. Конструктор запускает pool и rollback-ит частично созданные workers, если запуск
 одного из threads бросает исключение.
 
-Деструктор переводит pool в stopping state, будит workers и join-ит все созданные threads. Уже взятые worker-ами задачи
-могут завершиться; новые задачи после начала shutdown отклоняются.
+Деструктор переводит pool в stopping state. После этого normal runtime submission через `Submit()` или
+`TaskContext::Spawn()` отклоняется. `READY` и `WAITING` tasks отменяются и drained как queue tombstones; cancellation
+каскадирует в их dependents. Уже взятые worker-ами `RUNNING` tasks не убиваются принудительно и могут завершить callback.
+Shutdown будит workers и join-ит все созданные threads, поэтому после разрушения `TaskSystem` worker threads не остаются.

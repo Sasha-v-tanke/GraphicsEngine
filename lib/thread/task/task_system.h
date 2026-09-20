@@ -180,6 +180,7 @@ private:
     void MakeReadyLocked(std::uint64_t taskId, Task& task);
     void CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
     void PropagateCancellationLocked(Task& task);
+    void CancelPendingTasksLocked();
     static void ReleaseExecutionPayloadLocked(Task& task);
     [[noreturn]] static void FailDagInvariantLocked(const char* message) noexcept;
 #ifndef NDEBUG
