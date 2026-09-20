@@ -1,4 +1,7 @@
+#include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -6,7 +9,8 @@
 
 #include <application/application.h>
 #include <application/application_config.h>
-#include <engine/engine.h>
+#include <application/internal/engine_factory.h>
+#include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <window/internal/engine.h>
@@ -16,8 +20,11 @@
 
 namespace {
 
+using namespace std::chrono_literals;
+
 struct FakeWindowState {
     NWindow::NInternal::IWindowEventSink* Sink = nullptr;
+    void (*OnProcessEvents)(FakeWindowState& state) = nullptr;
     bool ShouldClose = false;
     bool EmitCloseOnNextProcessEvents = false;
     int ProcessEventsCount = 0;
@@ -72,6 +79,10 @@ public:
         m_state.Events.emplace_back("window.events");
         ++m_state.ProcessEventsCount;
 
+        if (m_state.OnProcessEvents != nullptr) {
+            m_state.OnProcessEvents(m_state);
+        }
+
         if (m_state.EmitCloseOnNextProcessEvents) {
             m_state.EmitCloseOnNextProcessEvents = false;
             m_state.ShouldClose = true;
@@ -86,6 +97,72 @@ private:
 
 std::unique_ptr<NWindow::NInternal::IWindowEngine> CreateFakeWindowEngine(const NWindow::WindowConfig&) {
     return std::make_unique<FakeWindowEngine>(*g_fakeState);
+}
+
+class BlockingFirstDrawRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    void Update(NEngine::NController::FrameScheduler& frameScheduler,
+                NEngine::NController::FrameHandle frame) override {
+        frameScheduler.BeginUpdate(frame);
+        frameScheduler.EndUpdate(frame);
+    }
+
+    void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
+        {
+            std::lock_guard lock{m_mutex};
+            ++m_drawCount;
+        }
+
+        m_condition.notify_all();
+
+        if (frame.GetFrameIndex() == 0) {
+            std::unique_lock lock{m_mutex};
+            m_condition.wait(lock, [this] { return m_finishFirstDraw; });
+        }
+
+        frameScheduler.BeginFinalize(frame);
+        frameScheduler.CompleteFrame(frame);
+        frameScheduler.RecycleFrame(frame);
+
+        if (frame.GetFrameIndex() == 0) {
+            {
+                std::lock_guard lock{m_mutex};
+                m_firstDrawFinished = true;
+            }
+
+            m_condition.notify_all();
+        }
+    }
+
+    [[nodiscard]] bool WaitFirstDrawFinished(std::chrono::milliseconds timeout) {
+        std::unique_lock lock{m_mutex};
+        return m_condition.wait_for(lock, timeout, [this] { return m_firstDrawFinished; });
+    }
+
+    void FinishFirstDraw() {
+        {
+            std::lock_guard lock{m_mutex};
+            m_finishFirstDraw = true;
+        }
+
+        m_condition.notify_all();
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    int m_drawCount = 0;
+    bool m_finishFirstDraw = false;
+    bool m_firstDrawFinished = false;
+};
+
+thread_local BlockingFirstDrawRuntime* g_blockingRuntime = nullptr;
+
+std::unique_ptr<NEngine::Engine> CreateBlockingEngine(NEngine::EngineConfig config) {
+    auto runtime = std::make_unique<BlockingFirstDrawRuntime>();
+    g_blockingRuntime = runtime.get();
+
+    return NEngine::NRuntime::EngineFactory::Create(config, std::move(runtime));
 }
 
 NApplication::ApplicationConfig MakeConfig() {
@@ -105,7 +182,9 @@ protected:
 
     void TearDown() override {
         NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
+        NApplication::NInternal::SetEngineFactoryForTests(nullptr);
         g_fakeState = nullptr;
+        g_blockingRuntime = nullptr;
     }
 
     FakeWindowState m_state;
@@ -118,25 +197,21 @@ public:
         , m_state(state) {
     }
 
-    void UpdateCheckpoint() {
-        EngineUpdateCheckpoint();
-    }
-
-    void DrawCheckpoint() {
-        EngineDrawCheckpoint();
-    }
-
-    void StartEngine() {
-        GetEngine().Start();
-    }
-
-    [[nodiscard]] NEngine::EEngineState GetEngineState() const {
-        return GetEngine().GetState();
-    }
-
 protected:
     void OnUpdate() override {
         m_state.Events.emplace_back("user.update");
+
+        if (ThrowFromUpdate) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected update failure");
+        }
+
+        if (DrawCheckpointFromUpdate) {
+            EngineDrawCheckpoint();
+        }
+
+        if (UpdateCheckpointFromUpdate) {
+            EngineUpdateCheckpoint();
+        }
 
         if (CloseFromUpdate) {
             RequestShutdown();
@@ -145,6 +220,10 @@ protected:
 
     void OnDraw() override {
         m_state.Events.emplace_back("user.draw");
+
+        if (ThrowFromDraw) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected draw failure");
+        }
 
         if (CloseFromDraw) {
             RequestShutdown();
@@ -166,6 +245,10 @@ public:
     bool CloseFromUpdate = false;
     bool CloseFromDraw = false;
     bool CloseFromCallback = false;
+    bool ThrowFromUpdate = false;
+    bool ThrowFromDraw = false;
+    bool DrawCheckpointFromUpdate = false;
+    bool UpdateCheckpointFromUpdate = false;
 };
 
 TEST_F(ApplicationTest, RunProcessesFramesUntilClose) {
@@ -231,13 +314,14 @@ TEST_F(ApplicationTest, RunsCallbacksAndFrameCheckpointsInOrderOnApplicationThre
 TEST_F(ApplicationTest, RejectsInvalidCheckpointOrder) {
     RecordingApplication application{MakeConfig(), m_state};
 
-    application.StartEngine();
+    application.DrawCheckpointFromUpdate = true;
 
-    EXPECT_THROW(application.DrawCheckpoint(), NCommon::Exception);
+    EXPECT_THROW(application.Run(), NCommon::Exception);
 
-    application.UpdateCheckpoint();
+    RecordingApplication secondApplication{MakeConfig(), m_state};
+    secondApplication.UpdateCheckpointFromUpdate = true;
 
-    EXPECT_THROW(application.UpdateCheckpoint(), NCommon::Exception);
+    EXPECT_THROW(secondApplication.Run(), NCommon::Exception);
 }
 
 TEST_F(ApplicationTest, AllowsShutdownRequestFromWindowCallback) {
@@ -256,12 +340,86 @@ TEST_F(ApplicationTest, AllowsShutdownRequestFromWindowCallback) {
               }));
 }
 
-TEST_F(ApplicationTest, StopsEngineBeforeDestroyingWindow) {
+TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure) {
+    NApplication::NInternal::SetEngineFactoryForTests(&CreateBlockingEngine);
+
+    NApplication::ApplicationConfig config = MakeConfig();
+    config.MaxActiveFrames = 1;
+
+    m_state.OnProcessEvents = [](FakeWindowState& state) {
+        if (state.ProcessEventsCount == 4) {
+            g_blockingRuntime->FinishFirstDraw();
+            EXPECT_TRUE(g_blockingRuntime->WaitFirstDrawFinished(1s));
+        }
+    };
+
+    class BackpressureApplication final: public RecordingApplication {
+    public:
+        using RecordingApplication::RecordingApplication;
+
+    protected:
+        void OnDraw() override {
+            RecordingApplication::OnDraw();
+
+            if (++m_drawCount == 2) {
+                RequestShutdown();
+            }
+        }
+
+    private:
+        int m_drawCount = 0;
+    };
+
+    BackpressureApplication backpressureApplication{config, m_state};
+
+    backpressureApplication.Run();
+
+    EXPECT_GE(m_state.ProcessEventsCount, 4);
+    EXPECT_EQ(m_state.Events,
+              (std::vector<std::string>{
+                      "window.events",
+                      "user.update",
+                      "user.draw",
+                      "window.events",
+                      "user.update",
+                      "window.events",
+                      "window.events",
+                      "user.draw",
+                      "window.request-close",
+                      "user.close",
+              }));
+}
+
+TEST_F(ApplicationTest, StopsEngineWhenUpdateThrowsAndCanRunAgain) {
+    RecordingApplication application{MakeConfig(), m_state};
+    application.ThrowFromUpdate = true;
+
+    EXPECT_THROW(application.Run(), NCommon::Exception);
+
+    application.ThrowFromUpdate = false;
+    application.CloseFromUpdate = true;
+
+    EXPECT_NO_THROW(application.Run());
+}
+
+TEST_F(ApplicationTest, StopsEngineWhenDrawThrowsAndCanRunAgain) {
+    RecordingApplication application{MakeConfig(), m_state};
+    application.ThrowFromDraw = true;
+
+    EXPECT_THROW(application.Run(), NCommon::Exception);
+
+    application.ThrowFromDraw = false;
+    application.CloseFromUpdate = true;
+
+    EXPECT_NO_THROW(application.Run());
+}
+
+TEST_F(ApplicationTest, DestroysWindowAfterApplicationDestruction) {
     {
         RecordingApplication application{MakeConfig(), m_state};
-        application.StartEngine();
+        application.CloseFromUpdate = true;
 
-        EXPECT_EQ(application.GetEngineState(), NEngine::EEngineState::RUNNING);
+        application.Run();
     }
 
     EXPECT_EQ(m_state.DestroyedCount, 1);

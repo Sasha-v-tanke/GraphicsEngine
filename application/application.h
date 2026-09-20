@@ -52,16 +52,15 @@ protected:
 
     [[nodiscard]] const NWindow::Window& GetWindow() const noexcept;
 
-    [[nodiscard]] NEngine::Engine& GetEngine() noexcept;
-
-    [[nodiscard]] const NEngine::Engine& GetEngine() const noexcept;
-
 private:
     class ApplicationWindow;
+    class EngineStopGuard;
 
     enum class EFrameCheckpoint {
-        READY_FOR_UPDATE,
-        READY_FOR_DRAW,
+        READY_FOR_USER_UPDATE,
+        WAITING_ENGINE_UPDATE,
+        READY_FOR_USER_DRAW,
+        WAITING_ENGINE_DRAW,
     };
 
     void RunFrame();
@@ -69,7 +68,7 @@ private:
 private:
     std::unique_ptr<NWindow::Window> m_window;
     std::unique_ptr<NEngine::Engine> m_engine;
-    EFrameCheckpoint m_frameCheckpoint = EFrameCheckpoint::READY_FOR_UPDATE;
+    EFrameCheckpoint m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
 };
 
 } // namespace NApplication

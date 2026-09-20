@@ -1,8 +1,8 @@
 #include "application.h"
 
 #include <memory>
-#include <utility>
 
+#include <application/internal/engine_factory.h>
 #include <engine/engine.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
@@ -34,9 +34,26 @@ private:
     Application& m_application;
 };
 
+class Application::EngineStopGuard final {
+public:
+    explicit EngineStopGuard(NEngine::Engine& engine) noexcept
+        : m_engine(engine) {
+    }
+
+    ~EngineStopGuard() {
+        m_engine.Stop();
+    }
+
+    EngineStopGuard(const EngineStopGuard&) = delete;
+    EngineStopGuard& operator=(const EngineStopGuard&) = delete;
+
+private:
+    NEngine::Engine& m_engine;
+};
+
 Application::Application(const ApplicationConfig& config)
     : m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
-    , m_engine(std::make_unique<NEngine::Engine>(NEngine::EngineConfig{
+    , m_engine(NInternal::CreateEngine(NEngine::EngineConfig{
               .MaxActiveFrames = config.MaxActiveFrames,
               .WorkerCount = config.WorkerCount,
       })) {
@@ -53,12 +70,12 @@ Application::~Application() {
 
 void Application::Run() {
     m_engine->Start();
+    m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+    EngineStopGuard stopGuard{*m_engine};
 
     while (!m_window->ShouldClose()) {
         RunFrame();
     }
-
-    m_engine->Stop();
 }
 
 void Application::RequestShutdown() {
@@ -85,21 +102,23 @@ void Application::OnClose() {
 }
 
 void Application::EngineUpdateCheckpoint() {
-    if (m_frameCheckpoint != EFrameCheckpoint::READY_FOR_UPDATE) {
+    if (m_frameCheckpoint != EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application update checkpoint is out of order");
     }
 
-    static_cast<void>(m_engine->Update());
-    m_frameCheckpoint = EFrameCheckpoint::READY_FOR_DRAW;
+    if (m_engine->Update()) {
+        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_DRAW;
+    }
 }
 
 void Application::EngineDrawCheckpoint() {
-    if (m_frameCheckpoint != EFrameCheckpoint::READY_FOR_DRAW) {
+    if (m_frameCheckpoint != EFrameCheckpoint::WAITING_ENGINE_DRAW) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application draw checkpoint is out of order");
     }
 
-    static_cast<void>(m_engine->Draw());
-    m_frameCheckpoint = EFrameCheckpoint::READY_FOR_UPDATE;
+    if (m_engine->Draw()) {
+        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+    }
 }
 
 NWindow::Window& Application::GetWindow() noexcept {
@@ -110,14 +129,6 @@ const NWindow::Window& Application::GetWindow() const noexcept {
     return *m_window;
 }
 
-NEngine::Engine& Application::GetEngine() noexcept {
-    return *m_engine;
-}
-
-const NEngine::Engine& Application::GetEngine() const noexcept {
-    return *m_engine;
-}
-
 void Application::RunFrame() {
     m_window->ProcessEvents();
 
@@ -125,11 +136,27 @@ void Application::RunFrame() {
         return;
     }
 
-    OnUpdate();
-    EngineUpdateCheckpoint();
+    if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
+        OnUpdate();
+        m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
+    }
 
-    OnDraw();
-    EngineDrawCheckpoint();
+    if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
+        EngineUpdateCheckpoint();
+
+        if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
+            return;
+        }
+    }
+
+    if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_DRAW) {
+        OnDraw();
+        m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_DRAW;
+    }
+
+    if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_DRAW) {
+        EngineDrawCheckpoint();
+    }
 }
 
 } // namespace NApplication
