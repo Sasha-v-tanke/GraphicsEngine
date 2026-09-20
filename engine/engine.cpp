@@ -104,13 +104,15 @@ public:
         }
 
         m_lastError.reset();
-        m_state = EEngineState::RUNNING;
 
         try {
             m_taskSystem = std::make_unique<NCommon::TaskSystem>(m_config.WorkerCount);
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
             m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
             m_nextDrawFrameIndex = 0;
+            ++m_lifecycleGeneration;
+            m_lifecycleGenerationSnapshot.store(m_lifecycleGeneration, std::memory_order_release);
+            m_state = EEngineState::RUNNING;
         } catch (...) {
             RollbackStartLocked();
             throw;
@@ -118,16 +120,11 @@ public:
     }
 
     void Stop() noexcept {
-        const bool joinActiveStop = m_stopInProgressAtomic.load(std::memory_order_acquire);
+        const std::uint64_t observedGeneration = m_lifecycleGenerationSnapshot.load(std::memory_order_acquire);
         std::unique_ptr<NCommon::TaskSystem> taskSystem;
 
         {
             std::unique_lock lock{m_mutex};
-
-            if (joinActiveStop) {
-                m_stopCondition.wait(lock, [this] { return !m_stopInProgress; });
-                return;
-            }
 
             if (m_state == EEngineState::CREATED || m_state == EEngineState::STOPPED) {
                 m_state = EEngineState::STOPPED;
@@ -136,12 +133,18 @@ public:
             }
 
             if (m_stopInProgress) {
-                m_stopCondition.wait(lock, [this] { return !m_stopInProgress; });
+                m_stopCondition.wait(lock, [this, observedGeneration] {
+                    return !m_stopInProgress || m_completedStopGeneration >= observedGeneration;
+                });
+                return;
+            }
+
+            if (m_lifecycleGeneration != observedGeneration) {
                 return;
             }
 
             m_stopInProgress = true;
-            m_stopInProgressAtomic.store(true, std::memory_order_release);
+            m_activeStopGeneration = observedGeneration;
             m_state = EEngineState::STOPPING;
             taskSystem = std::move(m_taskSystem);
         }
@@ -163,7 +166,7 @@ public:
             taskSystem.reset();
             m_state = EEngineState::STOPPED;
             m_stopInProgress = false;
-            m_stopInProgressAtomic.store(false, std::memory_order_release);
+            m_completedStopGeneration = m_activeStopGeneration;
             m_stopCondition.notify_all();
         }
     }
@@ -188,6 +191,7 @@ public:
             updateTask = m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunUpdate(frame); });
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
+            m_state = EEngineState::STOPPING;
             m_frameScheduler->AbortFrame(frame);
             throw;
         }
@@ -279,7 +283,8 @@ private:
 
         m_state = EEngineState::STOPPED;
         m_stopInProgress = false;
-        m_stopInProgressAtomic.store(false, std::memory_order_release);
+        m_activeStopGeneration = m_lifecycleGeneration;
+        m_completedStopGeneration = m_lifecycleGeneration;
         m_stopCondition.notify_all();
     }
 
@@ -384,7 +389,10 @@ private:
     std::condition_variable m_stopCondition;
     EEngineState m_state = EEngineState::CREATED;
     bool m_stopInProgress = false;
-    std::atomic_bool m_stopInProgressAtomic = false;
+    std::uint64_t m_lifecycleGeneration = 0;
+    std::atomic<std::uint64_t> m_lifecycleGenerationSnapshot = 0;
+    std::uint64_t m_activeStopGeneration = 0;
+    std::uint64_t m_completedStopGeneration = 0;
     std::optional<NCommon::ErrorInfo> m_lastError;
 
     std::unique_ptr<NCommon::TaskSystem> m_taskSystem;
