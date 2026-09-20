@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -90,6 +91,7 @@ public:
     }
 
     TaskHandle Spawn(TaskFunction function);
+    TaskHandle Spawn(TaskFunction function, std::span<const TaskHandle> dependencies);
 
 private:
     TaskContext(TaskSystem& taskSystem, TaskHandle task, WorkerIndex workerIndex) noexcept
@@ -134,11 +136,38 @@ private:
     friend struct TaskHandle::State;
 
     struct Task {
+        Task() = default;
+        Task(Task&& other) noexcept
+            : Function(std::move(other.Function))
+            , Status(other.Status)
+            , Dependencies(std::move(other.Dependencies))
+            , Dependents(std::move(other.Dependents))
+            , RemainingDependencies(other.RemainingDependencies.load(std::memory_order_relaxed))
+            , Error(std::move(other.Error)) {
+        }
+        Task& operator=(Task&& other) noexcept {
+            if (this == &other) {
+                return *this;
+            }
+
+            Function = std::move(other.Function);
+            Status = other.Status;
+            Dependencies = std::move(other.Dependencies);
+            Dependents = std::move(other.Dependents);
+            RemainingDependencies.store(other.RemainingDependencies.load(std::memory_order_relaxed),
+                                        std::memory_order_relaxed);
+            Error = std::move(other.Error);
+            return *this;
+        }
+
+        Task(const Task&) = delete;
+        Task& operator=(const Task&) = delete;
+
         TaskFunction Function;
         ETaskStatus Status = ETaskStatus::CREATED;
         std::vector<std::uint64_t> Dependencies;
         std::vector<std::uint64_t> Dependents;
-        std::size_t PendingDependencies = 0;
+        std::atomic_size_t RemainingDependencies = 0;
         std::optional<ErrorInfo> Error;
     };
 
@@ -152,6 +181,9 @@ private:
     void CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
     void PropagateCancellationLocked(Task& task);
     static void ReleaseExecutionPayloadLocked(Task& task);
+#ifndef NDEBUG
+    void ValidateDagLocked() const;
+#endif
     void StopWorkers() noexcept;
     void WorkerLoop(WorkerIndex workerIndex) noexcept;
 

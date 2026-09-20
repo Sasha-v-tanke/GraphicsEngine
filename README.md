@@ -440,6 +440,17 @@ C complete -> 0
 
 При достижении `0` задача становится `READY` и помещается в очередь TaskSystem.
 
+`RemainingDependencies` обновляется atomic decrement-ом при завершении prerequisite. Та task, которая последней довела
+счётчик dependent до `0`, активирует dependent и публикует её в READY queue.
+
+Модель поддерживает:
+
+- fan-in: несколько prerequisites для одной task;
+- fan-out: одна prerequisite разблокирует несколько dependents;
+- dynamic publication: running task может публиковать новые tasks через `TaskContext::Spawn()`;
+- immutable dependencies: после publication dependency set задачи не меняется, новые constraints выражаются новой task;
+- independent READY tasks: порядок выполнения не задан и не должен использоваться как контракт.
+
 ```text
 CREATED
    │
