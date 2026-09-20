@@ -383,30 +383,18 @@ void TaskSystem::PropagateCancellationLocked(Task& task) {
     }
 }
 
-void TaskSystem::CancelPendingTasksLocked() {
-    std::vector<std::uint64_t> pendingTasks;
-    pendingTasks.reserve(m_activeTasks.size());
+void TaskSystem::CancelPendingTasksLocked() noexcept {
+    for (auto taskIt = m_activeTasks.begin(); taskIt != m_activeTasks.end();) {
+        Task& task = taskIt->second->Task;
 
-    for (const auto& [taskId, state]: m_activeTasks) {
-        const Task& task = state->Task;
-
-        if (task.Status == ETaskStatus::WAITING || task.Status == ETaskStatus::READY) {
-            pendingTasks.push_back(taskId);
-        }
-    }
-
-    for (const std::uint64_t taskId: pendingTasks) {
-        const auto taskIt = m_activeTasks.find(taskId);
-
-        if (taskIt == m_activeTasks.end()) {
+        if (task.Status != ETaskStatus::WAITING && task.Status != ETaskStatus::READY) {
+            ++taskIt;
             continue;
         }
 
-        Task& task = taskIt->second->Task;
-
-        if (task.Status == ETaskStatus::WAITING || task.Status == ETaskStatus::READY) {
-            CompleteLocked(taskId, ETaskStatus::CANCELLED);
-        }
+        task.Status = ETaskStatus::CANCELLED;
+        ReleaseExecutionPayloadLocked(task);
+        taskIt = m_activeTasks.erase(taskIt);
     }
 }
 

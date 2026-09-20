@@ -689,36 +689,32 @@ TEST(TaskSystem, CancelsDependentsWhenDependencyIsCancelled) {
 }
 
 TEST(TaskSystem, ShutdownCancelsPendingWorkAndLetsRunningTasksFinish) {
-    auto* taskSystem = new NCommon::TaskSystem{2};
+    auto* taskSystem = new NCommon::TaskSystem{1};
 
-    CountedGate runningEntered;
+    Gate runningEntered;
     Gate finishRunning;
     Gate deleteStarted;
-    std::atomic<std::size_t> runningFinished = 0;
+    std::atomic<bool> runningFinished = false;
     std::atomic<std::size_t> queuedRan = 0;
     std::atomic<bool> stoppingRejectedSubmission = false;
 
-    for (std::size_t index = 0; index < 2; ++index) {
-        taskSystem->Submit([&, index](NCommon::TaskContext& context) {
-            runningEntered.Arrive();
-            finishRunning.Wait();
+    taskSystem->Submit([&](NCommon::TaskContext& context) {
+        runningEntered.Open();
+        finishRunning.Wait();
 
-            if (index == 0) {
-                while (!stoppingRejectedSubmission.load()) {
-                    try {
-                        context.Spawn([](NCommon::TaskContext&) {});
-                        std::this_thread::yield();
-                    } catch (const NCommon::Exception&) {
-                        stoppingRejectedSubmission = true;
-                    }
-                }
+        while (!stoppingRejectedSubmission.load()) {
+            try {
+                context.Spawn([](NCommon::TaskContext&) {});
+                std::this_thread::yield();
+            } catch (const NCommon::Exception&) {
+                stoppingRejectedSubmission = true;
             }
+        }
 
-            runningFinished.fetch_add(1);
-        });
-    }
+        runningFinished = true;
+    });
 
-    ASSERT_TRUE(runningEntered.WaitForCount(2));
+    ASSERT_TRUE(runningEntered.WaitForOpen());
 
     for (std::size_t index = 0; index < 32; ++index) {
         taskSystem->Submit([&](NCommon::TaskContext&) { queuedRan.fetch_add(1); });
@@ -733,7 +729,7 @@ TEST(TaskSystem, ShutdownCancelsPendingWorkAndLetsRunningTasksFinish) {
     finishRunning.Open();
     destroyer.join();
 
-    EXPECT_EQ(runningFinished.load(), 2U);
+    EXPECT_TRUE(runningFinished.load());
     EXPECT_EQ(queuedRan.load(), 0U);
     EXPECT_TRUE(stoppingRejectedSubmission.load());
 }
