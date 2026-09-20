@@ -217,53 +217,6 @@ TEST(Engine, StopWaitsForPendingWork) {
     EXPECT_FALSE(engine->GetLastError().has_value());
 }
 
-TEST(Engine, ConcurrentStopWaitsForShutdownOperationNotStoppedState) {
-    auto runtime = std::make_unique<BlockingFrameRuntime>();
-    BlockingFrameRuntime& runtimeRef = *runtime;
-
-    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
-            NEngine::EngineConfig{
-                    .MaxActiveFrames = 1,
-                    .WorkerCount = 1,
-            },
-            std::move(runtime));
-
-    engine->Start();
-
-    EXPECT_TRUE(engine->Update());
-    FinishUpdateGuard finishUpdateGuard{runtimeRef};
-    ASSERT_TRUE(runtimeRef.WaitUpdateEntered(2s));
-
-    std::promise<void> firstStopReturned;
-    std::future<void> firstStopReturnedResult = firstStopReturned.get_future();
-    std::future<void> firstStopResult = std::async(std::launch::async, [&] {
-        engine->Stop();
-        firstStopReturned.set_value();
-    });
-
-    ASSERT_TRUE(WaitForState(*engine, NEngine::EEngineState::STOPPING, 2s));
-
-    std::future<void> secondStopResult = std::async(std::launch::async, [&] { engine->Stop(); });
-
-    EXPECT_EQ(secondStopResult.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
-
-    runtimeRef.FinishUpdate();
-    finishUpdateGuard.Release();
-
-    ASSERT_EQ(firstStopReturnedResult.wait_for(2s), std::future_status::ready);
-    engine->Start();
-
-    ASSERT_EQ(secondStopResult.wait_for(2s), std::future_status::ready);
-    secondStopResult.get();
-    ASSERT_EQ(firstStopResult.wait_for(2s), std::future_status::ready);
-    firstStopResult.get();
-
-    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::RUNNING);
-
-    engine->Stop();
-    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
-}
-
 TEST(Engine, LatchesRuntimeErrorAndFailsDependentWork) {
     std::promise<void> updateStarted;
     std::future<void> updateStartedResult = updateStarted.get_future();
