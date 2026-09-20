@@ -88,9 +88,14 @@ TaskHandle TaskContext::Spawn(TaskFunction function, std::span<const TaskHandle>
 TaskSystem::TaskSystem(std::size_t workerCount)
     : m_ownerToken(std::make_shared<OwnerToken>())
     , m_workerCount(workerCount == 0 ? 1 : workerCount) {
+    m_workerReadyQueues.reserve(m_workerCount);
     m_workers.reserve(m_workerCount);
 
     try {
+        for (std::size_t index = 0; index < m_workerCount; ++index) {
+            m_workerReadyQueues.push_back(std::make_unique<ReadyQueue>());
+        }
+
         for (std::size_t index = 0; index < m_workerCount; ++index) {
             m_workers.emplace_back([this, workerIndex = WorkerIndex{index}] { WorkerLoop(workerIndex); });
         }
@@ -309,8 +314,74 @@ bool TaskSystem::IsSuccessfulLocked(const Task& task) noexcept {
 
 void TaskSystem::MakeReadyLocked(std::uint64_t taskId, Task& task) {
     task.Status = ETaskStatus::READY;
-    m_readyTasks.push_back(taskId);
-    m_condition.notify_one();
+    PublishReadyTask(taskId);
+}
+
+void TaskSystem::PublishReadyTask(std::uint64_t taskId) {
+    if (CurrentWorker.System == this) {
+        ReadyQueue& queue = *m_workerReadyQueues[CurrentWorker.Index.GetValue()];
+        {
+            std::lock_guard queueLock{queue.Mutex};
+            queue.Tasks.push_front(taskId);
+        }
+    } else {
+        std::lock_guard queueLock{m_injectedReadyQueue.Mutex};
+        m_injectedReadyQueue.Tasks.push_back(taskId);
+    }
+
+    m_readyTaskCount.fetch_add(1, std::memory_order_release);
+    m_readyWakeups.release();
+}
+
+bool TaskSystem::TryPopReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId) {
+    return TryPopLocalReadyTask(workerIndex, taskId) || TryPopInjectedReadyTask(taskId) ||
+           TryStealReadyTask(workerIndex, taskId);
+}
+
+bool TaskSystem::TryPopLocalReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId) {
+    ReadyQueue& queue = *m_workerReadyQueues[workerIndex.GetValue()];
+    std::lock_guard queueLock{queue.Mutex};
+
+    if (queue.Tasks.empty()) {
+        return false;
+    }
+
+    taskId = queue.Tasks.front();
+    queue.Tasks.pop_front();
+    m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
+    return true;
+}
+
+bool TaskSystem::TryPopInjectedReadyTask(std::uint64_t& taskId) {
+    std::lock_guard queueLock{m_injectedReadyQueue.Mutex};
+
+    if (m_injectedReadyQueue.Tasks.empty()) {
+        return false;
+    }
+
+    taskId = m_injectedReadyQueue.Tasks.front();
+    m_injectedReadyQueue.Tasks.pop_front();
+    m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
+    return true;
+}
+
+bool TaskSystem::TryStealReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId) {
+    for (std::size_t offset = 1; offset < m_workerCount; ++offset) {
+        const std::size_t victimIndex = (workerIndex.GetValue() + offset) % m_workerCount;
+        ReadyQueue& queue = *m_workerReadyQueues[victimIndex];
+        std::lock_guard queueLock{queue.Mutex};
+
+        if (queue.Tasks.empty()) {
+            continue;
+        }
+
+        taskId = queue.Tasks.back();
+        queue.Tasks.pop_back();
+        m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
+        return true;
+    }
+
+    return false;
 }
 
 void TaskSystem::CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error) {
@@ -473,7 +544,7 @@ void TaskSystem::StopWorkers() noexcept {
         CancelPendingTasksLocked();
     }
 
-    m_condition.notify_all();
+    m_readyWakeups.release(static_cast<std::ptrdiff_t>(m_workerCount));
     m_idleCondition.notify_all();
 
     for (std::thread& worker: m_workers) {
@@ -494,17 +565,34 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
         TaskFunction function;
 
         try {
-            {
-                std::unique_lock lock{m_mutex};
-
-                m_condition.wait(lock, [this] { return m_stopping || !m_readyTasks.empty(); });
-
-                if (m_stopping && m_readyTasks.empty()) {
-                    return;
+            while (true) {
+                {
+                    std::lock_guard lock{m_mutex};
+                    if (m_stopping && m_readyTaskCount.load(std::memory_order_acquire) == 0) {
+                        return;
+                    }
                 }
 
-                taskId = m_readyTasks.front();
-                m_readyTasks.pop_front();
+                m_readyWakeups.acquire();
+
+                if (TryPopReadyTask(workerIndex, taskId)) {
+                    break;
+                }
+
+                {
+                    std::lock_guard lock{m_mutex};
+                    if (m_stopping && m_readyTaskCount.load(std::memory_order_acquire) == 0) {
+                        return;
+                    }
+                }
+            }
+
+            {
+                std::lock_guard lock{m_mutex};
+
+                if (m_stopping && m_activeTasks.empty()) {
+                    return;
+                }
 
                 const auto stateIt = m_activeTasks.find(taskId);
 

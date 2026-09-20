@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <span>
 #include <thread>
 #include <unordered_map>
@@ -171,6 +172,11 @@ private:
         std::optional<ErrorInfo> Error;
     };
 
+    struct ReadyQueue {
+        std::mutex Mutex;
+        std::deque<std::uint64_t> Tasks;
+    };
+
     [[nodiscard]] Task& GetTaskLocked(const TaskHandle& task);
     [[nodiscard]] const Task& GetTaskLocked(const TaskHandle& task) const;
     [[nodiscard]] Task& GetTaskLocked(std::uint64_t taskId);
@@ -178,6 +184,11 @@ private:
     [[nodiscard]] static bool IsSuccessfulLocked(const Task& task) noexcept;
 
     void MakeReadyLocked(std::uint64_t taskId, Task& task);
+    void PublishReadyTask(std::uint64_t taskId);
+    [[nodiscard]] bool TryPopReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId);
+    [[nodiscard]] bool TryPopLocalReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId);
+    [[nodiscard]] bool TryPopInjectedReadyTask(std::uint64_t& taskId);
+    [[nodiscard]] bool TryStealReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId);
     void CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
     void PropagateCancellationLocked(Task& task);
     void CancelPendingTasksLocked() noexcept;
@@ -193,13 +204,15 @@ private:
 
 private:
     mutable std::mutex m_mutex;
-    std::condition_variable m_condition;
     std::condition_variable m_idleCondition;
     std::shared_ptr<OwnerToken> m_ownerToken;
     const std::size_t m_workerCount;
     std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> m_activeTasks;
-    std::deque<std::uint64_t> m_readyTasks;
+    std::vector<std::unique_ptr<ReadyQueue>> m_workerReadyQueues;
+    ReadyQueue m_injectedReadyQueue;
     std::vector<std::thread> m_workers;
+    std::counting_semaphore<> m_readyWakeups{0};
+    std::atomic_size_t m_readyTaskCount = 0;
     std::uint64_t m_nextTaskId = 1;
     std::size_t m_runningTasks = 0;
     bool m_stopping = false;

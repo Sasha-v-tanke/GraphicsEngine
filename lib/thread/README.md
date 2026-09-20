@@ -67,9 +67,12 @@ Running task может публиковать новые задачи чере�
 Для независимых `READY` задач порядок выполнения не гарантируется. Зависимости между worker-задачами должны выражаться
 через graph, а не через blocking wait внутри callback.
 
-`READY` задачи находятся в общей очереди scheduler. Workers не привязаны к frame, subsystem или rendering stage:
-любой idle worker может взять любую `READY` задачу. Application thread не выполняет worker callbacks; он только
-публикует задачи, читает состояние и блокируется в `Wait()`/`WaitIdle()`.
+`READY` задачи распределяются по worker-local queues. Задачи, опубликованные worker thread, сначала попадают в локальную
+очередь этого worker; задачи, опубликованные внешними потоками, идут через отдельный low-contention global injection
+path. Idle workers сначала берут локальную работу, затем global injection и после этого steal-ят work из других workers.
+Workers не привязаны к frame, subsystem или rendering stage: любой idle worker может взять любую `READY` задачу.
+Application thread не выполняет worker callbacks; он только публикует задачи, читает состояние и блокируется в
+`Wait()`/`WaitIdle()`.
 
 ### Error Boundary
 
@@ -99,8 +102,12 @@ Running task может публиковать новые задачи чере�
 оставшиеся после cancellation, не считаются outstanding work. Terminal task state может оставаться живым во внешних
 handles.
 
-Idle workers блокируются на scheduler wakeup primitive и просыпаются при публикации новой `READY` задачи или shutdown.
-Ожидание idle state не требует busy spin.
+READY hot path не использует один общий mutex вокруг всех READY operations: worker-local queues, global injection queue
+и graph/state имеют отдельную синхронизацию. Idle workers блокируются на semaphore wakeup primitive; atomic READY counter
+используется для shutdown/drain checks и защиты от lost wakeups. Ожидание idle state не требует busy spin.
+
+Performance coverage живёт в `benchmarks/task`: `BM_TaskSystemIndependentThroughput` измеряет throughput независимых
+READY tasks, `BM_TaskSystemFanInLatency` измеряет latency fan-in dependent task после завершения prerequisites.
 
 Debug builds выполняют lightweight validation DAG invariants при изменении graph/state: duplicate edges, обратные
 dependency/dependent links и consistency `RemainingDependencies`. Эти проверки не входят в release hot path.
