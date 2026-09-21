@@ -34,9 +34,10 @@ CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
 локальную задачу и отклоняется как invalid argument.
 
 Terminal state остаётся доступным через `TaskHandle`, пока пользователь хранит handle и соответствующий `TaskSystem`
-жив. Scheduler при переходе в terminal state удаляет задачу из active lookup и освобождает execution payload: callback,
-dependency edges и captured resources, которые удерживались только callback-ом. Поэтому память scheduler не растёт
-пропорционально total submissions за всё время жизни `TaskSystem`.
+жив. Scheduler при переходе в terminal state сразу освобождает execution payload: callback, dependency edges и captured
+resources, которые удерживались только callback-ом. Registry record публикуется в allocation-free intrusive retirement
+list и удаляется из active lookup при следующем drain. Поэтому память scheduler не растёт пропорционально total
+submissions за всё время жизни `TaskSystem`.
 
 После уничтожения `TaskSystem` оставшийся `TaskHandle` является stale value object. Использовать его с новым или другим
 `TaskSystem` нельзя; такой handle должен быть отвергнут.
@@ -67,9 +68,12 @@ Running task может публиковать новые задачи чере�
 Для независимых `READY` задач порядок выполнения не гарантируется. Зависимости между worker-задачами должны выражаться
 через graph, а не через blocking wait внутри callback.
 
-`READY` задачи находятся в общей очереди scheduler. Workers не привязаны к frame, subsystem или rendering stage:
-любой idle worker может взять любую `READY` задачу. Application thread не выполняет worker callbacks; он только
-публикует задачи, читает состояние и блокируется в `Wait()`/`WaitIdle()`.
+`READY` задачи распределяются по worker-local queues. Задачи, опубликованные worker thread, сначала попадают в локальную
+очередь этого worker; задачи, опубликованные внешними потоками, идут через отдельный low-contention global injection
+path. Idle workers сначала берут локальную работу, затем global injection и после этого steal-ят work из других workers.
+Workers не привязаны к frame, subsystem или rendering stage: любой idle worker может взять любую `READY` задачу.
+Application thread не выполняет worker callbacks; он только публикует задачи, читает состояние и блокируется в
+`Wait()`/`WaitIdle()`.
 
 ### Error Boundary
 
@@ -99,8 +103,17 @@ Running task может публиковать новые задачи чере�
 оставшиеся после cancellation, не считаются outstanding work. Terminal task state может оставаться живым во внешних
 handles.
 
-Idle workers блокируются на scheduler wakeup primitive и просыпаются при публикации новой `READY` задачи или shutdown.
-Ожидание idle state не требует busy spin.
+READY hot path не использует один общий mutex вокруг всех READY operations: worker-local queues, global injection queue
+и task state имеют отдельную синхронизацию. Worker claim-ит `READY -> RUNNING` через task-local state, а independent
+task completion не требует global registry lock. Dependency graph updates остаются под graph/registry lock только для
+задач с dependents или cancellation propagation. Terminal task records попадают в intrusive retirement list и чистятся
+targeted drain вне per-task completion path.
+Idle workers блокируются на semaphore wakeup primitive; atomic READY counter используется для shutdown/drain checks и
+защиты от lost wakeups. Ожидание idle state не требует busy spin.
+
+Performance coverage живёт в `benchmarks/task`: `BM_TaskSystemIndependentThroughput` измеряет throughput независимых
+READY tasks, `BM_TaskSystemFanInLatency` измеряет latency fan-in dependent task от фактического завершения последнего
+prerequisite до завершения dependent callback.
 
 Debug builds выполняют lightweight validation DAG invariants при изменении graph/state: duplicate edges, обратные
 dependency/dependent links и consistency `RemainingDependencies`. Эти проверки не входят в release hot path.

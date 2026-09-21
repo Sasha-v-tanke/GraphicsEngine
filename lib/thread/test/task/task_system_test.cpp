@@ -502,6 +502,118 @@ TEST(TaskSystem, HandlesConcurrentDependencyCompletionAndDependentPublication) {
     }
 }
 
+TEST(TaskSystem, HandlesContentionStressWithoutDroppingTasks) {
+    constexpr std::size_t workerCount = 4;
+    constexpr std::size_t publisherCount = 8;
+    constexpr std::size_t tasksPerPublisher = 128;
+
+    NCommon::TaskSystem taskSystem{workerCount};
+    Gate start;
+    std::atomic<std::size_t> completed = 0;
+    std::vector<std::thread> publishers;
+    std::vector<NCommon::TaskHandle> tasks;
+    std::mutex tasksMutex;
+
+    publishers.reserve(publisherCount);
+
+    for (std::size_t publisherIndex = 0; publisherIndex < publisherCount; ++publisherIndex) {
+        publishers.emplace_back([&] {
+            start.Wait();
+
+            std::vector<NCommon::TaskHandle> localTasks;
+            localTasks.reserve(tasksPerPublisher);
+
+            for (std::size_t taskIndex = 0; taskIndex < tasksPerPublisher; ++taskIndex) {
+                localTasks.push_back(taskSystem.Submit([&](NCommon::TaskContext&) { completed.fetch_add(1); }));
+            }
+
+            std::lock_guard lock{tasksMutex};
+            tasks.insert(tasks.end(), localTasks.begin(), localTasks.end());
+        });
+    }
+
+    start.Open();
+
+    for (std::thread& publisher: publishers) {
+        publisher.join();
+    }
+
+    for (const NCommon::TaskHandle& task: tasks) {
+        taskSystem.Wait(task);
+    }
+
+    EXPECT_EQ(tasks.size(), publisherCount * tasksPerPublisher);
+    EXPECT_EQ(completed.load(), publisherCount * tasksPerPublisher);
+}
+
+TEST(TaskSystem, DoesNotLoseWakeupsAcrossRepeatedIdleSubmissions) {
+    constexpr std::size_t iterations = 256;
+
+    NCommon::TaskSystem taskSystem{4};
+
+    for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
+        taskSystem.WaitIdle();
+
+        std::atomic<bool> ran = false;
+        const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext&) { ran = true; });
+
+        taskSystem.Wait(task);
+        EXPECT_TRUE(ran.load());
+    }
+}
+
+TEST(TaskSystem, WaitIdleDoesNotLoseConcurrentLastCompletionWakeup) {
+    constexpr std::size_t iterations = 512;
+
+    for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
+        NCommon::TaskSystem taskSystem{1};
+        Gate finishTask;
+        Gate waiterStarted;
+        Gate waiterFinished;
+
+        const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext&) { finishTask.Wait(); });
+
+        std::thread waiter{[&] {
+            waiterStarted.Open();
+            taskSystem.WaitIdle();
+            waiterFinished.Open();
+        }};
+
+        ASSERT_TRUE(waiterStarted.WaitForOpen());
+        finishTask.Open();
+        EXPECT_TRUE(waiterFinished.WaitForOpen());
+        waiter.join();
+        taskSystem.Wait(task);
+    }
+}
+
+TEST(TaskSystem, StealsWorkerLocalReadyTasks) {
+    constexpr std::size_t workerCount = 2;
+
+    NCommon::TaskSystem taskSystem{workerCount};
+    Gate childRan;
+    std::atomic<std::size_t> parentWorker = workerCount;
+    std::atomic<std::size_t> childWorker = workerCount;
+
+    const NCommon::TaskHandle parent = taskSystem.Submit([&](NCommon::TaskContext& context) {
+        parentWorker = context.GetWorkerIndex().GetValue();
+
+        context.Spawn([&](NCommon::TaskContext& childContext) {
+            childWorker = childContext.GetWorkerIndex().GetValue();
+            childRan.Open();
+        });
+
+        EXPECT_TRUE(childRan.WaitForOpen());
+    });
+
+    taskSystem.Wait(parent);
+    taskSystem.WaitIdle();
+
+    EXPECT_NE(parentWorker.load(), workerCount);
+    EXPECT_NE(childWorker.load(), workerCount);
+    EXPECT_NE(parentWorker.load(), childWorker.load());
+}
+
 TEST(TaskSystem, CancelsReadyAndWaitingTasks) {
     NCommon::TaskSystem taskSystem{1};
     Gate blockerFinish;
