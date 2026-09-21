@@ -88,8 +88,7 @@ void BM_TaskSystemFanInLatency(benchmark::State& state) {
         state.SetIterationTime(std::chrono::duration<double>(elapsed).count());
     }
 
-    state.counters["prerequisites"] =
-            benchmark::Counter(static_cast<double>(TaskCount(state)), benchmark::Counter::kIsIterationInvariantRate);
+    state.counters["prerequisites"] = static_cast<double>(TaskCount(state));
 }
 
 } // namespace
@@ -105,5 +104,6 @@ BENCHMARK(BM_TaskSystemFanInLatency)
         ->Args({1, 256})
         ->Args({2, 512})
         ->Args({4, 1024})
+        ->Iterations(100)
         ->UseManualTime()
         ->Unit(benchmark::kMicrosecond);
