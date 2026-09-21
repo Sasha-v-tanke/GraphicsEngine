@@ -13,6 +13,10 @@ namespace NWindow {
 class Window;
 }
 
+namespace NApplication::NRuntime {
+class IEngineFactory;
+}
+
 namespace NApplication {
 
 class Application {
@@ -34,6 +38,8 @@ public:
     [[nodiscard]] bool IsShutdownRequested() const;
 
 protected:
+    Application(const ApplicationConfig& config, std::unique_ptr<NRuntime::IEngineFactory> engineFactory);
+
     virtual void OnUpdate();
 
     virtual void OnDraw();
@@ -67,6 +73,7 @@ private:
 
 private:
     std::unique_ptr<NWindow::Window> m_window;
+    std::unique_ptr<NRuntime::IEngineFactory> m_engineFactory;
     std::unique_ptr<NEngine::Engine> m_engine;
     EFrameCheckpoint m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
 };

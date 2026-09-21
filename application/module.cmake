@@ -13,6 +13,6 @@ PRIVATE_DEPENDS(
 )
 
 RECURSE(
-    internal
+    runtime
     test
 )

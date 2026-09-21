@@ -116,6 +116,10 @@ Engine Draw checkpoint
 Два `Update` checkpoint подряд запрещены, как и `Draw` checkpoint без предшествующего `Update`. При выходе
 `Application` сначала останавливает `Engine`, затем уничтожает `Window`.
 
+Если `Engine` не принимает checkpoint из-за занятых frame slots, `Application` остаётся в соответствующем waiting-state.
+Следующие итерации продолжают обрабатывать Window events и повторяют тот же Engine checkpoint, но не вызывают повторно
+`OnUpdate()` или `OnDraw()` для уже ожидающего user stage.
+
 `Application`, Window events и пользовательские callbacks имеют affinity к application/main thread. Этот поток не
 является worker-потоком `TaskSystem`: workers выполняют только задачи engine/runtime, а user callbacks и Window API не
 должны исполняться из worker callbacks.

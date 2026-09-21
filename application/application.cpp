@@ -1,8 +1,9 @@
 #include "application.h"
 
 #include <memory>
+#include <utility>
 
-#include <application/internal/engine_factory.h>
+#include <application/runtime/engine_factory.h>
 #include <engine/engine.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
@@ -52,11 +53,23 @@ private:
 };
 
 Application::Application(const ApplicationConfig& config)
+    : Application(config, std::make_unique<NRuntime::DefaultEngineFactory>()) {
+}
+
+Application::Application(const ApplicationConfig& config, std::unique_ptr<NRuntime::IEngineFactory> engineFactory)
     : m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
-    , m_engine(NInternal::CreateEngine(NEngine::EngineConfig{
-              .MaxActiveFrames = config.MaxActiveFrames,
-              .WorkerCount = config.WorkerCount,
-      })) {
+    , m_engineFactory(std::move(engineFactory))
+    , m_engine([this, &config] {
+        if (m_engineFactory == nullptr) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Application engine factory is null");
+        }
+
+        return NRuntime::CreateEngine(*m_engineFactory,
+                                      NEngine::EngineConfig{
+                                              .MaxActiveFrames = config.MaxActiveFrames,
+                                              .WorkerCount = config.WorkerCount,
+                                      });
+    }()) {
 }
 
 Application::~Application() {

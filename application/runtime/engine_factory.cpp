@@ -5,11 +5,9 @@
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
-namespace NApplication::NInternal {
+namespace NApplication::NRuntime {
 
 namespace {
-
-thread_local EngineFactory g_testFactory = nullptr;
 
 [[nodiscard]] std::unique_ptr<NEngine::Engine> ValidateEngine(std::unique_ptr<NEngine::Engine> engine) {
     if (engine == nullptr) {
@@ -21,16 +19,12 @@ thread_local EngineFactory g_testFactory = nullptr;
 
 } // namespace
 
-std::unique_ptr<NEngine::Engine> CreateEngine(NEngine::EngineConfig config) {
-    if (g_testFactory != nullptr) {
-        return ValidateEngine(g_testFactory(config));
-    }
-
+std::unique_ptr<NEngine::Engine> DefaultEngineFactory::Create(NEngine::EngineConfig config) {
     return std::make_unique<NEngine::Engine>(config);
 }
 
-void SetEngineFactoryForTests(EngineFactory factory) {
-    g_testFactory = factory;
+std::unique_ptr<NEngine::Engine> CreateEngine(IEngineFactory& engineFactory, NEngine::EngineConfig config) {
+    return ValidateEngine(engineFactory.Create(config));
 }
 
-} // namespace NApplication::NInternal
+} // namespace NApplication::NRuntime

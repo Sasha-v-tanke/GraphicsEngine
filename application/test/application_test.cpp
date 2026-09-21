@@ -5,11 +5,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <application/application.h>
 #include <application/application_config.h>
-#include <application/internal/engine_factory.h>
+#include <application/runtime/engine_factory.h>
 #include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
@@ -22,8 +23,11 @@ namespace {
 
 using namespace std::chrono_literals;
 
+class BlockingEngineFactory;
+
 struct FakeWindowState {
     NWindow::NInternal::IWindowEventSink* Sink = nullptr;
+    BlockingEngineFactory* EngineFactory = nullptr;
     void (*OnProcessEvents)(FakeWindowState& state) = nullptr;
     bool ShouldClose = false;
     bool EmitCloseOnNextProcessEvents = false;
@@ -156,14 +160,17 @@ private:
     bool m_firstDrawFinished = false;
 };
 
-thread_local BlockingFirstDrawRuntime* g_blockingRuntime = nullptr;
+class BlockingEngineFactory final: public NApplication::NRuntime::IEngineFactory {
+public:
+    [[nodiscard]] std::unique_ptr<NEngine::Engine> Create(NEngine::EngineConfig config) override {
+        auto runtime = std::make_unique<BlockingFirstDrawRuntime>();
+        Runtime = runtime.get();
 
-std::unique_ptr<NEngine::Engine> CreateBlockingEngine(NEngine::EngineConfig config) {
-    auto runtime = std::make_unique<BlockingFirstDrawRuntime>();
-    g_blockingRuntime = runtime.get();
+        return NEngine::NRuntime::EngineFactory::Create(config, std::move(runtime));
+    }
 
-    return NEngine::NRuntime::EngineFactory::Create(config, std::move(runtime));
-}
+    BlockingFirstDrawRuntime* Runtime = nullptr;
+};
 
 NApplication::ApplicationConfig MakeConfig() {
     return {
@@ -182,9 +189,7 @@ protected:
 
     void TearDown() override {
         NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
-        NApplication::NInternal::SetEngineFactoryForTests(nullptr);
         g_fakeState = nullptr;
-        g_blockingRuntime = nullptr;
     }
 
     FakeWindowState m_state;
@@ -194,6 +199,13 @@ class RecordingApplication: public NApplication::Application {
 public:
     explicit RecordingApplication(const NApplication::ApplicationConfig& config, FakeWindowState& state)
         : Application(config)
+        , m_state(state) {
+    }
+
+    RecordingApplication(const NApplication::ApplicationConfig& config,
+                         FakeWindowState& state,
+                         std::unique_ptr<NApplication::NRuntime::IEngineFactory> engineFactory)
+        : Application(config, std::move(engineFactory))
         , m_state(state) {
     }
 
@@ -341,15 +353,17 @@ TEST_F(ApplicationTest, AllowsShutdownRequestFromWindowCallback) {
 }
 
 TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure) {
-    NApplication::NInternal::SetEngineFactoryForTests(&CreateBlockingEngine);
-
     NApplication::ApplicationConfig config = MakeConfig();
     config.MaxActiveFrames = 1;
 
+    auto engineFactory = std::make_unique<BlockingEngineFactory>();
+    BlockingEngineFactory& blockingEngineFactory = *engineFactory;
+
     m_state.OnProcessEvents = [](FakeWindowState& state) {
         if (state.ProcessEventsCount == 4) {
-            g_blockingRuntime->FinishFirstDraw();
-            EXPECT_TRUE(g_blockingRuntime->WaitFirstDrawFinished(1s));
+            auto* runtime = static_cast<BlockingEngineFactory*>(state.EngineFactory)->Runtime;
+            runtime->FinishFirstDraw();
+            EXPECT_TRUE(runtime->WaitFirstDrawFinished(1s));
         }
     };
 
@@ -370,7 +384,9 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
         int m_drawCount = 0;
     };
 
-    BackpressureApplication backpressureApplication{config, m_state};
+    m_state.EngineFactory = &blockingEngineFactory;
+
+    BackpressureApplication backpressureApplication{config, m_state, std::move(engineFactory)};
 
     backpressureApplication.Run();
 
