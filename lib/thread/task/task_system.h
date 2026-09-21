@@ -188,10 +188,11 @@ private:
     [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopLocalReadyTask(WorkerIndex workerIndex);
     [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopInjectedReadyTask();
     [[nodiscard]] std::shared_ptr<TaskHandle::State> TryStealReadyTask(WorkerIndex workerIndex);
-    [[nodiscard]] bool
+    [[nodiscard]] static bool
     TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& state, TaskHandle& task, TaskFunction& function);
     void RetireTask(std::uint64_t taskId);
     void DrainRetiredTasksLocked();
+    void ReleaseOutstandingTask() noexcept;
     void CompleteState(const std::shared_ptr<TaskHandle::State>& state,
                        ETaskStatus status,
                        std::optional<ErrorInfo> error = std::nullopt);
@@ -209,7 +210,6 @@ private:
 
 private:
     mutable std::mutex m_mutex;
-    std::condition_variable m_idleCondition;
     std::shared_ptr<OwnerToken> m_ownerToken;
     const std::size_t m_workerCount;
     std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> m_activeTasks;

@@ -152,6 +152,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
     state->Id = id;
 
     std::vector<std::uint64_t> linkedDependencies;
+    bool outstandingCommitted = false;
 
     try {
         linkedDependencies.reserve(dependencies.size());
@@ -178,17 +179,19 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
         const TaskHandle handle{id, state};
         state->Task = std::move(task);
         m_activeTasks.emplace(id, state);
-        m_outstandingTasks.fetch_add(1, std::memory_order_release);
 
         Task& storedTask = state->Task;
 
         if (storedTask.Status == ETaskStatus::READY) {
+            m_outstandingTasks.fetch_add(1, std::memory_order_release);
+            outstandingCommitted = true;
             MakeReadyLocked(id, storedTask);
+        } else if (storedTask.Status == ETaskStatus::WAITING) {
+            m_outstandingTasks.fetch_add(1, std::memory_order_release);
+            outstandingCommitted = true;
         } else if (storedTask.Status == ETaskStatus::CANCELLED) {
             ReleaseExecutionPayloadLocked(storedTask);
             m_activeTasks.erase(id);
-            m_outstandingTasks.fetch_sub(1, std::memory_order_acq_rel);
-            m_idleCondition.notify_all();
         }
 
 #ifndef NDEBUG
@@ -212,6 +215,10 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
         }
 
         m_activeTasks.erase(id);
+
+        if (outstandingCommitted) {
+            ReleaseOutstandingTask();
+        }
 
         if (m_nextTaskId == id + 1) {
             --m_nextTaskId;
@@ -255,8 +262,7 @@ void TaskSystem::Cancel(const TaskHandle& task) {
     ReleaseExecutionPayloadLocked(storedTask);
     m_activeTasks.erase(task.GetId());
     task.m_state->Condition.notify_all();
-    m_outstandingTasks.fetch_sub(1, std::memory_order_acq_rel);
-    m_idleCondition.notify_all();
+    ReleaseOutstandingTask();
 }
 
 void TaskSystem::Wait(const TaskHandle& task) {
@@ -277,9 +283,17 @@ void TaskSystem::WaitIdle() {
                               "TaskSystem::WaitIdle cannot be called from a worker thread of the same TaskSystem");
     }
 
-    std::unique_lock lock{m_mutex};
+    while (true) {
+        const std::size_t outstanding = m_outstandingTasks.load(std::memory_order_acquire);
 
-    m_idleCondition.wait(lock, [this] { return m_outstandingTasks.load(std::memory_order_acquire) == 0; });
+        if (outstanding == 0) {
+            break;
+        }
+
+        m_outstandingTasks.wait(outstanding, std::memory_order_acquire);
+    }
+
+    std::lock_guard lock{m_mutex};
     DrainRetiredTasksLocked();
 }
 
@@ -434,6 +448,14 @@ void TaskSystem::DrainRetiredTasksLocked() {
     }
 }
 
+void TaskSystem::ReleaseOutstandingTask() noexcept {
+    const std::size_t previousOutstanding = m_outstandingTasks.fetch_sub(1, std::memory_order_acq_rel);
+
+    if (previousOutstanding == 1) {
+        m_outstandingTasks.notify_all();
+    }
+}
+
 void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
                                ETaskStatus status,
                                std::optional<ErrorInfo> error) {
@@ -494,8 +516,7 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
 
     state->Condition.notify_all();
     RetireTask(state->Id);
-    m_outstandingTasks.fetch_sub(1, std::memory_order_acq_rel);
-    m_idleCondition.notify_all();
+    ReleaseOutstandingTask();
 }
 
 void TaskSystem::PropagateCancellationLocked(Task& task) {
@@ -519,7 +540,7 @@ void TaskSystem::PropagateCancellationLocked(Task& task) {
         ReleaseExecutionPayloadLocked(dependentTask);
         m_activeTasks.erase(dependent);
         dependentState->Condition.notify_all();
-        m_outstandingTasks.fetch_sub(1, std::memory_order_acq_rel);
+        ReleaseOutstandingTask();
     }
 }
 
@@ -538,7 +559,7 @@ void TaskSystem::CancelPendingTasksLocked() noexcept {
         ReleaseExecutionPayloadLocked(task);
         taskIt = m_activeTasks.erase(taskIt);
         state->Condition.notify_all();
-        m_outstandingTasks.fetch_sub(1, std::memory_order_acq_rel);
+        ReleaseOutstandingTask();
     }
 }
 
@@ -629,7 +650,7 @@ void TaskSystem::StopWorkers() noexcept {
     }
 
     m_readyWakeups.release(static_cast<std::ptrdiff_t>(m_workerCount));
-    m_idleCondition.notify_all();
+    m_outstandingTasks.notify_all();
 
     for (std::thread& worker: m_workers) {
         if (worker.joinable()) {
@@ -677,12 +698,13 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
                 error = MakeFailureError(std::current_exception());
             }
 
+            function = {};
             CompleteState(state, error.has_value() ? ETaskStatus::FAILED : ETaskStatus::COMPLETED, std::move(error));
         } catch (...) {
             if (state) {
                 CompleteState(state, ETaskStatus::FAILED, MakeFailureError(std::current_exception()));
             } else {
-                m_idleCondition.notify_all();
+                m_outstandingTasks.notify_all();
             }
         }
     }

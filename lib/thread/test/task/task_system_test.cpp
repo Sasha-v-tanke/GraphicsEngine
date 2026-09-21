@@ -562,6 +562,31 @@ TEST(TaskSystem, DoesNotLoseWakeupsAcrossRepeatedIdleSubmissions) {
     }
 }
 
+TEST(TaskSystem, WaitIdleDoesNotLoseConcurrentLastCompletionWakeup) {
+    constexpr std::size_t iterations = 512;
+
+    for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
+        NCommon::TaskSystem taskSystem{1};
+        Gate finishTask;
+        Gate waiterStarted;
+        Gate waiterFinished;
+
+        const NCommon::TaskHandle task = taskSystem.Submit([&](NCommon::TaskContext&) { finishTask.Wait(); });
+
+        std::thread waiter{[&] {
+            waiterStarted.Open();
+            taskSystem.WaitIdle();
+            waiterFinished.Open();
+        }};
+
+        ASSERT_TRUE(waiterStarted.WaitForOpen());
+        finishTask.Open();
+        EXPECT_TRUE(waiterFinished.WaitForOpen());
+        waiter.join();
+        taskSystem.Wait(task);
+    }
+}
+
 TEST(TaskSystem, StealsWorkerLocalReadyTasks) {
     constexpr std::size_t workerCount = 2;
 
