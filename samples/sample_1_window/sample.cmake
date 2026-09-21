@@ -1,4 +1,4 @@
-SAMPLE(Base)
+SAMPLE(Window)
 
 SOURCES(
     main.cpp

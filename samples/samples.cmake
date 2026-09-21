@@ -1,3 +1,3 @@
 RECURSE(
-    base
+    sample_1_window
 )

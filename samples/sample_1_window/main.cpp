@@ -2,9 +2,8 @@
 #include <iostream>
 
 #include <window/window.h>
-#include <window/window_config.h>
-#include <window/window_size.h>
-#include <window/window_type.h>
+
+namespace {
 
 class SampleWindow final: public NWindow::Window {
 public:
@@ -23,6 +22,8 @@ protected:
         std::cout << "Window close requested\n";
     }
 };
+
+} // namespace
 
 int main() {
     try {
