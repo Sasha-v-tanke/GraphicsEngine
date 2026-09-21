@@ -34,9 +34,10 @@ CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
 локальную задачу и отклоняется как invalid argument.
 
 Terminal state остаётся доступным через `TaskHandle`, пока пользователь хранит handle и соответствующий `TaskSystem`
-жив. Scheduler при переходе в terminal state удаляет задачу из active lookup и освобождает execution payload: callback,
-dependency edges и captured resources, которые удерживались только callback-ом. Поэтому память scheduler не растёт
-пропорционально total submissions за всё время жизни `TaskSystem`.
+жив. Scheduler при переходе в terminal state сразу освобождает execution payload: callback, dependency edges и captured
+resources, которые удерживались только callback-ом. Registry record публикуется в allocation-free intrusive retirement
+list и удаляется из active lookup при следующем drain. Поэтому память scheduler не растёт пропорционально total
+submissions за всё время жизни `TaskSystem`.
 
 После уничтожения `TaskSystem` оставшийся `TaskHandle` является stale value object. Использовать его с новым или другим
 `TaskSystem` нельзя; такой handle должен быть отвергнут.
@@ -105,8 +106,8 @@ handles.
 READY hot path не использует один общий mutex вокруг всех READY operations: worker-local queues, global injection queue
 и task state имеют отдельную синхронизацию. Worker claim-ит `READY -> RUNNING` через task-local state, а independent
 task completion не требует global registry lock. Dependency graph updates остаются под graph/registry lock только для
-задач с dependents или cancellation propagation. Terminal task records чистятся отложенным registry scan вне per-task
-completion path.
+задач с dependents или cancellation propagation. Terminal task records попадают в intrusive retirement list и чистятся
+targeted drain вне per-task completion path.
 Idle workers блокируются на semaphore wakeup primitive; atomic READY counter используется для shutdown/drain checks и
 защиты от lost wakeups. Ожидание idle state не требует busy spin.
 

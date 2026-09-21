@@ -185,6 +185,19 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
 
         Task& storedTask = state->Task;
 
+        if (storedTask.Status == ETaskStatus::CANCELLED) {
+            ReleaseExecutionPayloadLocked(storedTask);
+            m_activeTasks.erase(id);
+#ifndef NDEBUG
+            ValidateDagLocked();
+#endif
+            return handle;
+        }
+
+#ifndef NDEBUG
+        ValidateDagLocked();
+#endif
+
         // Commit outstanding accounting only after throwing registry insertion has succeeded.
         if (storedTask.Status == ETaskStatus::READY) {
             m_outstandingTasks.fetch_add(1, std::memory_order_release);
@@ -193,14 +206,8 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
         } else if (storedTask.Status == ETaskStatus::WAITING) {
             m_outstandingTasks.fetch_add(1, std::memory_order_release);
             outstandingCommitted = true;
-        } else if (storedTask.Status == ETaskStatus::CANCELLED) {
-            ReleaseExecutionPayloadLocked(storedTask);
-            m_activeTasks.erase(id);
         }
 
-#ifndef NDEBUG
-        ValidateDagLocked();
-#endif
         return handle;
     } catch (...) {
         for (const std::uint64_t dependencyId: linkedDependencies) {
