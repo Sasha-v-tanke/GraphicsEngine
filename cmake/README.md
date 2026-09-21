@@ -8,7 +8,7 @@ The public API is:
 ```cmake
 MODULE(name)
 SUBMODULE()
-PRIVATE_SUBMODULE()
+API()
 
 TEST_SUITE(name)
 TEST(name)
@@ -55,6 +55,10 @@ Create a module:
 
 ```cmake
 MODULE(Window)
+
+API(
+    window.h
+)
 
 SOURCES(
     window.cpp
@@ -240,7 +244,22 @@ SOURCES(
 )
 ```
 
-`.h` files in the current directory are collected automatically by entry macros. Header collection is not recursive.
+MODULE() and SUBMODULE() automatically collect local .h files
+as private target sources.
+
+Public module headers are declared explicitly with API(...)
+in the root module.cmake.
+
+Headers not listed in API(...) are implementation headers.
+
+```cmake
+API(
+    window.h
+    window_config.h
+    window_size.h
+    window_type.h
+)
+```
 
 ## Dependencies
 

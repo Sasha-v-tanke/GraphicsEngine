@@ -1,5 +1,10 @@
 MODULE(Application)
 
+API(
+    application.h
+    application_config.h
+)
+
 SOURCES(
     application.cpp
 )

@@ -1,10 +1,14 @@
 MODULE(Thread)
 
-RECURSE(
-    task
-    test
+API(
+    task/task_system.h
 )
 
 PRIVATE_DEPENDS(
     Common
+)
+
+RECURSE(
+    task
+    test
 )

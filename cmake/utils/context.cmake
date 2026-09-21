@@ -25,25 +25,4 @@ macro(_GRAPHICS_ENGINE_ADD_LOCAL_HEADERS)
             ${localHeaders}
         )
     endif ()
-
-    if (
-        localHeaders
-        AND GRAPHICS_ENGINE_CURRENT_CONTEXT STREQUAL "MODULE"
-    )
-        file(
-            RELATIVE_PATH
-            localDirectory
-            "${PROJECT_SOURCE_DIR}"
-            "${CMAKE_CURRENT_LIST_DIR}"
-        )
-
-        if (NOT "/${localDirectory}/" MATCHES "/internal/")
-            set_property(
-                TARGET ${GRAPHICS_ENGINE_CURRENT_TARGET}
-                APPEND
-                PROPERTY GRAPHICS_ENGINE_API_HEADERS
-                ${localHeaders}
-            )
-        endif ()
-    endif ()
 endmacro()
