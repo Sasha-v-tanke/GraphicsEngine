@@ -17,19 +17,13 @@ public:
     virtual void OnDraw() = 0;
 };
 
-class FrameLoop final {
+class FrameLoop final: public NCommon::NonTransferable {
 public:
     explicit FrameLoop(const ApplicationConfig& config);
 
     FrameLoop(const ApplicationConfig& config, std::unique_ptr<IEngineFactory> engineFactory);
 
     ~FrameLoop();
-
-    FrameLoop(const FrameLoop&) = delete;
-    FrameLoop& operator=(const FrameLoop&) = delete;
-
-    FrameLoop(FrameLoop&&) = delete;
-    FrameLoop& operator=(FrameLoop&&) = delete;
 
     void Start();
 
