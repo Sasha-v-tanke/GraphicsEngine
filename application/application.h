@@ -5,16 +5,12 @@
 #include <application/application_config.h>
 #include <window/window_size.h>
 
-namespace NEngine {
-class Engine;
-}
-
 namespace NWindow {
 class Window;
 }
 
 namespace NApplication::NRuntime {
-class IEngineFactory;
+class FrameLoop;
 }
 
 namespace NApplication {
@@ -38,8 +34,6 @@ public:
     [[nodiscard]] bool IsShutdownRequested() const;
 
 protected:
-    Application(const ApplicationConfig& config, std::unique_ptr<NRuntime::IEngineFactory> engineFactory);
-
     virtual void OnUpdate();
 
     virtual void OnDraw();
@@ -50,32 +44,19 @@ protected:
 
     virtual void OnClose();
 
-    void EngineUpdateCheckpoint();
-
-    void EngineDrawCheckpoint();
-
     [[nodiscard]] NWindow::Window& GetWindow() noexcept;
 
     [[nodiscard]] const NWindow::Window& GetWindow() const noexcept;
 
 private:
     class ApplicationWindow;
-    class EngineStopGuard;
-
-    enum class EFrameCheckpoint {
-        READY_FOR_USER_UPDATE,
-        WAITING_ENGINE_UPDATE,
-        READY_FOR_USER_DRAW,
-        WAITING_ENGINE_DRAW,
-    };
+    class FrameLoopCallbacks;
 
     void RunFrame();
 
 private:
     std::unique_ptr<NWindow::Window> m_window;
-    std::unique_ptr<NRuntime::IEngineFactory> m_engineFactory;
-    std::unique_ptr<NEngine::Engine> m_engine;
-    EFrameCheckpoint m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+    std::unique_ptr<NRuntime::FrameLoop> m_frameLoop;
 };
 
 } // namespace NApplication

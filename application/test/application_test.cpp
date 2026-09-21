@@ -10,7 +10,7 @@
 
 #include <application/application.h>
 #include <application/application_config.h>
-#include <application/runtime/engine_factory.h>
+#include <application/runtime/frame_loop.h>
 #include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
@@ -23,11 +23,8 @@ namespace {
 
 using namespace std::chrono_literals;
 
-class BlockingEngineFactory;
-
 struct FakeWindowState {
     NWindow::NInternal::IWindowEventSink* Sink = nullptr;
-    BlockingEngineFactory* EngineFactory = nullptr;
     void (*OnProcessEvents)(FakeWindowState& state) = nullptr;
     bool ShouldClose = false;
     bool EmitCloseOnNextProcessEvents = false;
@@ -172,6 +169,24 @@ public:
     BlockingFirstDrawRuntime* Runtime = nullptr;
 };
 
+class RecordingFrameLoopCallbacks final: public NApplication::NRuntime::IFrameLoopCallbacks {
+public:
+    explicit RecordingFrameLoopCallbacks(std::vector<std::string>& events)
+        : m_events(events) {
+    }
+
+    void OnUpdate() override {
+        m_events.emplace_back("user.update");
+    }
+
+    void OnDraw() override {
+        m_events.emplace_back("user.draw");
+    }
+
+private:
+    std::vector<std::string>& m_events;
+};
+
 NApplication::ApplicationConfig MakeConfig() {
     return {
             .Window = NWindow::WindowConfig{NWindow::EWindowType::GLFW},
@@ -202,27 +217,12 @@ public:
         , m_state(state) {
     }
 
-    RecordingApplication(const NApplication::ApplicationConfig& config,
-                         FakeWindowState& state,
-                         std::unique_ptr<NApplication::NRuntime::IEngineFactory> engineFactory)
-        : Application(config, std::move(engineFactory))
-        , m_state(state) {
-    }
-
 protected:
     void OnUpdate() override {
         m_state.Events.emplace_back("user.update");
 
         if (ThrowFromUpdate) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected update failure");
-        }
-
-        if (DrawCheckpointFromUpdate) {
-            EngineDrawCheckpoint();
-        }
-
-        if (UpdateCheckpointFromUpdate) {
-            EngineUpdateCheckpoint();
         }
 
         if (CloseFromUpdate) {
@@ -259,8 +259,6 @@ public:
     bool CloseFromCallback = false;
     bool ThrowFromUpdate = false;
     bool ThrowFromDraw = false;
-    bool DrawCheckpointFromUpdate = false;
-    bool UpdateCheckpointFromUpdate = false;
 };
 
 TEST_F(ApplicationTest, RunProcessesFramesUntilClose) {
@@ -324,16 +322,11 @@ TEST_F(ApplicationTest, RunsCallbacksAndFrameCheckpointsInOrderOnApplicationThre
 }
 
 TEST_F(ApplicationTest, RejectsInvalidCheckpointOrder) {
-    RecordingApplication application{MakeConfig(), m_state};
+    NApplication::NRuntime::FrameLoop frameLoop{MakeConfig()};
 
-    application.DrawCheckpointFromUpdate = true;
-
-    EXPECT_THROW(application.Run(), NCommon::Exception);
-
-    RecordingApplication secondApplication{MakeConfig(), m_state};
-    secondApplication.UpdateCheckpointFromUpdate = true;
-
-    EXPECT_THROW(secondApplication.Run(), NCommon::Exception);
+    frameLoop.Start();
+    EXPECT_THROW(frameLoop.EngineDrawCheckpoint(), NCommon::Exception);
+    EXPECT_THROW(frameLoop.EngineUpdateCheckpoint(), NCommon::Exception);
 }
 
 TEST_F(ApplicationTest, AllowsShutdownRequestFromWindowCallback) {
@@ -359,50 +352,32 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     auto engineFactory = std::make_unique<BlockingEngineFactory>();
     BlockingEngineFactory& blockingEngineFactory = *engineFactory;
 
-    m_state.OnProcessEvents = [](FakeWindowState& state) {
-        if (state.ProcessEventsCount == 4) {
-            auto* runtime = static_cast<BlockingEngineFactory*>(state.EngineFactory)->Runtime;
-            runtime->FinishFirstDraw();
-            EXPECT_TRUE(runtime->WaitFirstDrawFinished(1s));
-        }
-    };
+    NApplication::NRuntime::FrameLoop frameLoop{config, std::move(engineFactory)};
+    RecordingFrameLoopCallbacks callbacks{m_state.Events};
 
-    class BackpressureApplication final: public RecordingApplication {
-    public:
-        using RecordingApplication::RecordingApplication;
+    frameLoop.Start();
+    frameLoop.Step(callbacks);
+    frameLoop.Step(callbacks);
+    frameLoop.Step(callbacks);
 
-    protected:
-        void OnDraw() override {
-            RecordingApplication::OnDraw();
-
-            if (++m_drawCount == 2) {
-                RequestShutdown();
-            }
-        }
-
-    private:
-        int m_drawCount = 0;
-    };
-
-    m_state.EngineFactory = &blockingEngineFactory;
-
-    BackpressureApplication backpressureApplication{config, m_state, std::move(engineFactory)};
-
-    backpressureApplication.Run();
-
-    EXPECT_GE(m_state.ProcessEventsCount, 4);
     EXPECT_EQ(m_state.Events,
               (std::vector<std::string>{
-                      "window.events",
                       "user.update",
                       "user.draw",
-                      "window.events",
                       "user.update",
-                      "window.events",
-                      "window.events",
+              }));
+
+    blockingEngineFactory.Runtime->FinishFirstDraw();
+    EXPECT_TRUE(blockingEngineFactory.Runtime->WaitFirstDrawFinished(1s));
+
+    frameLoop.Step(callbacks);
+
+    EXPECT_EQ(m_state.Events,
+              (std::vector<std::string>{
+                      "user.update",
                       "user.draw",
-                      "window.request-close",
-                      "user.close",
+                      "user.update",
+                      "user.draw",
               }));
 }
 

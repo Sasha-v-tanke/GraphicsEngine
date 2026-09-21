@@ -1,12 +1,8 @@
 #include "application.h"
 
 #include <memory>
-#include <utility>
 
-#include <application/runtime/engine_factory.h>
-#include <engine/engine.h>
-#include <lib/common/error/error.h>
-#include <lib/common/error/exception.h>
+#include <application/runtime/frame_loop.h>
 #include <window/window.h>
 
 namespace NApplication {
@@ -35,60 +31,51 @@ private:
     Application& m_application;
 };
 
-class Application::EngineStopGuard final {
+class Application::FrameLoopCallbacks final: public NRuntime::IFrameLoopCallbacks {
 public:
-    explicit EngineStopGuard(NEngine::Engine& engine) noexcept
-        : m_engine(engine) {
+    explicit FrameLoopCallbacks(Application& application) noexcept
+        : m_application(application) {
     }
 
-    ~EngineStopGuard() {
-        m_engine.Stop();
+    void OnUpdate() override {
+        m_application.OnUpdate();
     }
 
-    EngineStopGuard(const EngineStopGuard&) = delete;
-    EngineStopGuard& operator=(const EngineStopGuard&) = delete;
+    void OnDraw() override {
+        m_application.OnDraw();
+    }
 
 private:
-    NEngine::Engine& m_engine;
+    Application& m_application;
 };
 
 Application::Application(const ApplicationConfig& config)
-    : Application(config, std::make_unique<NRuntime::DefaultEngineFactory>()) {
-}
-
-Application::Application(const ApplicationConfig& config, std::unique_ptr<NRuntime::IEngineFactory> engineFactory)
     : m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
-    , m_engineFactory(std::move(engineFactory))
-    , m_engine([this, &config] {
-        if (m_engineFactory == nullptr) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Application engine factory is null");
-        }
-
-        return NRuntime::CreateEngine(*m_engineFactory,
-                                      NEngine::EngineConfig{
-                                              .MaxActiveFrames = config.MaxActiveFrames,
-                                              .WorkerCount = config.WorkerCount,
-                                      });
-    }()) {
+    , m_frameLoop(std::make_unique<NRuntime::FrameLoop>(config)) {
 }
 
 Application::~Application() {
-    if (m_engine != nullptr) {
-        m_engine->Stop();
-        m_engine.reset();
+    if (m_frameLoop != nullptr) {
+        m_frameLoop->Stop();
+        m_frameLoop.reset();
     }
 
     m_window.reset();
 }
 
 void Application::Run() {
-    m_engine->Start();
-    m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
-    EngineStopGuard stopGuard{*m_engine};
+    m_frameLoop->Start();
 
-    while (!m_window->ShouldClose()) {
-        RunFrame();
+    try {
+        while (!m_window->ShouldClose()) {
+            RunFrame();
+        }
+    } catch (...) {
+        m_frameLoop->Stop();
+        throw;
     }
+
+    m_frameLoop->Stop();
 }
 
 void Application::RequestShutdown() {
@@ -114,26 +101,6 @@ void Application::OnFramebufferResize(NWindow::WindowSize) {
 void Application::OnClose() {
 }
 
-void Application::EngineUpdateCheckpoint() {
-    if (m_frameCheckpoint != EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application update checkpoint is out of order");
-    }
-
-    if (m_engine->Update()) {
-        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_DRAW;
-    }
-}
-
-void Application::EngineDrawCheckpoint() {
-    if (m_frameCheckpoint != EFrameCheckpoint::WAITING_ENGINE_DRAW) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application draw checkpoint is out of order");
-    }
-
-    if (m_engine->Draw()) {
-        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
-    }
-}
-
 NWindow::Window& Application::GetWindow() noexcept {
     return *m_window;
 }
@@ -149,27 +116,8 @@ void Application::RunFrame() {
         return;
     }
 
-    if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
-        OnUpdate();
-        m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
-    }
-
-    if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
-        EngineUpdateCheckpoint();
-
-        if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
-            return;
-        }
-    }
-
-    if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_DRAW) {
-        OnDraw();
-        m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_DRAW;
-    }
-
-    if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_DRAW) {
-        EngineDrawCheckpoint();
-    }
+    FrameLoopCallbacks callbacks{*this};
+    m_frameLoop->Step(callbacks);
 }
 
 } // namespace NApplication
