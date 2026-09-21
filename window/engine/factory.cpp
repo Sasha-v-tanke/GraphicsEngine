@@ -4,13 +4,13 @@
 
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
-#include <window/internal/engine.h>
+#include <window/engine/engine.h>
 
 #ifdef GRAPHICS_ENGINE_WINDOW_HAS_GLFW
-    #include <window/internal/glfw/window_engine.h>
+    #include <window/engine/glfw/window_engine.h>
 #endif
 
-namespace NWindow::NInternal {
+namespace NWindow::NEngine {
 
 namespace {
 
@@ -57,4 +57,4 @@ void SetWindowEngineFactoryForTests(WindowEngineFactory factory) {
     g_testFactory = factory;
 }
 
-} // namespace NWindow::NInternal
+} // namespace NWindow::NEngine

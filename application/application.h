@@ -6,11 +6,15 @@
 #include <window/window_size.h>
 
 namespace NWindow {
+
 class Window;
+
 }
 
 namespace NApplication::NRuntime {
+
 class FrameLoop;
+
 }
 
 namespace NApplication {

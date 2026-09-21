@@ -3,17 +3,17 @@
 #include <memory>
 #include <string_view>
 
-#include <window/internal/engine.h>
-#include <window/internal/event_sink.h>
-#include <window/internal/factory.h>
+#include <window/engine/engine.h>
+#include <window/engine/event_sink.h>
+#include <window/engine/factory.h>
 
 namespace NWindow {
 
-class Window::Impl final: public NInternal::IWindowEventSink {
+class Window::Impl final: public NEngine::IWindowEventSink {
 public:
     Impl(Window& window, const WindowConfig& config)
         : m_window(window)
-        , m_engine(NInternal::CreateWindowEngine(config)) {
+        , m_engine(NEngine::CreateWindowEngine(config)) {
         m_engine->AttachEventSink(*this);
     }
 
@@ -82,7 +82,7 @@ private:
 
     bool m_closeNotified = false;
 
-    std::unique_ptr<NInternal::IWindowEngine> m_engine;
+    std::unique_ptr<NEngine::IWindowEngine> m_engine;
 };
 
 Window::Window(const WindowConfig& config)

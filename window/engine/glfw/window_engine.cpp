@@ -12,10 +12,11 @@
 
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
-#include <window/internal/event_sink.h>
-#include <window/internal/glfw/event_queue.h>
+#include <lib/common/wrapper/non_transferable.h>
+#include <window/engine/event_queue.h>
+#include <window/engine/event_sink.h>
 
-namespace NWindow::NInternal::NGlfw {
+namespace NWindow::NEngine::NGlfw {
 
 namespace {
 
@@ -30,7 +31,7 @@ std::string GetGlfwErrorMessage(std::string_view fallback) {
     return std::format("{}: {} ({})", fallback, description, error);
 }
 
-class GlfwRuntime final {
+class GlfwRuntime final: public NCommon::NonTransferable {
 public:
     static std::shared_ptr<GlfwRuntime> Acquire() {
         std::lock_guard lock{GetMutex()};
@@ -55,12 +56,6 @@ public:
 
         glfwTerminate();
     }
-
-    GlfwRuntime(const GlfwRuntime&) = delete;
-    GlfwRuntime(GlfwRuntime&&) = delete;
-
-    GlfwRuntime& operator=(const GlfwRuntime&) = delete;
-    GlfwRuntime& operator=(GlfwRuntime&&) = delete;
 
     void ValidateThread() const {
         if (!IsThread()) {
@@ -269,4 +264,4 @@ std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config) {
     return std::make_unique<WindowEngine>(config);
 }
 
-} // namespace NWindow::NInternal::NGlfw
+} // namespace NWindow::NEngine::NGlfw

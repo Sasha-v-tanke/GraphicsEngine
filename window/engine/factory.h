@@ -4,7 +4,7 @@
 
 #include <window/window_config.h>
 
-namespace NWindow::NInternal {
+namespace NWindow::NEngine {
 
 class IWindowEngine;
 
@@ -14,4 +14,4 @@ using WindowEngineFactory = std::unique_ptr<IWindowEngine> (*)(const WindowConfi
 
 void SetWindowEngineFactoryForTests(WindowEngineFactory factory);
 
-} // namespace NWindow::NInternal
+} // namespace NWindow::NEngine

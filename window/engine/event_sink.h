@@ -2,7 +2,7 @@
 
 #include <window/window_size.h>
 
-namespace NWindow::NInternal {
+namespace NWindow::NEngine {
 
 class IWindowEventSink {
 public:
@@ -15,4 +15,4 @@ public:
     virtual void HandleClose() = 0;
 };
 
-} // namespace NWindow::NInternal
+} // namespace NWindow::NEngine

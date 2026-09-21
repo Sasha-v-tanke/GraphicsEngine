@@ -16,6 +16,6 @@ PRIVATE_DEPENDS(
 )
 
 RECURSE(
-    internal
+    engine
     test
 )

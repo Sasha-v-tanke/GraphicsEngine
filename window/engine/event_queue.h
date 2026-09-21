@@ -2,21 +2,10 @@
 
 #include <vector>
 
-#include <window/internal/event_sink.h>
-#include <window/window_size.h>
+#include <window/engine/event.h>
+#include <window/engine/event_sink.h>
 
-namespace NWindow::NInternal::NGlfw {
-
-enum class EWindowEventType {
-    RESIZE,
-    FRAMEBUFFER_RESIZE,
-    CLOSE,
-};
-
-struct WindowEvent {
-    EWindowEventType Type;
-    WindowSize Size{};
-};
+namespace NWindow::NEngine {
 
 class WindowEventQueue {
 public:
@@ -51,4 +40,4 @@ private:
     std::vector<WindowEvent> m_events;
 };
 
-} // namespace NWindow::NInternal::NGlfw
+} // namespace NWindow::NEngine
