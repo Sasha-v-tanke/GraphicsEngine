@@ -184,6 +184,7 @@ private:
     [[nodiscard]] static bool IsSuccessfulLocked(const Task& task) noexcept;
 
     void MakeReadyLocked(std::uint64_t taskId, Task& task);
+    static void CompactReadyQueueLocked(ReadyQueue& queue);
     void PublishReadyTask(std::shared_ptr<TaskHandle::State> state);
     [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopReadyTask(WorkerIndex workerIndex);
     [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopLocalReadyTask(WorkerIndex workerIndex);
@@ -191,6 +192,7 @@ private:
     [[nodiscard]] std::shared_ptr<TaskHandle::State> TryStealReadyTask(WorkerIndex workerIndex);
     [[nodiscard]] static bool
     TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& state, TaskHandle& task, TaskFunction& function);
+    void RetireTask(TaskHandle::State& state) noexcept;
     void DrainRetiredTasksLocked();
     void ReleaseOutstandingTask() noexcept;
     void CompleteState(const std::shared_ptr<TaskHandle::State>& state,
@@ -216,6 +218,7 @@ private:
     std::vector<std::unique_ptr<ReadyQueue>> m_workerReadyQueues;
     ReadyQueue m_injectedReadyQueue;
     std::vector<std::thread> m_workers;
+    std::atomic<TaskHandle::State*> m_retiredTasks = nullptr;
     std::counting_semaphore<> m_readyWakeups{0};
     std::atomic_size_t m_readyTaskCount = 0;
     std::atomic_size_t m_outstandingTasks = 0;

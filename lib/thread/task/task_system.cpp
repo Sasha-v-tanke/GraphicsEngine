@@ -72,6 +72,8 @@ struct TaskHandle::State {
     mutable std::mutex Mutex;
     std::condition_variable Condition;
     std::shared_ptr<const TaskSystem::OwnerToken> Owner;
+    std::atomic<TaskHandle::State*> RetiredNext = nullptr;
+    std::atomic_bool RetirementQueued = false;
     std::uint64_t Id = 0;
     TaskSystem::Task Task;
 };
@@ -342,15 +344,38 @@ void TaskSystem::MakeReadyLocked(std::uint64_t taskId, Task& task) {
     PublishReadyTask(m_activeTasks.at(taskId));
 }
 
+void TaskSystem::CompactReadyQueueLocked(ReadyQueue& queue) {
+    constexpr std::size_t minConsumedBeforeCompact = 1024;
+
+    if (queue.Head == 0) {
+        return;
+    }
+
+    if (queue.Head >= queue.Tasks.size()) {
+        queue.Tasks.clear();
+        queue.Head = 0;
+        return;
+    }
+
+    if (queue.Head < minConsumedBeforeCompact && queue.Head * 2 < queue.Tasks.size()) {
+        return;
+    }
+
+    queue.Tasks.erase(queue.Tasks.begin(), queue.Tasks.begin() + static_cast<std::ptrdiff_t>(queue.Head));
+    queue.Head = 0;
+}
+
 void TaskSystem::PublishReadyTask(std::shared_ptr<TaskHandle::State> state) {
     if (CurrentWorker.System == this) {
         ReadyQueue& queue = *m_workerReadyQueues[CurrentWorker.Index.GetValue()];
         {
             std::lock_guard queueLock{queue.Mutex};
+            CompactReadyQueueLocked(queue);
             queue.Tasks.push_back(std::move(state));
         }
     } else {
         std::lock_guard queueLock{m_injectedReadyQueue.Mutex};
+        CompactReadyQueueLocked(m_injectedReadyQueue);
         m_injectedReadyQueue.Tasks.push_back(std::move(state));
     }
 
@@ -404,10 +429,7 @@ std::shared_ptr<TaskHandle::State> TaskSystem::TryPopInjectedReadyTask() {
     std::shared_ptr<TaskHandle::State> state = std::move(m_injectedReadyQueue.Tasks[m_injectedReadyQueue.Head]);
     ++m_injectedReadyQueue.Head;
 
-    if (m_injectedReadyQueue.Head >= m_injectedReadyQueue.Tasks.size()) {
-        m_injectedReadyQueue.Tasks.clear();
-        m_injectedReadyQueue.Head = 0;
-    }
+    CompactReadyQueueLocked(m_injectedReadyQueue);
 
     m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
     return state;
@@ -428,10 +450,7 @@ std::shared_ptr<TaskHandle::State> TaskSystem::TryStealReadyTask(WorkerIndex wor
         std::shared_ptr<TaskHandle::State> state = std::move(queue.Tasks[queue.Head]);
         ++queue.Head;
 
-        if (queue.Head >= queue.Tasks.size()) {
-            queue.Tasks.clear();
-            queue.Head = 0;
-        }
+        CompactReadyQueueLocked(queue);
 
         m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
         return state;
@@ -457,17 +476,41 @@ bool TaskSystem::TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& sta
     return true;
 }
 
-void TaskSystem::DrainRetiredTasksLocked() {
-    for (auto taskIt = m_activeTasks.begin(); taskIt != m_activeTasks.end();) {
-        const auto& state = taskIt->second;
-        std::lock_guard taskLock{state->Mutex};
+void TaskSystem::RetireTask(TaskHandle::State& state) noexcept {
+    bool expected = false;
 
-        if (!IsTerminalLocked(state->Task)) {
-            ++taskIt;
-            continue;
+    if (!state.RetirementQueued.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    TaskHandle::State* head = m_retiredTasks.load(std::memory_order_acquire);
+
+    do {
+        state.RetiredNext.store(head, std::memory_order_relaxed);
+    } while (!m_retiredTasks.compare_exchange_weak(head, &state, std::memory_order_release, std::memory_order_acquire));
+}
+
+void TaskSystem::DrainRetiredTasksLocked() {
+    TaskHandle::State* retiredState = m_retiredTasks.exchange(nullptr, std::memory_order_acquire);
+
+    while (retiredState != nullptr) {
+        TaskHandle::State* next = retiredState->RetiredNext.load(std::memory_order_relaxed);
+        retiredState->RetiredNext.store(nullptr, std::memory_order_relaxed);
+
+        const auto taskIt = m_activeTasks.find(retiredState->Id);
+
+        if (taskIt != m_activeTasks.end() && taskIt->second.get() == retiredState) {
+            auto state = taskIt->second;
+            std::lock_guard taskLock{state->Mutex};
+
+            if (IsTerminalLocked(state->Task)) {
+                m_activeTasks.erase(taskIt);
+            } else {
+                state->RetirementQueued.store(false, std::memory_order_release);
+            }
         }
 
-        taskIt = m_activeTasks.erase(taskIt);
+        retiredState = next;
     }
 }
 
@@ -490,6 +533,7 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
             state->Task.Status = status;
             ReleaseExecutionPayloadLocked(state->Task);
             state->Condition.notify_all();
+            RetireTask(*state);
             ReleaseOutstandingTask();
             return;
         }
@@ -497,13 +541,16 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
 
     std::lock_guard lock{m_mutex};
     std::lock_guard taskLock{state->Mutex};
-    std::vector<std::uint64_t> dependents = std::move(state->Task.Dependents);
 
     if (status == ETaskStatus::COMPLETED) {
         ReadyQueue& readyQueue = *m_workerReadyQueues[CurrentWorker.Index.GetValue()];
         std::lock_guard readyQueueLock{readyQueue.Mutex};
-        readyQueue.Tasks.reserve(readyQueue.Tasks.size() + dependents.size());
-        std::size_t publishedReadyTasks = 0;
+        CompactReadyQueueLocked(readyQueue);
+        readyQueue.Tasks.reserve(readyQueue.Tasks.size() + state->Task.Dependents.size());
+
+        std::vector<std::shared_ptr<TaskHandle::State>> readyDependents;
+        readyDependents.reserve(state->Task.Dependents.size());
+        std::vector<std::uint64_t> dependents = std::move(state->Task.Dependents);
 
         for (const std::uint64_t dependent: dependents) {
             const auto dependentIt = m_activeTasks.find(dependent);
@@ -531,31 +578,41 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
                 if (previousRemaining != 1) {
                     continue;
                 }
-
-                dependentTask.Status = ETaskStatus::READY;
             }
 
-            readyQueue.Tasks.push_back(dependentState);
-            ++publishedReadyTasks;
+            readyDependents.push_back(dependentState);
         }
 
-        state->Task.Error = std::move(error);
-        state->Task.Status = status;
-        ReleaseExecutionPayloadLocked(state->Task);
+        if (!readyDependents.empty()) {
+            state->Task.Error = std::move(error);
+            state->Task.Status = status;
+            ReleaseExecutionPayloadLocked(state->Task);
 
-        if (publishedReadyTasks > 0) {
-            m_readyTaskCount.fetch_add(publishedReadyTasks, std::memory_order_release);
-            m_readyWakeups.release(static_cast<std::ptrdiff_t>(publishedReadyTasks));
+            for (std::shared_ptr<TaskHandle::State>& dependentState: readyDependents) {
+                {
+                    std::lock_guard dependentLock{dependentState->Mutex};
+                    dependentState->Task.Status = ETaskStatus::READY;
+                }
+
+                readyQueue.Tasks.push_back(std::move(dependentState));
+            }
+
+            m_readyTaskCount.fetch_add(readyDependents.size(), std::memory_order_release);
+            m_readyWakeups.release(static_cast<std::ptrdiff_t>(readyDependents.size()));
+        } else {
+            state->Task.Error = std::move(error);
+            state->Task.Status = status;
+            ReleaseExecutionPayloadLocked(state->Task);
         }
     } else {
         state->Task.Error = std::move(error);
-        state->Task.Dependents = std::move(dependents);
         state->Task.Status = status;
         PropagateCancellationLocked(state->Task);
         ReleaseExecutionPayloadLocked(state->Task);
     }
 
     state->Condition.notify_all();
+    RetireTask(*state);
     ReleaseOutstandingTask();
 }
 
