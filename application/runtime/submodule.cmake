@@ -1,4 +1,4 @@
-PRIVATE_SUBMODULE()
+SUBMODULE()
 
 SOURCES(
     engine_factory.cpp

@@ -1,5 +1,10 @@
 MODULE(Engine)
 
+API(
+    engine.h
+    engine_config.h
+)
+
 SOURCES(
     engine.cpp
 )
