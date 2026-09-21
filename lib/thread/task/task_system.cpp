@@ -596,12 +596,12 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
             ReleaseExecutionPayloadLocked(state->Task);
 
             for (std::shared_ptr<TaskHandle::State>& dependentState: readyDependents) {
+                readyQueue.Tasks.push_back(dependentState);
+
                 {
                     std::lock_guard dependentLock{dependentState->Mutex};
                     dependentState->Task.Status = ETaskStatus::READY;
                 }
-
-                readyQueue.Tasks.push_back(std::move(dependentState));
             }
 
             m_readyTaskCount.fetch_add(readyDependents.size(), std::memory_order_release);
