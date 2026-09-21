@@ -174,22 +174,27 @@ private:
 
     struct ReadyQueue {
         std::mutex Mutex;
-        std::deque<std::uint64_t> Tasks;
+        std::deque<std::shared_ptr<TaskHandle::State>> Tasks;
     };
 
     [[nodiscard]] Task& GetTaskLocked(const TaskHandle& task);
     [[nodiscard]] const Task& GetTaskLocked(const TaskHandle& task) const;
-    [[nodiscard]] Task& GetTaskLocked(std::uint64_t taskId);
     [[nodiscard]] static bool IsTerminalLocked(const Task& task) noexcept;
     [[nodiscard]] static bool IsSuccessfulLocked(const Task& task) noexcept;
 
     void MakeReadyLocked(std::uint64_t taskId, Task& task);
-    void PublishReadyTask(std::uint64_t taskId);
-    [[nodiscard]] bool TryPopReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId);
-    [[nodiscard]] bool TryPopLocalReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId);
-    [[nodiscard]] bool TryPopInjectedReadyTask(std::uint64_t& taskId);
-    [[nodiscard]] bool TryStealReadyTask(WorkerIndex workerIndex, std::uint64_t& taskId);
-    void CompleteLocked(std::uint64_t taskId, ETaskStatus status, std::optional<ErrorInfo> error = std::nullopt);
+    void PublishReadyTask(std::shared_ptr<TaskHandle::State> state);
+    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopReadyTask(WorkerIndex workerIndex);
+    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopLocalReadyTask(WorkerIndex workerIndex);
+    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopInjectedReadyTask();
+    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryStealReadyTask(WorkerIndex workerIndex);
+    [[nodiscard]] bool
+    TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& state, TaskHandle& task, TaskFunction& function);
+    void RetireTask(std::uint64_t taskId);
+    void DrainRetiredTasksLocked();
+    void CompleteState(const std::shared_ptr<TaskHandle::State>& state,
+                       ETaskStatus status,
+                       std::optional<ErrorInfo> error = std::nullopt);
     void PropagateCancellationLocked(Task& task);
     void CancelPendingTasksLocked() noexcept;
     static void ReleaseExecutionPayloadLocked(Task& task);
@@ -210,12 +215,14 @@ private:
     std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> m_activeTasks;
     std::vector<std::unique_ptr<ReadyQueue>> m_workerReadyQueues;
     ReadyQueue m_injectedReadyQueue;
+    std::mutex m_retiredMutex;
+    std::deque<std::uint64_t> m_retiredTasks;
     std::vector<std::thread> m_workers;
     std::counting_semaphore<> m_readyWakeups{0};
     std::atomic_size_t m_readyTaskCount = 0;
+    std::atomic_size_t m_outstandingTasks = 0;
     std::uint64_t m_nextTaskId = 1;
-    std::size_t m_runningTasks = 0;
-    bool m_stopping = false;
+    std::atomic_bool m_stopping = false;
 };
 
 } // namespace NCommon

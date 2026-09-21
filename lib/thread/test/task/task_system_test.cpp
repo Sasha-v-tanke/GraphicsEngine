@@ -1,4 +1,3 @@
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -564,54 +563,30 @@ TEST(TaskSystem, DoesNotLoseWakeupsAcrossRepeatedIdleSubmissions) {
 }
 
 TEST(TaskSystem, StealsWorkerLocalReadyTasks) {
-    constexpr std::size_t workerCount = 4;
-    constexpr std::size_t childCount = 64;
+    constexpr std::size_t workerCount = 2;
 
     NCommon::TaskSystem taskSystem{workerCount};
-    Gate releaseChildren;
-    std::array<std::atomic<std::size_t>, workerCount> executionsByWorker{};
-    std::vector<NCommon::TaskHandle> children;
-    std::mutex childrenMutex;
+    Gate childRan;
+    std::atomic<std::size_t> parentWorker = workerCount;
+    std::atomic<std::size_t> childWorker = workerCount;
 
     const NCommon::TaskHandle parent = taskSystem.Submit([&](NCommon::TaskContext& context) {
-        std::vector<NCommon::TaskHandle> localChildren;
-        localChildren.reserve(childCount);
+        parentWorker = context.GetWorkerIndex().GetValue();
 
-        for (std::size_t index = 0; index < childCount; ++index) {
-            localChildren.push_back(context.Spawn([&](NCommon::TaskContext& childContext) {
-                releaseChildren.Wait();
-                executionsByWorker[childContext.GetWorkerIndex().GetValue()].fetch_add(1);
-            }));
-        }
+        context.Spawn([&](NCommon::TaskContext& childContext) {
+            childWorker = childContext.GetWorkerIndex().GetValue();
+            childRan.Open();
+        });
 
-        std::lock_guard lock{childrenMutex};
-        children = std::move(localChildren);
+        EXPECT_TRUE(childRan.WaitForOpen());
     });
 
     taskSystem.Wait(parent);
-
-    {
-        std::lock_guard lock{childrenMutex};
-        ASSERT_EQ(children.size(), childCount);
-    }
-
-    releaseChildren.Open();
     taskSystem.WaitIdle();
 
-    std::size_t activeWorkers = 0;
-    std::size_t totalExecutions = 0;
-
-    for (const auto& executions: executionsByWorker) {
-        const std::size_t count = executions.load();
-        totalExecutions += count;
-
-        if (count > 0) {
-            ++activeWorkers;
-        }
-    }
-
-    EXPECT_EQ(totalExecutions, childCount);
-    EXPECT_GT(activeWorkers, 1U);
+    EXPECT_NE(parentWorker.load(), workerCount);
+    EXPECT_NE(childWorker.load(), workerCount);
+    EXPECT_NE(parentWorker.load(), childWorker.load());
 }
 
 TEST(TaskSystem, CancelsReadyAndWaitingTasks) {

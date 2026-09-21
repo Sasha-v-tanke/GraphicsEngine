@@ -1,6 +1,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <thread>
 #include <vector>
 
 #include <benchmark/benchmark.h>
@@ -14,6 +16,11 @@ namespace {
 
 [[nodiscard]] std::size_t TaskCount(benchmark::State& state) {
     return static_cast<std::size_t>(state.range(1));
+}
+
+[[nodiscard]] std::int64_t NowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
 }
 
 void BM_TaskSystemIndependentThroughput(benchmark::State& state) {
@@ -47,23 +54,37 @@ void BM_TaskSystemFanInLatency(benchmark::State& state) {
     for ([[maybe_unused]] auto _: state) {
         NCommon::TaskSystem taskSystem{WorkerCount(state)};
         std::atomic<std::size_t> prerequisitesDone = 0;
-        std::atomic<bool> fanInCompleted = false;
+        std::atomic<bool> releasePrerequisites = false;
+        std::atomic<std::int64_t> lastPrerequisiteCompletedAtNs = 0;
+        std::atomic<std::int64_t> fanInCompletedAtNs = 0;
         std::vector<NCommon::TaskHandle> prerequisites;
         prerequisites.reserve(TaskCount(state));
 
         for (std::size_t index = 0; index < TaskCount(state); ++index) {
-            prerequisites.push_back(taskSystem.Submit([&](NCommon::TaskContext&) { prerequisitesDone.fetch_add(1); }));
+            prerequisites.push_back(taskSystem.Submit([&](NCommon::TaskContext&) {
+                while (!releasePrerequisites.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+
+                if (prerequisitesDone.fetch_add(1, std::memory_order_acq_rel) + 1 == TaskCount(state)) {
+                    lastPrerequisiteCompletedAtNs.store(NowNs(), std::memory_order_release);
+                }
+            }));
         }
 
-        const NCommon::TaskHandle fanIn =
-                taskSystem.Submit([&](NCommon::TaskContext&) { fanInCompleted = true; }, prerequisites);
+        const NCommon::TaskHandle fanIn = taskSystem.Submit(
+                [&](NCommon::TaskContext&) { fanInCompletedAtNs.store(NowNs(), std::memory_order_release); },
+                prerequisites);
 
-        const auto start = std::chrono::steady_clock::now();
+        releasePrerequisites.store(true, std::memory_order_release);
         taskSystem.Wait(fanIn);
-        const auto elapsed = std::chrono::steady_clock::now() - start;
+
+        const std::int64_t lastPrerequisiteCompletedAt = lastPrerequisiteCompletedAtNs.load(std::memory_order_acquire);
+        std::int64_t fanInCompletedAt = fanInCompletedAtNs.load(std::memory_order_acquire);
+        const auto elapsed = std::chrono::nanoseconds{fanInCompletedAt - lastPrerequisiteCompletedAt};
 
         benchmark::DoNotOptimize(prerequisitesDone.load());
-        benchmark::DoNotOptimize(fanInCompleted.load());
+        benchmark::DoNotOptimize(fanInCompletedAt);
         state.SetIterationTime(std::chrono::duration<double>(elapsed).count());
     }
 

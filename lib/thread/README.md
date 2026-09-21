@@ -103,11 +103,15 @@ Application thread не выполняет worker callbacks; он только �
 handles.
 
 READY hot path не использует один общий mutex вокруг всех READY operations: worker-local queues, global injection queue
-и graph/state имеют отдельную синхронизацию. Idle workers блокируются на semaphore wakeup primitive; atomic READY counter
-используется для shutdown/drain checks и защиты от lost wakeups. Ожидание idle state не требует busy spin.
+и task state имеют отдельную синхронизацию. Worker claim-ит `READY -> RUNNING` через task-local state, а independent
+task completion не требует global registry lock. Dependency graph updates остаются под graph/registry lock только для
+задач с dependents или cancellation propagation. Retired task records чистятся отложенно вне per-task execution path.
+Idle workers блокируются на semaphore wakeup primitive; atomic READY counter используется для shutdown/drain checks и
+защиты от lost wakeups. Ожидание idle state не требует busy spin.
 
 Performance coverage живёт в `benchmarks/task`: `BM_TaskSystemIndependentThroughput` измеряет throughput независимых
-READY tasks, `BM_TaskSystemFanInLatency` измеряет latency fan-in dependent task после завершения prerequisites.
+READY tasks, `BM_TaskSystemFanInLatency` измеряет latency fan-in dependent task от фактического завершения последнего
+prerequisite до завершения dependent callback.
 
 Debug builds выполняют lightweight validation DAG invariants при изменении graph/state: duplicate edges, обратные
 dependency/dependent links и consistency `RemainingDependencies`. Эти проверки не входят в release hot path.
