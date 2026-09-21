@@ -105,7 +105,8 @@ handles.
 READY hot path не использует один общий mutex вокруг всех READY operations: worker-local queues, global injection queue
 и task state имеют отдельную синхронизацию. Worker claim-ит `READY -> RUNNING` через task-local state, а independent
 task completion не требует global registry lock. Dependency graph updates остаются под graph/registry lock только для
-задач с dependents или cancellation propagation. Retired task records чистятся отложенно вне per-task execution path.
+задач с dependents или cancellation propagation. Terminal task records чистятся отложенным registry scan вне per-task
+completion path.
 Idle workers блокируются на semaphore wakeup primitive; atomic READY counter используется для shutdown/drain checks и
 защиты от lost wakeups. Ожидание idle state не требует busy spin.
 

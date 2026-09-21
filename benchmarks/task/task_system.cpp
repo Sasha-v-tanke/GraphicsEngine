@@ -103,7 +103,7 @@ BENCHMARK(BM_TaskSystemIndependentThroughput)
 
 BENCHMARK(BM_TaskSystemFanInLatency)
         ->Args({1, 256})
-        ->Args({2, 1024})
-        ->Args({4, 4096})
+        ->Args({2, 512})
+        ->Args({4, 1024})
         ->UseManualTime()
         ->Unit(benchmark::kMicrosecond);

@@ -174,7 +174,8 @@ private:
 
     struct ReadyQueue {
         std::mutex Mutex;
-        std::deque<std::shared_ptr<TaskHandle::State>> Tasks;
+        std::vector<std::shared_ptr<TaskHandle::State>> Tasks;
+        std::size_t Head = 0;
     };
 
     [[nodiscard]] Task& GetTaskLocked(const TaskHandle& task);
@@ -190,7 +191,6 @@ private:
     [[nodiscard]] std::shared_ptr<TaskHandle::State> TryStealReadyTask(WorkerIndex workerIndex);
     [[nodiscard]] static bool
     TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& state, TaskHandle& task, TaskFunction& function);
-    void RetireTask(std::uint64_t taskId);
     void DrainRetiredTasksLocked();
     void ReleaseOutstandingTask() noexcept;
     void CompleteState(const std::shared_ptr<TaskHandle::State>& state,
@@ -215,8 +215,6 @@ private:
     std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> m_activeTasks;
     std::vector<std::unique_ptr<ReadyQueue>> m_workerReadyQueues;
     ReadyQueue m_injectedReadyQueue;
-    std::mutex m_retiredMutex;
-    std::deque<std::uint64_t> m_retiredTasks;
     std::vector<std::thread> m_workers;
     std::counting_semaphore<> m_readyWakeups{0};
     std::atomic_size_t m_readyTaskCount = 0;

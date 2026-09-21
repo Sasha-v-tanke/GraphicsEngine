@@ -157,6 +157,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
     try {
         linkedDependencies.reserve(dependencies.size());
 
+        // Link dependency edges transactionally; the catch block below removes every edge already linked.
         for (const TaskHandle& dependency: dependencies) {
             static_cast<void>(GetTaskLocked(dependency));
             std::lock_guard dependencyLock{dependency.m_state->Mutex};
@@ -182,6 +183,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
 
         Task& storedTask = state->Task;
 
+        // Commit outstanding accounting only after throwing registry insertion has succeeded.
         if (storedTask.Status == ETaskStatus::READY) {
             m_outstandingTasks.fetch_add(1, std::memory_order_release);
             outstandingCommitted = true;
@@ -206,6 +208,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction function, std::span<const TaskHan
                 continue;
             }
 
+            std::lock_guard dependencyLock{dependencyIt->second->Mutex};
             std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
             const auto dependentIt = std::ranges::find(dependents, id);
 
@@ -344,7 +347,7 @@ void TaskSystem::PublishReadyTask(std::shared_ptr<TaskHandle::State> state) {
         ReadyQueue& queue = *m_workerReadyQueues[CurrentWorker.Index.GetValue()];
         {
             std::lock_guard queueLock{queue.Mutex};
-            queue.Tasks.push_front(std::move(state));
+            queue.Tasks.push_back(std::move(state));
         }
     } else {
         std::lock_guard queueLock{m_injectedReadyQueue.Mutex};
@@ -371,12 +374,20 @@ std::shared_ptr<TaskHandle::State> TaskSystem::TryPopLocalReadyTask(WorkerIndex 
     ReadyQueue& queue = *m_workerReadyQueues[workerIndex.GetValue()];
     std::lock_guard queueLock{queue.Mutex};
 
-    if (queue.Tasks.empty()) {
+    if (queue.Head >= queue.Tasks.size()) {
+        queue.Tasks.clear();
+        queue.Head = 0;
         return {};
     }
 
-    std::shared_ptr<TaskHandle::State> state = std::move(queue.Tasks.front());
-    queue.Tasks.pop_front();
+    std::shared_ptr<TaskHandle::State> state = std::move(queue.Tasks.back());
+    queue.Tasks.pop_back();
+
+    if (queue.Head >= queue.Tasks.size()) {
+        queue.Tasks.clear();
+        queue.Head = 0;
+    }
+
     m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
     return state;
 }
@@ -384,12 +395,20 @@ std::shared_ptr<TaskHandle::State> TaskSystem::TryPopLocalReadyTask(WorkerIndex 
 std::shared_ptr<TaskHandle::State> TaskSystem::TryPopInjectedReadyTask() {
     std::lock_guard queueLock{m_injectedReadyQueue.Mutex};
 
-    if (m_injectedReadyQueue.Tasks.empty()) {
+    if (m_injectedReadyQueue.Head >= m_injectedReadyQueue.Tasks.size()) {
+        m_injectedReadyQueue.Tasks.clear();
+        m_injectedReadyQueue.Head = 0;
         return {};
     }
 
-    std::shared_ptr<TaskHandle::State> state = std::move(m_injectedReadyQueue.Tasks.front());
-    m_injectedReadyQueue.Tasks.pop_front();
+    std::shared_ptr<TaskHandle::State> state = std::move(m_injectedReadyQueue.Tasks[m_injectedReadyQueue.Head]);
+    ++m_injectedReadyQueue.Head;
+
+    if (m_injectedReadyQueue.Head >= m_injectedReadyQueue.Tasks.size()) {
+        m_injectedReadyQueue.Tasks.clear();
+        m_injectedReadyQueue.Head = 0;
+    }
+
     m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
     return state;
 }
@@ -400,12 +419,20 @@ std::shared_ptr<TaskHandle::State> TaskSystem::TryStealReadyTask(WorkerIndex wor
         ReadyQueue& queue = *m_workerReadyQueues[victimIndex];
         std::lock_guard queueLock{queue.Mutex};
 
-        if (queue.Tasks.empty()) {
+        if (queue.Head >= queue.Tasks.size()) {
+            queue.Tasks.clear();
+            queue.Head = 0;
             continue;
         }
 
-        std::shared_ptr<TaskHandle::State> state = std::move(queue.Tasks.back());
-        queue.Tasks.pop_back();
+        std::shared_ptr<TaskHandle::State> state = std::move(queue.Tasks[queue.Head]);
+        ++queue.Head;
+
+        if (queue.Head >= queue.Tasks.size()) {
+            queue.Tasks.clear();
+            queue.Head = 0;
+        }
+
         m_readyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
         return state;
     }
@@ -430,21 +457,17 @@ bool TaskSystem::TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& sta
     return true;
 }
 
-void TaskSystem::RetireTask(std::uint64_t taskId) {
-    std::lock_guard lock{m_retiredMutex};
-    m_retiredTasks.push_back(taskId);
-}
-
 void TaskSystem::DrainRetiredTasksLocked() {
-    std::deque<std::uint64_t> retiredTasks;
+    for (auto taskIt = m_activeTasks.begin(); taskIt != m_activeTasks.end();) {
+        const auto& state = taskIt->second;
+        std::lock_guard taskLock{state->Mutex};
 
-    {
-        std::lock_guard lock{m_retiredMutex};
-        retiredTasks.swap(m_retiredTasks);
-    }
+        if (!IsTerminalLocked(state->Task)) {
+            ++taskIt;
+            continue;
+        }
 
-    for (const std::uint64_t taskId: retiredTasks) {
-        m_activeTasks.erase(taskId);
+        taskIt = m_activeTasks.erase(taskIt);
     }
 }
 
@@ -459,21 +482,28 @@ void TaskSystem::ReleaseOutstandingTask() noexcept {
 void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
                                ETaskStatus status,
                                std::optional<ErrorInfo> error) {
-    std::vector<std::uint64_t> dependents;
-
-    {
+    if (status == ETaskStatus::COMPLETED) {
         std::lock_guard taskLock{state->Mutex};
-        state->Task.Status = status;
-        state->Task.Error = std::move(error);
-        dependents = state->Task.Dependents;
 
-        if (status == ETaskStatus::COMPLETED && dependents.empty()) {
+        if (state->Task.Dependents.empty()) {
+            state->Task.Error = std::move(error);
+            state->Task.Status = status;
             ReleaseExecutionPayloadLocked(state->Task);
+            state->Condition.notify_all();
+            ReleaseOutstandingTask();
+            return;
         }
     }
 
-    if (status == ETaskStatus::COMPLETED && !dependents.empty()) {
-        std::lock_guard lock{m_mutex};
+    std::lock_guard lock{m_mutex};
+    std::lock_guard taskLock{state->Mutex};
+    std::vector<std::uint64_t> dependents = std::move(state->Task.Dependents);
+
+    if (status == ETaskStatus::COMPLETED) {
+        ReadyQueue& readyQueue = *m_workerReadyQueues[CurrentWorker.Index.GetValue()];
+        std::lock_guard readyQueueLock{readyQueue.Mutex};
+        readyQueue.Tasks.reserve(readyQueue.Tasks.size() + dependents.size());
+        std::size_t publishedReadyTasks = 0;
 
         for (const std::uint64_t dependent: dependents) {
             const auto dependentIt = m_activeTasks.find(dependent);
@@ -483,39 +513,49 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
             }
 
             auto& dependentState = dependentIt->second;
-            std::lock_guard dependentLock{dependentState->Mutex};
-            Task& dependentTask = dependentState->Task;
+            {
+                std::lock_guard dependentLock{dependentState->Mutex};
+                Task& dependentTask = dependentState->Task;
 
-            if (dependentTask.Status != ETaskStatus::WAITING) {
-                continue;
-            }
+                if (dependentTask.Status != ETaskStatus::WAITING) {
+                    continue;
+                }
 
-            const std::size_t previousRemaining =
-                    dependentTask.RemainingDependencies.fetch_sub(1, std::memory_order_acq_rel);
+                const std::size_t previousRemaining =
+                        dependentTask.RemainingDependencies.fetch_sub(1, std::memory_order_acq_rel);
 
-            if (previousRemaining == 0) {
-                FailDagInvariantLocked("Task dependency counter underflow while completing prerequisite");
-            }
+                if (previousRemaining == 0) {
+                    FailDagInvariantLocked("Task dependency counter underflow while completing prerequisite");
+                }
 
-            if (previousRemaining == 1) {
+                if (previousRemaining != 1) {
+                    continue;
+                }
+
                 dependentTask.Status = ETaskStatus::READY;
-                PublishReadyTask(dependentState);
             }
+
+            readyQueue.Tasks.push_back(dependentState);
+            ++publishedReadyTasks;
         }
 
-        {
-            std::lock_guard taskLock{state->Mutex};
-            ReleaseExecutionPayloadLocked(state->Task);
+        state->Task.Error = std::move(error);
+        state->Task.Status = status;
+        ReleaseExecutionPayloadLocked(state->Task);
+
+        if (publishedReadyTasks > 0) {
+            m_readyTaskCount.fetch_add(publishedReadyTasks, std::memory_order_release);
+            m_readyWakeups.release(static_cast<std::ptrdiff_t>(publishedReadyTasks));
         }
-    } else if (status != ETaskStatus::COMPLETED) {
-        std::lock_guard lock{m_mutex};
-        std::lock_guard taskLock{state->Mutex};
+    } else {
+        state->Task.Error = std::move(error);
+        state->Task.Dependents = std::move(dependents);
+        state->Task.Status = status;
         PropagateCancellationLocked(state->Task);
         ReleaseExecutionPayloadLocked(state->Task);
     }
 
     state->Condition.notify_all();
-    RetireTask(state->Id);
     ReleaseOutstandingTask();
 }
 
@@ -600,8 +640,17 @@ void TaskSystem::ValidateDagLocked() const {
             const std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
             const bool hasBacklink = std::ranges::find(dependents, taskId) != dependents.end();
 
-            if (!hasBacklink && IsSuccessfulLocked(dependencyIt->second->Task)) {
-                continue;
+            if (!hasBacklink) {
+                if (dependencyIt->second->Task.Status == ETaskStatus::RUNNING) {
+                    if (task.Status == ETaskStatus::WAITING) {
+                        ++unfinishedDependencies;
+                    }
+                    continue;
+                }
+
+                if (IsSuccessfulLocked(dependencyIt->second->Task)) {
+                    continue;
+                }
             }
 
             if (!hasBacklink) {
