@@ -11,6 +11,7 @@ SOURCES(
 
 PUBLIC_DEPENDS(
     Window
+    Common
 )
 
 PRIVATE_DEPENDS(

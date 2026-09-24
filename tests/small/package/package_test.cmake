@@ -93,15 +93,6 @@ if (
     )
 endif ()
 
-if (
-    EXISTS
-    "${installDirectory}/include/GraphicsEngine/lib/common/error/error.h"
-)
-    message(FATAL_ERROR
-        "Private Common dependency leaked into public API"
-    )
-endif ()
-
 
 # =============================================================================
 # Consumer
