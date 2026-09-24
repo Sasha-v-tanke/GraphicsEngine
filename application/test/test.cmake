@@ -4,6 +4,7 @@ TEST(Application)
 
 SOURCES(
     application_test.cpp
+    runtime_mvp_test.cpp
 )
 
 PRIVATE_DEPENDS(
