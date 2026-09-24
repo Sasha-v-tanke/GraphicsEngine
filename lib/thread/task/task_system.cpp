@@ -124,27 +124,34 @@ TaskSystem::TaskRegistry::LinkDependencyEdgesLocked(std::uint64_t taskId,
     LinkedDependencies result;
     result.LinkedIds.reserve(dependencies.size());
 
-    for (const TaskHandle& dependency: dependencies) {
-        ValidateHandleOwner(dependency);
-        std::lock_guard dependencyLock{dependency.m_state->Mutex};
-        Task& dependencyTask = dependency.m_state->Task;
+    try {
+        for (const TaskHandle& dependency: dependencies) {
+            ValidateHandleOwner(dependency);
+            std::lock_guard dependencyLock{dependency.m_state->Mutex};
+            Task& dependencyTask = dependency.m_state->Task;
 
-        if (!TaskLifetime::IsTerminalLocked(dependencyTask)) {
-            dependencyTask.Dependents.push_back(taskId);
-            result.LinkedIds.push_back(dependency.GetId());
-            task.RemainingDependencies.fetch_add(1, std::memory_order_relaxed);
-        } else if (!TaskLifetime::IsSuccessfulLocked(dependencyTask)) {
-            result.Cancelled = true;
-            break;
+            if (!TaskLifetime::IsTerminalLocked(dependencyTask)) {
+                dependencyTask.Dependents.push_back(taskId);
+                result.LinkedIds.push_back(dependency.GetId());
+                task.RemainingDependencies.fetch_add(1, std::memory_order_relaxed);
+            } else if (!TaskLifetime::IsSuccessfulLocked(dependencyTask)) {
+                result.Cancelled = true;
+                break;
+            }
         }
-    }
 
-    if (result.Cancelled) {
+        if (!result.Cancelled) {
+            return result;
+        }
+
         RollbackDependencyEdgesLocked(taskId, result.LinkedIds);
         task.RemainingDependencies.store(0, std::memory_order_relaxed);
+        return result;
+    } catch (...) {
+        RollbackDependencyEdgesLocked(taskId, result.LinkedIds);
+        task.RemainingDependencies.store(0, std::memory_order_relaxed);
+        throw;
     }
-
-    return result;
 }
 
 void TaskSystem::TaskRegistry::RollbackDependencyEdgesLocked(std::uint64_t taskId,
