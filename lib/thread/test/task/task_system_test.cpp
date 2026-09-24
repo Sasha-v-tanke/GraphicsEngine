@@ -760,6 +760,31 @@ TEST(TaskSystem, CancelsMultipleDependentsWhenDependencyFails) {
     EXPECT_EQ(taskSystem.GetStatus(third), NCommon::ETaskStatus::CANCELLED);
 }
 
+TEST(TaskSystem, ImmediatelyCancelledSubmissionRollsBackActivePrerequisiteLinks) {
+    NCommon::TaskSystem taskSystem{2};
+    Gate blockerStarted;
+    Gate blockerFinish;
+
+    const NCommon::TaskHandle blocker = taskSystem.Submit([&](NCommon::TaskContext&) {
+        blockerStarted.Open();
+        blockerFinish.Wait();
+    });
+    ASSERT_TRUE(blockerStarted.WaitForOpen());
+
+    const NCommon::TaskHandle failed =
+            taskSystem.Submit([](NCommon::TaskContext&) { throw std::runtime_error{"boom"}; });
+    taskSystem.Wait(failed);
+
+    const std::vector<NCommon::TaskHandle> dependencies{blocker, failed};
+    const NCommon::TaskHandle dependent = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+
+    EXPECT_EQ(taskSystem.GetStatus(dependent), NCommon::ETaskStatus::CANCELLED);
+
+    blockerFinish.Open();
+    taskSystem.Wait(blocker);
+    taskSystem.WaitIdle();
+}
+
 TEST(TaskSystem, CancelsFailedDependencyTree) {
     NCommon::TaskSystem taskSystem{2};
 
