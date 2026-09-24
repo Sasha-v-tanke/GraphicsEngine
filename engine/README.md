@@ -6,15 +6,10 @@
 Он владеет runtime subsystems и задаёт их lifetime:
 
 - `TaskSystem`;
-- `FrameScheduler`;
-- будущие `World`;
-- будущие `Resources`;
-- будущие `Renderer`;
-- будущие `Graphics`.
+- `FrameScheduler`.
 
-Подключение новых subsystems должно происходить как расширение owned runtime состава Engine.
-Роль Engine при этом не меняется: он создаёт subsystems, запускает frame work, хранит runtime error channel и
-останавливает runtime в безопасном порядке.
+Engine создаёт subsystems, запускает frame work, хранит runtime error channel и останавливает runtime в безопасном
+порядке.
 
 Публичный API Engine не содержит GLFW, Vulkan или других backend-specific типов.
 Backend integration должна оставаться за private runtime/subsystem boundary.
