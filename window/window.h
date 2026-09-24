@@ -3,22 +3,17 @@
 #include <memory>
 #include <string_view>
 
+#include <lib/common/wrapper/non_transferable.h>
 #include <window/window_config.h>
 #include <window/window_size.h>
 
 namespace NWindow {
 
-class Window {
+class Window: public NCommon::NonTransferable {
 public:
     explicit Window(const WindowConfig& config);
 
     virtual ~Window();
-
-    Window(const Window&) = delete;
-    Window& operator=(const Window&) = delete;
-
-    Window(Window&&) = delete;
-    Window& operator=(Window&&) = delete;
 
     void SetTitle(std::string_view title);
 

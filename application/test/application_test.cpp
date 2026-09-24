@@ -14,9 +14,9 @@
 #include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
-#include <window/internal/engine.h>
-#include <window/internal/event_sink.h>
-#include <window/internal/factory.h>
+#include <window/engine/engine.h>
+#include <window/engine/event_sink.h>
+#include <window/engine/factory.h>
 #include <window/window_config.h>
 
 namespace {
@@ -24,7 +24,7 @@ namespace {
 using namespace std::chrono_literals;
 
 struct FakeWindowState {
-    NWindow::NInternal::IWindowEventSink* Sink = nullptr;
+    NWindow::NEngine::IWindowEventSink* Sink = nullptr;
     void (*OnProcessEvents)(FakeWindowState& state) = nullptr;
     bool ShouldClose = false;
     bool EmitCloseOnNextProcessEvents = false;
@@ -36,7 +36,7 @@ struct FakeWindowState {
 
 thread_local FakeWindowState* g_fakeState = nullptr;
 
-class FakeWindowEngine final: public NWindow::NInternal::IWindowEngine {
+class FakeWindowEngine final: public NWindow::NEngine::IWindowEngine {
 public:
     explicit FakeWindowEngine(FakeWindowState& state)
         : m_state(state) {
@@ -47,7 +47,7 @@ public:
         ++m_state.DestroyedCount;
     }
 
-    void AttachEventSink(NWindow::NInternal::IWindowEventSink& eventSink) override {
+    void AttachEventSink(NWindow::NEngine::IWindowEventSink& eventSink) override {
         m_state.Sink = &eventSink;
     }
 
@@ -96,7 +96,7 @@ private:
     NWindow::WindowSize m_size{};
 };
 
-std::unique_ptr<NWindow::NInternal::IWindowEngine> CreateFakeWindowEngine(const NWindow::WindowConfig&) {
+std::unique_ptr<NWindow::NEngine::IWindowEngine> CreateFakeWindowEngine(const NWindow::WindowConfig&) {
     return std::make_unique<FakeWindowEngine>(*g_fakeState);
 }
 
@@ -199,11 +199,11 @@ class ApplicationTest: public testing::Test {
 protected:
     void SetUp() override {
         g_fakeState = &m_state;
-        NWindow::NInternal::SetWindowEngineFactoryForTests(&CreateFakeWindowEngine);
+        NWindow::NEngine::SetWindowEngineFactoryForTests(&CreateFakeWindowEngine);
     }
 
     void TearDown() override {
-        NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
+        NWindow::NEngine::SetWindowEngineFactoryForTests(nullptr);
         g_fakeState = nullptr;
     }
 

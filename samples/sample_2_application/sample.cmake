@@ -1,9 +1,9 @@
-SAMPLE(Base)
+SAMPLE(Application)
 
 SOURCES(
     main.cpp
 )
 
 PRIVATE_DEPENDS(
-    Window
+    Application
 )

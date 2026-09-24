@@ -4,7 +4,7 @@
 
 #include <window/window_size.h>
 
-namespace NWindow::NInternal {
+namespace NWindow::NEngine {
 
 class IWindowEventSink;
 
@@ -30,4 +30,4 @@ public:
     virtual void ProcessEvents() = 0;
 };
 
-} // namespace NWindow::NInternal
+} // namespace NWindow::NEngine

@@ -7,10 +7,10 @@
 #include <gtest/gtest.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
-#include <window/internal/engine.h>
-#include <window/internal/event_sink.h>
-#include <window/internal/factory.h>
-#include <window/internal/glfw/event_queue.h>
+#include <window/engine/engine.h>
+#include <window/engine/event_queue.h>
+#include <window/engine/event_sink.h>
+#include <window/engine/factory.h>
 #include <window/window.h>
 #include <window/window_config.h>
 #include <window/window_size.h>
@@ -37,7 +37,7 @@ struct FakeWindowState {
 
 thread_local FakeWindowState* g_fakeState = nullptr;
 
-class FakeWindowEngine final: public NWindow::NInternal::IWindowEngine {
+class FakeWindowEngine final: public NWindow::NEngine::IWindowEngine {
 public:
     explicit FakeWindowEngine(FakeWindowState& state)
         : m_state(state) {
@@ -48,7 +48,7 @@ public:
         ++m_state.DestroyedCount;
     }
 
-    void AttachEventSink(NWindow::NInternal::IWindowEventSink& eventSink) override {
+    void AttachEventSink(NWindow::NEngine::IWindowEventSink& eventSink) override {
         m_eventSink = &eventSink;
     }
 
@@ -111,14 +111,14 @@ public:
     }
 
 private:
-    NWindow::NInternal::IWindowEventSink* m_eventSink = nullptr;
+    NWindow::NEngine::IWindowEventSink* m_eventSink = nullptr;
 
     FakeWindowState& m_state;
 };
 
 thread_local FakeWindowEngine* g_fakeEngine = nullptr;
 
-std::unique_ptr<NWindow::NInternal::IWindowEngine> CreateFakeWindowEngine(const NWindow::WindowConfig& config) {
+std::unique_ptr<NWindow::NEngine::IWindowEngine> CreateFakeWindowEngine(const NWindow::WindowConfig& config) {
     g_fakeState->ConfigType = config.Type;
     g_fakeState->ConfigTitle = config.Title;
     g_fakeState->ConfigSize = config.Size;
@@ -134,7 +134,7 @@ std::unique_ptr<NWindow::NInternal::IWindowEngine> CreateFakeWindowEngine(const 
     return engine;
 }
 
-std::unique_ptr<NWindow::NInternal::IWindowEngine> CreateNullWindowEngine(const NWindow::WindowConfig&) {
+std::unique_ptr<NWindow::NEngine::IWindowEngine> CreateNullWindowEngine(const NWindow::WindowConfig&) {
     return nullptr;
 }
 
@@ -173,11 +173,11 @@ protected:
         g_fakeState = &m_state;
         g_fakeEngine = nullptr;
 
-        NWindow::NInternal::SetWindowEngineFactoryForTests(&CreateFakeWindowEngine);
+        NWindow::NEngine::SetWindowEngineFactoryForTests(&CreateFakeWindowEngine);
     }
 
     void TearDown() override {
-        NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
+        NWindow::NEngine::SetWindowEngineFactoryForTests(nullptr);
 
         g_fakeEngine = nullptr;
         g_fakeState = nullptr;
@@ -186,7 +186,7 @@ protected:
     FakeWindowState m_state;
 };
 
-class RecordingEventSink final: public NWindow::NInternal::IWindowEventSink {
+class RecordingEventSink final: public NWindow::NEngine::IWindowEventSink {
 public:
     void HandleResize(NWindow::WindowSize size) override {
         Events.emplace_back("resize");
@@ -371,11 +371,11 @@ TEST_F(WindowTest, DoesNotSynthesizeResizeFromSetSize) {
 }
 
 TEST(WindowGlfwEventQueue, DispatchesQueuedEventsExplicitly) {
-    NWindow::NInternal::NGlfw::WindowEventQueue queue;
+    NWindow::NEngine::WindowEventQueue queue;
     RecordingEventSink eventSink;
 
     queue.Enqueue({
-            .Type = NWindow::NInternal::NGlfw::EWindowEventType::RESIZE,
+            .Type = NWindow::NEngine::EWindowEventType::RESIZE,
             .Size =
                     {
                             .Width = 640,
@@ -384,7 +384,7 @@ TEST(WindowGlfwEventQueue, DispatchesQueuedEventsExplicitly) {
     });
 
     queue.Enqueue({
-            .Type = NWindow::NInternal::NGlfw::EWindowEventType::FRAMEBUFFER_RESIZE,
+            .Type = NWindow::NEngine::EWindowEventType::FRAMEBUFFER_RESIZE,
             .Size =
                     {
                             .Width = 1280,
@@ -393,7 +393,7 @@ TEST(WindowGlfwEventQueue, DispatchesQueuedEventsExplicitly) {
     });
 
     queue.Enqueue({
-            .Type = NWindow::NInternal::NGlfw::EWindowEventType::CLOSE,
+            .Type = NWindow::NEngine::EWindowEventType::CLOSE,
     });
 
     EXPECT_TRUE(eventSink.Events.empty());
@@ -473,7 +473,7 @@ TEST_F(WindowTest, CloseNotifiesExactlyOnce) {
 // -----------------------------------------------------------------------------
 
 TEST_F(WindowTest, RejectsNullEngineFromFactory) {
-    NWindow::NInternal::SetWindowEngineFactoryForTests(&CreateNullWindowEngine);
+    NWindow::NEngine::SetWindowEngineFactoryForTests(&CreateNullWindowEngine);
 
     try {
         NWindow::Window window{
@@ -491,7 +491,7 @@ TEST_F(WindowTest, RejectsNullEngineFromFactory) {
 }
 
 TEST(WindowFactory, RejectsUnavailableImplementation) {
-    NWindow::NInternal::SetWindowEngineFactoryForTests(nullptr);
+    NWindow::NEngine::SetWindowEngineFactoryForTests(nullptr);
 
     try {
         NWindow::Window window{

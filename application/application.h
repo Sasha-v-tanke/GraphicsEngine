@@ -3,29 +3,28 @@
 #include <memory>
 
 #include <application/application_config.h>
+#include <lib/common/wrapper/non_transferable.h>
 #include <window/window_size.h>
 
 namespace NWindow {
+
 class Window;
+
 }
 
 namespace NApplication::NRuntime {
+
 class FrameLoop;
+
 }
 
 namespace NApplication {
 
-class Application {
+class Application: public NCommon::NonTransferable {
 public:
     explicit Application(const ApplicationConfig& config);
 
     virtual ~Application();
-
-    Application(const Application&) = delete;
-    Application& operator=(const Application&) = delete;
-
-    Application(Application&&) = delete;
-    Application& operator=(Application&&) = delete;
 
     void Run();
 

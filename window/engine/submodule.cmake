@@ -1,0 +1,7 @@
+SUBMODULE()
+
+SOURCES(
+    factory.cpp
+)
+
+INIT_WINDOW_ENGINE(GLFW)
