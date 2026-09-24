@@ -212,7 +212,7 @@ public:
                 m_frameRecords[static_cast<std::size_t>(m_nextDrawFrameIndex % m_frameScheduler->GetMaxActiveFrames())];
 
         if (!record.HasUpdateTask || record.Frame.GetFrameIndex() != m_nextDrawFrameIndex) {
-            return false;
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application draw checkpoint is out of order");
         }
 
         const NController::FrameHandle frame = record.Frame;
@@ -223,6 +223,7 @@ public:
 
             static_cast<void>(
                     m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunDraw(frame); }, dependencies));
+            m_frameScheduler->SignalDraw(frame);
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
             throw;

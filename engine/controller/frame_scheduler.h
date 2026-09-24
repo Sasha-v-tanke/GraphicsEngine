@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -32,11 +33,23 @@ public:
     }
 
     [[nodiscard]] std::uint64_t GetFrameIndex() const noexcept {
-        return m_frameIndex;
+        return m_applicationFrameIndex;
+    }
+
+    [[nodiscard]] std::uint64_t GetApplicationFrameIndex() const noexcept {
+        return m_applicationFrameIndex;
+    }
+
+    [[nodiscard]] std::uint64_t GetSimulationIndex() const noexcept {
+        return m_simulationIndex;
     }
 
     [[nodiscard]] std::size_t GetSlotIndex() const noexcept {
-        return m_slotIndex;
+        return m_frameSlotIndex;
+    }
+
+    [[nodiscard]] std::size_t GetFrameSlotIndex() const noexcept {
+        return m_frameSlotIndex;
     }
 
     [[nodiscard]] std::uint64_t GetGeneration() const noexcept {
@@ -50,18 +63,21 @@ private:
     static constexpr std::size_t INVALID_SLOT_INDEX = std::numeric_limits<std::size_t>::max();
 
     FrameHandle(std::uint64_t ownerId,
-                std::uint64_t frameIndex,
-                std::size_t slotIndex,
+                std::uint64_t applicationFrameIndex,
+                std::uint64_t simulationIndex,
+                std::size_t frameSlotIndex,
                 std::uint64_t generation) noexcept
         : m_ownerId(ownerId)
-        , m_frameIndex(frameIndex)
-        , m_slotIndex(slotIndex)
+        , m_applicationFrameIndex(applicationFrameIndex)
+        , m_simulationIndex(simulationIndex)
+        , m_frameSlotIndex(frameSlotIndex)
         , m_generation(generation) {
     }
 
     std::uint64_t m_ownerId = 0;
-    std::uint64_t m_frameIndex = INVALID_FRAME_INDEX;
-    std::size_t m_slotIndex = INVALID_SLOT_INDEX;
+    std::uint64_t m_applicationFrameIndex = INVALID_FRAME_INDEX;
+    std::uint64_t m_simulationIndex = INVALID_FRAME_INDEX;
+    std::size_t m_frameSlotIndex = INVALID_SLOT_INDEX;
     std::uint64_t m_generation = 0;
 
     friend class FrameScheduler;
@@ -69,9 +85,14 @@ private:
 
 class FrameScheduler final: private NCommon::NonTransferable {
 public:
+    using Clock = std::chrono::steady_clock;
+    using Duration = Clock::duration;
+
     explicit FrameScheduler(const EngineConfig& config);
 
     [[nodiscard]] std::optional<FrameHandle> TryAcquireFrame();
+
+    void SignalDraw(FrameHandle frame);
 
     void ArmFrame(FrameHandle frame);
 
@@ -89,6 +110,8 @@ public:
 
     [[nodiscard]] EFrameState GetState(FrameHandle frame) const;
 
+    [[nodiscard]] Duration GetDeltaTime(FrameHandle frame) const;
+
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
 
     [[nodiscard]] std::size_t GetMaxActiveFrames() const noexcept {
@@ -96,6 +119,18 @@ public:
     }
 
 private:
+    enum class ECheckpointSignal {
+        UPDATE,
+        DRAW,
+    };
+
+    struct FrameSignal {
+        bool IsSet = false;
+        std::uint64_t Generation = 0;
+        std::uint64_t ApplicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
+        std::uint64_t SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
+    };
+
     class FrameArena final: private NCommon::NonTransferable {
     public:
         [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() noexcept {
@@ -112,8 +147,13 @@ private:
 
     struct FrameExecutionSlot {
         EFrameState State = EFrameState::FREE;
-        std::uint64_t FrameIndex = FrameHandle::INVALID_FRAME_INDEX;
+        std::uint64_t ApplicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
+        std::uint64_t SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
         std::uint64_t Generation = 0;
+        FrameSignal UpdateSignal;
+        FrameSignal DrawSignal;
+        std::optional<Clock::time_point> SimulationStartedAt;
+        Duration DeltaTime = Duration::zero();
         FrameArena Arena;
     };
 
@@ -134,7 +174,10 @@ private:
 
     std::unique_ptr<FrameExecutionSlot[]> m_slots;
 
-    std::uint64_t m_nextFrameIndex = 0;
+    ECheckpointSignal m_nextCheckpointSignal = ECheckpointSignal::UPDATE;
+    std::uint64_t m_nextApplicationFrameIndex = 0;
+    std::uint64_t m_nextSimulationIndex = 0;
+    std::optional<Clock::time_point> m_previousSimulationStartedAt;
 };
 
 } // namespace NEngine::NController

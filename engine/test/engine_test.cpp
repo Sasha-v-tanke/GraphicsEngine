@@ -153,10 +153,12 @@ TEST(Engine, RejectsRepeatedInvalidCalls) {
     engine.Start();
 
     ExpectError(NCommon::EError::INVALID_STATE, [&] { engine.Start(); });
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine.Draw()); });
 
     EXPECT_TRUE(engine.Update());
-    EXPECT_FALSE(engine.Update());
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine.Update()); });
     EXPECT_TRUE(engine.Draw());
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine.Draw()); });
 }
 
 TEST(Engine, RollsBackPartialStartFailure) {
