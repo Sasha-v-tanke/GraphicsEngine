@@ -4,7 +4,6 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -178,29 +177,76 @@ private:
         std::size_t Head = 0;
     };
 
-    [[nodiscard]] Task& GetTaskLocked(const TaskHandle& task);
-    [[nodiscard]] const Task& GetTaskLocked(const TaskHandle& task) const;
-    [[nodiscard]] static bool IsTerminalLocked(const Task& task) noexcept;
-    [[nodiscard]] static bool IsSuccessfulLocked(const Task& task) noexcept;
+    struct SubmittedTask {
+        std::uint64_t Id = 0;
+        std::shared_ptr<TaskHandle::State> State;
+        Task Task;
+        std::vector<std::uint64_t> LinkedDependencies;
+        bool OutstandingCommitted = false;
+    };
 
-    void MakeReadyLocked(std::uint64_t taskId, Task& task);
-    static void CompactReadyQueueLocked(ReadyQueue& queue);
-    void PublishReadyTask(std::shared_ptr<TaskHandle::State> state);
-    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopReadyTask(WorkerIndex workerIndex);
-    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopLocalReadyTask(WorkerIndex workerIndex);
-    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopInjectedReadyTask();
-    [[nodiscard]] std::shared_ptr<TaskHandle::State> TryStealReadyTask(WorkerIndex workerIndex);
-    [[nodiscard]] static bool
-    TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& state, TaskHandle& task, TaskFunction& function);
-    void RetireTask(TaskHandle::State& state) noexcept;
-    void DrainRetiredTasksLocked();
-    void ReleaseOutstandingTask() noexcept;
+    struct LinkedDependencies {
+        bool Cancelled = false;
+        std::vector<std::uint64_t> LinkedIds;
+    };
+
+    struct TaskRegistry {
+        std::shared_ptr<OwnerToken> Owner;
+        std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> ActiveTasks;
+        std::uint64_t NextTaskId = 1;
+
+        TaskRegistry();
+
+        void ValidateHandleOwner(const TaskHandle& task) const;
+        [[nodiscard]] std::shared_ptr<TaskHandle::State> AllocateStateLocked();
+        void ValidateDependenciesLocked(std::span<const TaskHandle> dependencies) const;
+        [[nodiscard]] LinkedDependencies
+        LinkDependencyEdgesLocked(std::uint64_t taskId, Task& task, std::span<const TaskHandle> dependencies);
+        void RollbackDependencyEdgesLocked(std::uint64_t taskId, std::span<const std::uint64_t> dependencyIds);
+        void CommitActiveTaskLocked(std::uint64_t taskId, std::shared_ptr<TaskHandle::State> state);
+        void RollbackAllocationLocked(std::uint64_t taskId);
+    };
+
+    struct ReadyScheduler {
+        std::vector<std::unique_ptr<ReadyQueue>> WorkerQueues;
+        ReadyQueue InjectedQueue;
+        std::counting_semaphore<> Wakeups{0};
+        std::atomic_size_t ReadyTaskCount = 0;
+
+        void Initialize(std::size_t workerCount);
+        void PublishReadyTask(TaskSystem& owner, std::shared_ptr<TaskHandle::State> state);
+        [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopReadyTask(WorkerIndex workerIndex);
+        [[nodiscard]] bool HasReadyTasks() const noexcept;
+        void WakeAll(std::size_t workerCount);
+        static void CompactReadyQueueLocked(ReadyQueue& queue);
+
+    private:
+        [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopLocalReadyTask(WorkerIndex workerIndex);
+        [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopInjectedReadyTask();
+        [[nodiscard]] std::shared_ptr<TaskHandle::State> TryStealReadyTask(WorkerIndex workerIndex);
+    };
+
+    struct TaskLifetime {
+        std::atomic<TaskHandle::State*> RetiredTasks = nullptr;
+        std::atomic_size_t OutstandingTasks = 0;
+
+        [[nodiscard]] static bool IsTerminalLocked(const Task& task) noexcept;
+        [[nodiscard]] static bool IsSuccessfulLocked(const Task& task) noexcept;
+        [[nodiscard]] static bool
+        TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& state, TaskHandle& task, TaskFunction& function);
+        static void ReleaseExecutionPayloadLocked(Task& task);
+        void RetireTask(TaskHandle::State& state) noexcept;
+        void DrainRetiredTasksLocked(TaskRegistry& registry);
+        void ReleaseOutstandingTask() noexcept;
+    };
+
+    void ValidateTaskHandleOwner(const TaskHandle& task) const;
+
     void CompleteState(const std::shared_ptr<TaskHandle::State>& state,
                        ETaskStatus status,
                        std::optional<ErrorInfo> error = std::nullopt);
     void PropagateCancellationLocked(Task& task);
     void CancelPendingTasksLocked() noexcept;
-    static void ReleaseExecutionPayloadLocked(Task& task);
     [[noreturn]] static void FailDagInvariantLocked(const char* message) noexcept;
 #ifndef NDEBUG
     void ValidateDagLocked() const;
@@ -212,17 +258,11 @@ private:
 
 private:
     mutable std::mutex m_mutex;
-    std::shared_ptr<OwnerToken> m_ownerToken;
     const std::size_t m_workerCount;
-    std::unordered_map<std::uint64_t, std::shared_ptr<TaskHandle::State>> m_activeTasks;
-    std::vector<std::unique_ptr<ReadyQueue>> m_workerReadyQueues;
-    ReadyQueue m_injectedReadyQueue;
+    TaskRegistry m_registry;
+    ReadyScheduler m_readyScheduler;
+    TaskLifetime m_lifetime;
     std::vector<std::thread> m_workers;
-    std::atomic<TaskHandle::State*> m_retiredTasks = nullptr;
-    std::counting_semaphore<> m_readyWakeups{0};
-    std::atomic_size_t m_readyTaskCount = 0;
-    std::atomic_size_t m_outstandingTasks = 0;
-    std::uint64_t m_nextTaskId = 1;
     std::atomic_bool m_stopping = false;
 };
 
