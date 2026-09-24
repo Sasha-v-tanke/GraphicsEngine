@@ -8,9 +8,9 @@
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 #include <window/engine/engine.h>
+#include <window/engine/event_queue.h>
 #include <window/engine/event_sink.h>
 #include <window/engine/factory.h>
-#include <window/engine/glfw/event_queue.h>
 #include <window/window.h>
 #include <window/window_config.h>
 #include <window/window_size.h>
@@ -371,11 +371,11 @@ TEST_F(WindowTest, DoesNotSynthesizeResizeFromSetSize) {
 }
 
 TEST(WindowGlfwEventQueue, DispatchesQueuedEventsExplicitly) {
-    NWindow::NEngine::NGlfw::WindowEventQueue queue;
+    NWindow::NEngine::WindowEventQueue queue;
     RecordingEventSink eventSink;
 
     queue.Enqueue({
-            .Type = NWindow::NEngine::NGlfw::EWindowEventType::RESIZE,
+            .Type = NWindow::NEngine::EWindowEventType::RESIZE,
             .Size =
                     {
                             .Width = 640,
@@ -384,7 +384,7 @@ TEST(WindowGlfwEventQueue, DispatchesQueuedEventsExplicitly) {
     });
 
     queue.Enqueue({
-            .Type = NWindow::NEngine::NGlfw::EWindowEventType::FRAMEBUFFER_RESIZE,
+            .Type = NWindow::NEngine::EWindowEventType::FRAMEBUFFER_RESIZE,
             .Size =
                     {
                             .Width = 1280,
@@ -393,7 +393,7 @@ TEST(WindowGlfwEventQueue, DispatchesQueuedEventsExplicitly) {
     });
 
     queue.Enqueue({
-            .Type = NWindow::NEngine::NGlfw::EWindowEventType::CLOSE,
+            .Type = NWindow::NEngine::EWindowEventType::CLOSE,
     });
 
     EXPECT_TRUE(eventSink.Events.empty());
