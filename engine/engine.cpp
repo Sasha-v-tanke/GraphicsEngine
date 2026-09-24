@@ -58,6 +58,11 @@ namespace {
     }
 }
 
+[[nodiscard]] bool IsTerminalTaskStatus(NCommon::ETaskStatus status) noexcept {
+    return status == NCommon::ETaskStatus::COMPLETED || status == NCommon::ETaskStatus::FAILED ||
+           status == NCommon::ETaskStatus::CANCELLED;
+}
+
 } // namespace
 
 namespace NRuntime {
@@ -72,7 +77,6 @@ public:
     void Draw(NController::FrameScheduler& frameScheduler, NController::FrameHandle frame) override {
         frameScheduler.BeginFinalize(frame);
         frameScheduler.CompleteFrame(frame);
-        frameScheduler.RecycleFrame(frame);
     }
 };
 
@@ -160,6 +164,10 @@ public:
         {
             std::lock_guard lock{m_mutex};
 
+            if (taskSystem != nullptr) {
+                ReapTerminalFrameRecordsLocked(*taskSystem);
+            }
+            AbortUnresolvedFrameRecordsLocked();
             ClearFrameRecordsLocked();
             m_frameScheduler.reset();
             m_frameRecords.reset();
@@ -175,6 +183,7 @@ public:
         NController::FrameHandle frame;
         std::lock_guard lock{m_mutex};
         RequireRunningLocked("update");
+        ReapTerminalFrameRecordsLocked(*m_taskSystem);
 
         std::optional<NController::FrameHandle> acquiredFrame = m_frameScheduler->TryAcquireFrame();
 
@@ -221,15 +230,15 @@ public:
         try {
             const NCommon::TaskHandle dependencies[] = {updateTask};
 
-            static_cast<void>(
-                    m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunDraw(frame); }, dependencies));
+            record.DrawTask =
+                    m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunDraw(frame); }, dependencies);
+            record.HasDrawTask = true;
             m_frameScheduler->SignalDraw(frame);
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
             throw;
         }
 
-        record = {};
         ++m_nextDrawFrameIndex;
 
         return true;
@@ -257,7 +266,9 @@ private:
     struct FrameRuntimeRecord {
         NController::FrameHandle Frame;
         NCommon::TaskHandle UpdateTask;
+        NCommon::TaskHandle DrawTask;
         bool HasUpdateTask = false;
+        bool HasDrawTask = false;
     };
 
     static int ToInt(EEngineState state) noexcept {
@@ -368,6 +379,58 @@ private:
         FrameRuntimeRecord& record = GetFrameRecordLocked(frame);
 
         if (record.HasUpdateTask && record.Frame == frame) {
+            record = {};
+        }
+    }
+
+    void ReapTerminalFrameRecordsLocked(NCommon::TaskSystem& taskSystem) {
+        if (m_frameRecords == nullptr || m_frameScheduler == nullptr) {
+            return;
+        }
+
+        for (std::size_t index = 0; index < m_frameScheduler->GetMaxActiveFrames(); ++index) {
+            FrameRuntimeRecord& record = m_frameRecords[index];
+
+            if (!record.HasDrawTask) {
+                continue;
+            }
+
+            const NCommon::ETaskStatus status = taskSystem.GetStatus(record.DrawTask);
+
+            if (!IsTerminalTaskStatus(status)) {
+                continue;
+            }
+
+            if (status == NCommon::ETaskStatus::COMPLETED) {
+                m_frameScheduler->RecycleFrame(record.Frame);
+            } else {
+                try {
+                    m_frameScheduler->AbortFrame(record.Frame);
+                } catch (...) {
+                }
+            }
+
+            record = {};
+        }
+    }
+
+    void AbortUnresolvedFrameRecordsLocked() noexcept {
+        if (m_frameRecords == nullptr || m_frameScheduler == nullptr) {
+            return;
+        }
+
+        for (std::size_t index = 0; index < m_frameScheduler->GetMaxActiveFrames(); ++index) {
+            FrameRuntimeRecord& record = m_frameRecords[index];
+
+            if (!record.HasUpdateTask) {
+                continue;
+            }
+
+            try {
+                m_frameScheduler->AbortFrame(record.Frame);
+            } catch (...) {
+            }
+
             record = {};
         }
     }

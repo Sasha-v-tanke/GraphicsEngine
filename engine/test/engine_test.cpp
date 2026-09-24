@@ -65,7 +65,6 @@ public:
     void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
         frameScheduler.BeginFinalize(frame);
         frameScheduler.CompleteFrame(frame);
-        frameScheduler.RecycleFrame(frame);
     }
 
     [[nodiscard]] bool WaitUpdateEntered(std::chrono::milliseconds timeout) {
@@ -89,6 +88,67 @@ private:
     bool m_finishUpdate = false;
 };
 
+class BlockingFirstDrawRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    void Update(NEngine::NController::FrameScheduler& frameScheduler,
+                NEngine::NController::FrameHandle frame) override {
+        frameScheduler.BeginUpdate(frame);
+        frameScheduler.EndUpdate(frame);
+    }
+
+    void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
+        frameScheduler.BeginFinalize(frame);
+        frameScheduler.CompleteFrame(frame);
+
+        {
+            std::lock_guard lock{m_mutex};
+            ++m_drawCount;
+        }
+
+        m_condition.notify_all();
+
+        if (frame.GetFrameIndex() == 0) {
+            std::unique_lock lock{m_mutex};
+            m_condition.wait(lock, [this] { return m_finishFirstDraw; });
+        }
+
+        if (frame.GetFrameIndex() == 0) {
+            {
+                std::lock_guard lock{m_mutex};
+                m_firstDrawFinished = true;
+            }
+
+            m_condition.notify_all();
+        }
+    }
+
+    [[nodiscard]] bool WaitDrawCountAtLeast(int drawCount, std::chrono::milliseconds timeout) {
+        std::unique_lock lock{m_mutex};
+        return m_condition.wait_for(lock, timeout, [this, drawCount] { return m_drawCount >= drawCount; });
+    }
+
+    [[nodiscard]] bool WaitFirstDrawFinished(std::chrono::milliseconds timeout) {
+        std::unique_lock lock{m_mutex};
+        return m_condition.wait_for(lock, timeout, [this] { return m_firstDrawFinished; });
+    }
+
+    void FinishFirstDraw() {
+        {
+            std::lock_guard lock{m_mutex};
+            m_finishFirstDraw = true;
+        }
+
+        m_condition.notify_all();
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    int m_drawCount = 0;
+    bool m_finishFirstDraw = false;
+    bool m_firstDrawFinished = false;
+};
+
 class FinishUpdateGuard final {
 public:
     explicit FinishUpdateGuard(BlockingFrameRuntime& runtime) noexcept
@@ -107,6 +167,26 @@ public:
 
 private:
     BlockingFrameRuntime* m_runtime = nullptr;
+};
+
+class FinishFirstDrawGuard final {
+public:
+    explicit FinishFirstDrawGuard(BlockingFirstDrawRuntime& runtime) noexcept
+        : m_runtime(&runtime) {
+    }
+
+    ~FinishFirstDrawGuard() {
+        if (m_runtime != nullptr) {
+            m_runtime->FinishFirstDraw();
+        }
+    }
+
+    void Release() noexcept {
+        m_runtime = nullptr;
+    }
+
+private:
+    BlockingFirstDrawRuntime* m_runtime = nullptr;
 };
 
 [[nodiscard]] bool
@@ -216,6 +296,104 @@ TEST(Engine, StopWaitsForPendingWork) {
     secondStopResult.get();
 
     EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(Engine, StopWaitsForPendingDrawBeforeDestroyingFrameState) {
+    auto runtime = std::make_unique<BlockingFirstDrawRuntime>();
+    BlockingFirstDrawRuntime& runtimeRef = *runtime;
+
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 1,
+                    .WorkerCount = 1,
+            },
+            std::move(runtime));
+
+    engine->Start();
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+    FinishFirstDrawGuard finishFirstDrawGuard{runtimeRef};
+    ASSERT_TRUE(runtimeRef.WaitDrawCountAtLeast(1, 2s));
+
+    std::future<void> stopResult = std::async(std::launch::async, [&] { engine->Stop(); });
+
+    EXPECT_TRUE(WaitForState(*engine, NEngine::EEngineState::STOPPING, 2s));
+    EXPECT_EQ(stopResult.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
+
+    runtimeRef.FinishFirstDraw();
+    finishFirstDrawGuard.Release();
+    ASSERT_EQ(stopResult.wait_for(2s), std::future_status::ready);
+    stopResult.get();
+
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
+    EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(1s));
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(Engine, WraparoundWaitsForNextMappedSlotRecycle) {
+    auto runtime = std::make_unique<BlockingFirstDrawRuntime>();
+    BlockingFirstDrawRuntime& runtimeRef = *runtime;
+
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 2,
+                    .WorkerCount = 2,
+            },
+            std::move(runtime));
+
+    engine->Start();
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+    FinishFirstDrawGuard finishFirstDrawGuard{runtimeRef};
+    ASSERT_TRUE(runtimeRef.WaitDrawCountAtLeast(1, 2s));
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+
+    EXPECT_FALSE(engine->Update());
+
+    runtimeRef.FinishFirstDraw();
+    finishFirstDrawGuard.Release();
+    EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+
+    engine->Stop();
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(Engine, KeepsCompletedFrameActiveUntilDrawTaskReturns) {
+    auto runtime = std::make_unique<BlockingFirstDrawRuntime>();
+    BlockingFirstDrawRuntime& runtimeRef = *runtime;
+
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 1,
+                    .WorkerCount = 1,
+            },
+            std::move(runtime));
+
+    engine->Start();
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+    FinishFirstDrawGuard finishFirstDrawGuard{runtimeRef};
+    ASSERT_TRUE(runtimeRef.WaitDrawCountAtLeast(1, 2s));
+
+    EXPECT_FALSE(engine->Update());
+
+    runtimeRef.FinishFirstDraw();
+    finishFirstDrawGuard.Release();
+    EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+
+    engine->Stop();
     EXPECT_FALSE(engine->GetLastError().has_value());
 }
 
