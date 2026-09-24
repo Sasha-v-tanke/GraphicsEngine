@@ -140,6 +140,11 @@ public:
         return m_condition.wait_for(lock, timeout, [this] { return m_firstDrawFinished; });
     }
 
+    [[nodiscard]] bool WaitDrawCountAtLeast(int drawCount, std::chrono::milliseconds timeout) {
+        std::unique_lock lock{m_mutex};
+        return m_condition.wait_for(lock, timeout, [this, drawCount] { return m_drawCount >= drawCount; });
+    }
+
     void FinishFirstDraw() {
         {
             std::lock_guard lock{m_mutex};
@@ -374,6 +379,48 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
 
     EXPECT_EQ(m_state.Events,
               (std::vector<std::string>{
+                      "user.update",
+                      "user.draw",
+                      "user.update",
+                      "user.draw",
+              }));
+}
+
+TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
+    NApplication::ApplicationConfig config = MakeConfig();
+    config.MaxActiveFrames = 2;
+
+    auto engineFactory = std::make_unique<BlockingEngineFactory>();
+    BlockingEngineFactory& blockingEngineFactory = *engineFactory;
+
+    NApplication::NRuntime::FrameLoop frameLoop{config, std::move(engineFactory)};
+    RecordingFrameLoopCallbacks callbacks{m_state.Events};
+
+    frameLoop.Start();
+    frameLoop.Step(callbacks);
+    ASSERT_TRUE(blockingEngineFactory.Runtime->WaitDrawCountAtLeast(1, 1s));
+
+    frameLoop.Step(callbacks);
+    frameLoop.Step(callbacks);
+
+    EXPECT_EQ(m_state.Events,
+              (std::vector<std::string>{
+                      "user.update",
+                      "user.draw",
+                      "user.update",
+                      "user.draw",
+                      "user.update",
+              }));
+
+    blockingEngineFactory.Runtime->FinishFirstDraw();
+    EXPECT_TRUE(blockingEngineFactory.Runtime->WaitFirstDrawFinished(1s));
+
+    frameLoop.Step(callbacks);
+
+    EXPECT_EQ(m_state.Events,
+              (std::vector<std::string>{
+                      "user.update",
+                      "user.draw",
                       "user.update",
                       "user.draw",
                       "user.update",

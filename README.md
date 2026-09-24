@@ -119,6 +119,9 @@ Engine Draw checkpoint
 Если `Engine` не принимает checkpoint из-за занятых frame slots, `Application` остаётся в соответствующем waiting-state.
 Следующие итерации продолжают обрабатывать Window events и повторяют тот же Engine checkpoint, но не вызывают повторно
 `OnUpdate()` или `OnDraw()` для уже ожидающего user stage.
+Новый frame принимается только когда следующий mapped slot уже `FREE`; это одинаково для `MaxActiveFrames = 1` и
+больших значений. Reset/reuse frame-local storage происходит после full completion/recycle frame, а не при публикации
+draw checkpoint.
 
 `Application`, Window events и пользовательские callbacks имеют affinity к application/main thread. Этот поток не
 является worker-потоком `TaskSystem`: workers выполняют только задачи engine/runtime, а user callbacks и Window API не

@@ -33,9 +33,14 @@ CREATED -> RUNNING -> STOPPING -> STOPPED
 
 `Update()` и `Draw()` не выполняют весь frame pipeline синхронно.
 Они только резервируют frame work и ставят его в `TaskSystem`.
-Backpressure приходит от `FrameScheduler`: если следующий frame slot занят, `Update()` возвращает `false`.
+Backpressure приходит от `FrameScheduler`: если следующий mapped frame slot не находится в `FREE`, `Update()`
+возвращает `false`.
+Это блокирует только application thread на checkpoint boundary. Worker threads не ждут освобождения frame slot:
+они выполняют опубликованные update/draw tasks через dependency graph `TaskSystem`.
 Runtime bookkeeping хранится в fixed per-slot records, индексированных тем же slot/generation identity, что и
 `FrameHandle`.
+Per-slot record удерживается до terminal completion draw task. Завершённые records reaping-ятся перед следующим
+`Update()`, поэтому новый frame может быть принят только после безопасного recycle соответствующего slot.
 Engine не использует отдельную heap FIFO очередь frame tokens.
 
 ## Runtime errors
@@ -49,9 +54,10 @@ Engine не использует отдельную heap FIFO очередь fra
 
 ## Shutdown order
 
-`Stop()` переводит Engine в `STOPPING`, запрещая новый публичный frame work, затем ждёт завершения pending work в
-`TaskSystem`.
-После этого Engine очищает pending frame handles, уничтожает frame/runtime subsystems и переходит в `STOPPED`.
+`Stop()` переводит Engine в `STOPPING`, запрещая новый публичный frame work, затем ждёт завершения running/pending work
+в `TaskSystem`.
+После этого Engine reaping-ит completed frame records, abort-ит unresolved frame checkpoints, уничтожает frame/runtime
+subsystems и переходит в `STOPPED`.
 Такой порядок нужен, чтобы frame-local данные и будущие renderer/resource owners не переживали свои runtime owners.
 
 ## FrameScheduler
@@ -81,6 +87,8 @@ Scheduler не ищет другой свободный slot.
 Если следующий mapped slot занят, новый frame не создаётся даже при наличии другого FREE slot.
 Это сохраняет стабильное отображение logical frame index в bounded frame storage и является точкой backpressure для
 последующей runtime-интеграции.
+Правило одинаково для `MaxActiveFrames = 1` и для больших значений: различается только размер ring, а не семантика
+acquire/recycle.
 
 ## State machine
 
@@ -134,6 +142,8 @@ COMPLETE -> FREE
 ```
 
 и делает физический slot доступным следующему generation.
+Recycle выполняется только после полного completion всех work/users текущего frame. Для frame-local arena это safe
+boundary: `FrameArena::Reset()` привязан к recycle и не выполняется при одном только draw checkpoint publication.
 
 `AbortFrame()` является аварийным runtime contract для частично пройденного frame.
 Он освобождает текущий generation из любого non-FREE состояния без прохождения обычных lifecycle transitions.
