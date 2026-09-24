@@ -155,7 +155,7 @@ TEST(Engine, RejectsRepeatedInvalidCalls) {
     ExpectError(NCommon::EError::INVALID_STATE, [&] { engine.Start(); });
 
     EXPECT_TRUE(engine.Update());
-    EXPECT_FALSE(engine.Update());
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine.Update()); });
     EXPECT_TRUE(engine.Draw());
 }
 

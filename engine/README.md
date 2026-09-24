@@ -84,6 +84,17 @@ Scheduler не ищет другой свободный slot.
 
 ## State machine
 
+FrameScheduler принимает внешние checkpoints как generation-bound signals внутри текущего FrameExecutionSlot:
+
+```text
+Update N -> Draw N -> Update N+1 -> Draw N+1
+```
+
+`TryAcquireFrame()` фиксирует Update signal для нового generation.
+`SignalDraw()` фиксирует Draw signal того же generation.
+Повтор checkpoint или skip порядка является ошибкой состояния.
+Scheduler не хранит heap token queue: signals живут в физическом slot и инвалидируются reuse через slot generation.
+
 Разрешённый lifecycle:
 
 ```text
@@ -114,6 +125,7 @@ Scheduler не ищет другой свободный slot.
 Другие переходы являются ошибкой состояния.
 ACQUIRED отделяет резервирование frame slot от момента, когда frame полностью подготовлен и может ожидать Update
 checkpoint.
+FINALIZE нельзя начать до Draw signal соответствующего generation.
 COMPLETE не означает, что slot уже доступен для следующего кадра.
 Только RecycleFrame () выполняет:
 
@@ -133,8 +145,9 @@ Engine использует его только после runtime failure ил�
 FrameHandle идентифицирует конкретный lifetime frame и содержит:
 
 - identity owning FrameScheduler;
-- logical frameIndex;
-- physical slotIndex;
+- ApplicationFrameIndex;
+- SimulationIndex;
+- FrameSlotIndex;
 - slot generation.
 
 Handle может использоваться только с тем FrameScheduler, который его создал.
@@ -143,6 +156,20 @@ Handle другого scheduler отклоняется.
 После recycle предыдущий handle становится stale и больше не может использоваться для чтения состояния, выполнения
 transition или получения frame-local storage.
 Generation предотвращает ABA при повторном использовании того же физического slot.
+
+Старые `GetFrameIndex()` и `GetSlotIndex()` остаются совместимыми aliases для ApplicationFrameIndex и FrameSlotIndex.
+
+## Timing
+
+FrameScheduler использует `std::chrono::steady_clock`.
+DeltaTime считается в `BeginUpdate()`:
+
+```text
+DeltaTime(N) = start(Update N) - start(Update N-1)
+```
+
+Для первого Update delta равен zero.
+Delta привязан к generation frame и доступен через `GetDeltaTime(frame)`.
 
 ## Frame-local storage
 

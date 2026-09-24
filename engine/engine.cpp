@@ -223,6 +223,7 @@ public:
 
             static_cast<void>(
                     m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunDraw(frame); }, dependencies));
+            m_frameScheduler->SignalDraw(frame);
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
             throw;
