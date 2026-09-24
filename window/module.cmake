@@ -11,7 +11,7 @@ SOURCES(
     window.cpp
 )
 
-PRIVATE_DEPENDS(
+PUBLIC_DEPENDS(
     Common
 )
 

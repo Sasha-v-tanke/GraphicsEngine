@@ -2,7 +2,6 @@
 #include <iostream>
 
 #include <application/application.h>
-#include <window/engine/event_sink.h>
 
 namespace {
 
@@ -11,7 +10,7 @@ struct SampleWindowState {
     int DrawCount = 0;
     int CloseCount = 0;
 
-    int FramesBeforeClose;
+    int FramesBeforeClose{};
 };
 
 class SampleApplication: public NApplication::Application {

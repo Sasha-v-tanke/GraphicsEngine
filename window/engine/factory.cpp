@@ -7,7 +7,7 @@
 #include <window/engine/engine.h>
 
 #ifdef GRAPHICS_ENGINE_WINDOW_HAS_GLFW
-    #include <window/engine/glfw/window_engine.h>
+    #include <window/engine/GLFW/window_engine.h>
 #endif
 
 namespace NWindow::NEngine {
