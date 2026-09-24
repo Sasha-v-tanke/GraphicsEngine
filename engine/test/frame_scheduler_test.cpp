@@ -452,13 +452,8 @@ TEST(FrameScheduler, TracksUpdateDeltaTimeFromSteadyClock) {
     EXPECT_EQ(first.GetApplicationFrameIndex(), 0U);
     EXPECT_EQ(first.GetSimulationIndex(), 0U);
     EXPECT_EQ(first.GetFrameSlotIndex(), 0U);
-
-    scheduler.ArmFrame(first);
-    scheduler.BeginUpdate(first);
-
     EXPECT_EQ(scheduler.GetDeltaTime(first), FrameScheduler::Duration::zero());
 
-    scheduler.EndUpdate(first);
     scheduler.SignalDraw(first);
 
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
@@ -468,10 +463,15 @@ TEST(FrameScheduler, TracksUpdateDeltaTimeFromSteadyClock) {
     EXPECT_EQ(second.GetApplicationFrameIndex(), 1U);
     EXPECT_EQ(second.GetSimulationIndex(), 1U);
     EXPECT_EQ(second.GetFrameSlotIndex(), 1U);
+    EXPECT_GT(scheduler.GetDeltaTime(second), FrameScheduler::Duration::zero());
 
     scheduler.ArmFrame(second);
     scheduler.BeginUpdate(second);
 
+    scheduler.ArmFrame(first);
+    scheduler.BeginUpdate(first);
+
+    EXPECT_EQ(scheduler.GetDeltaTime(first), FrameScheduler::Duration::zero());
     EXPECT_GT(scheduler.GetDeltaTime(second), FrameScheduler::Duration::zero());
 }
 

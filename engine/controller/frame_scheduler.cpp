@@ -47,6 +47,8 @@ std::optional<FrameHandle> FrameScheduler::TryAcquireFrame() {
 
     ++slot.Generation;
 
+    const Clock::time_point now = Clock::now();
+
     slot.ApplicationFrameIndex = m_nextApplicationFrameIndex;
     slot.SimulationIndex = m_nextSimulationIndex;
     slot.State = EFrameState::ACQUIRED;
@@ -57,8 +59,10 @@ std::optional<FrameHandle> FrameScheduler::TryAcquireFrame() {
             .SimulationIndex = slot.SimulationIndex,
     };
     slot.DrawSignal = {};
-    slot.UpdateStartedAt.reset();
-    slot.DeltaTime = Duration::zero();
+    slot.SimulationStartedAt = now;
+    slot.DeltaTime =
+            m_previousSimulationStartedAt.has_value() ? now - *m_previousSimulationStartedAt : Duration::zero();
+    m_previousSimulationStartedAt = now;
 
     const FrameHandle frame{
             m_ownerId,
@@ -123,11 +127,6 @@ void FrameScheduler::BeginUpdate(FrameHandle frame) {
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
     TransitionLocked(frame, slot, EFrameState::WAITING_UPDATE, EFrameState::UPDATING);
-
-    const Clock::time_point now = Clock::now();
-    slot.DeltaTime = m_previousUpdateStartedAt.has_value() ? now - *m_previousUpdateStartedAt : Duration::zero();
-    slot.UpdateStartedAt = now;
-    m_previousUpdateStartedAt = now;
 }
 
 void FrameScheduler::EndUpdate(FrameHandle frame) {
@@ -180,7 +179,7 @@ void FrameScheduler::RecycleFrame(FrameHandle frame) {
     slot.SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
     slot.UpdateSignal = {};
     slot.DrawSignal = {};
-    slot.UpdateStartedAt.reset();
+    slot.SimulationStartedAt.reset();
     slot.DeltaTime = Duration::zero();
     slot.State = EFrameState::FREE;
 }
@@ -208,7 +207,7 @@ void FrameScheduler::AbortFrame(FrameHandle frame) {
     slot.SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
     slot.UpdateSignal = {};
     slot.DrawSignal = {};
-    slot.UpdateStartedAt.reset();
+    slot.SimulationStartedAt.reset();
     slot.DeltaTime = Duration::zero();
     slot.State = EFrameState::FREE;
 }

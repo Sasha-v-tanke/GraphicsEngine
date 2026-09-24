@@ -152,7 +152,7 @@ private:
         std::uint64_t Generation = 0;
         FrameSignal UpdateSignal;
         FrameSignal DrawSignal;
-        std::optional<Clock::time_point> UpdateStartedAt;
+        std::optional<Clock::time_point> SimulationStartedAt;
         Duration DeltaTime = Duration::zero();
         FrameArena Arena;
     };
@@ -177,7 +177,7 @@ private:
     ECheckpointSignal m_nextCheckpointSignal = ECheckpointSignal::UPDATE;
     std::uint64_t m_nextApplicationFrameIndex = 0;
     std::uint64_t m_nextSimulationIndex = 0;
-    std::optional<Clock::time_point> m_previousUpdateStartedAt;
+    std::optional<Clock::time_point> m_previousSimulationStartedAt;
 };
 
 } // namespace NEngine::NController

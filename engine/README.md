@@ -162,14 +162,15 @@ Generation предотвращает ABA при повторном исполь
 ## Timing
 
 FrameScheduler использует `std::chrono::steady_clock`.
-DeltaTime считается в `BeginUpdate()`:
+DeltaTime считается при ordered Update signal в `TryAcquireFrame()`:
 
 ```text
-DeltaTime(N) = start(Update N) - start(Update N-1)
+DeltaTime(N) = start(Simulation N) - start(Simulation N-1)
 ```
 
 Для первого Update delta равен zero.
-Delta привязан к generation frame и доступен через `GetDeltaTime(frame)`.
+Delta привязан к SimulationIndex/generation frame и доступен через `GetDeltaTime(frame)`.
+Порядок worker-вызовов `BeginUpdate()` не влияет на DeltaTime.
 
 ## Frame-local storage
 
