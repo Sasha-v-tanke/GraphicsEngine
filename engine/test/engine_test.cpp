@@ -65,7 +65,6 @@ public:
     void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
         frameScheduler.BeginFinalize(frame);
         frameScheduler.CompleteFrame(frame);
-        frameScheduler.RecycleFrame(frame);
     }
 
     [[nodiscard]] bool WaitUpdateEntered(std::chrono::milliseconds timeout) {
@@ -98,6 +97,9 @@ public:
     }
 
     void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
+        frameScheduler.BeginFinalize(frame);
+        frameScheduler.CompleteFrame(frame);
+
         {
             std::lock_guard lock{m_mutex};
             ++m_drawCount;
@@ -109,10 +111,6 @@ public:
             std::unique_lock lock{m_mutex};
             m_condition.wait(lock, [this] { return m_finishFirstDraw; });
         }
-
-        frameScheduler.BeginFinalize(frame);
-        frameScheduler.CompleteFrame(frame);
-        frameScheduler.RecycleFrame(frame);
 
         if (frame.GetFrameIndex() == 0) {
             {
@@ -169,6 +167,26 @@ public:
 
 private:
     BlockingFrameRuntime* m_runtime = nullptr;
+};
+
+class FinishFirstDrawGuard final {
+public:
+    explicit FinishFirstDrawGuard(BlockingFirstDrawRuntime& runtime) noexcept
+        : m_runtime(&runtime) {
+    }
+
+    ~FinishFirstDrawGuard() {
+        if (m_runtime != nullptr) {
+            m_runtime->FinishFirstDraw();
+        }
+    }
+
+    void Release() noexcept {
+        m_runtime = nullptr;
+    }
+
+private:
+    BlockingFirstDrawRuntime* m_runtime = nullptr;
 };
 
 [[nodiscard]] bool
@@ -296,6 +314,7 @@ TEST(Engine, StopWaitsForPendingDrawBeforeDestroyingFrameState) {
 
     EXPECT_TRUE(engine->Update());
     EXPECT_TRUE(engine->Draw());
+    FinishFirstDrawGuard finishFirstDrawGuard{runtimeRef};
     ASSERT_TRUE(runtimeRef.WaitDrawCountAtLeast(1, 2s));
 
     std::future<void> stopResult = std::async(std::launch::async, [&] { engine->Stop(); });
@@ -304,6 +323,7 @@ TEST(Engine, StopWaitsForPendingDrawBeforeDestroyingFrameState) {
     EXPECT_EQ(stopResult.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
 
     runtimeRef.FinishFirstDraw();
+    finishFirstDrawGuard.Release();
     ASSERT_EQ(stopResult.wait_for(2s), std::future_status::ready);
     stopResult.get();
 
@@ -327,6 +347,7 @@ TEST(Engine, WraparoundWaitsForNextMappedSlotRecycle) {
 
     EXPECT_TRUE(engine->Update());
     EXPECT_TRUE(engine->Draw());
+    FinishFirstDrawGuard finishFirstDrawGuard{runtimeRef};
     ASSERT_TRUE(runtimeRef.WaitDrawCountAtLeast(1, 2s));
 
     EXPECT_TRUE(engine->Update());
@@ -335,6 +356,38 @@ TEST(Engine, WraparoundWaitsForNextMappedSlotRecycle) {
     EXPECT_FALSE(engine->Update());
 
     runtimeRef.FinishFirstDraw();
+    finishFirstDrawGuard.Release();
+    EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+
+    engine->Stop();
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(Engine, KeepsCompletedFrameActiveUntilDrawTaskReturns) {
+    auto runtime = std::make_unique<BlockingFirstDrawRuntime>();
+    BlockingFirstDrawRuntime& runtimeRef = *runtime;
+
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 1,
+                    .WorkerCount = 1,
+            },
+            std::move(runtime));
+
+    engine->Start();
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+    FinishFirstDrawGuard finishFirstDrawGuard{runtimeRef};
+    ASSERT_TRUE(runtimeRef.WaitDrawCountAtLeast(1, 2s));
+
+    EXPECT_FALSE(engine->Update());
+
+    runtimeRef.FinishFirstDraw();
+    finishFirstDrawGuard.Release();
     EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
 
     EXPECT_TRUE(engine->Update());

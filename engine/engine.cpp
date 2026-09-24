@@ -77,7 +77,6 @@ public:
     void Draw(NController::FrameScheduler& frameScheduler, NController::FrameHandle frame) override {
         frameScheduler.BeginFinalize(frame);
         frameScheduler.CompleteFrame(frame);
-        frameScheduler.RecycleFrame(frame);
     }
 };
 
@@ -166,7 +165,7 @@ public:
             std::lock_guard lock{m_mutex};
 
             if (taskSystem != nullptr) {
-                ReapCompletedFrameRecordsLocked(*taskSystem);
+                ReapTerminalFrameRecordsLocked(*taskSystem);
             }
             AbortUnresolvedFrameRecordsLocked();
             ClearFrameRecordsLocked();
@@ -184,7 +183,7 @@ public:
         NController::FrameHandle frame;
         std::lock_guard lock{m_mutex};
         RequireRunningLocked("update");
-        ReapCompletedFrameRecordsLocked(*m_taskSystem);
+        ReapTerminalFrameRecordsLocked(*m_taskSystem);
 
         std::optional<NController::FrameHandle> acquiredFrame = m_frameScheduler->TryAcquireFrame();
 
@@ -384,7 +383,7 @@ private:
         }
     }
 
-    void ReapCompletedFrameRecordsLocked(NCommon::TaskSystem& taskSystem) {
+    void ReapTerminalFrameRecordsLocked(NCommon::TaskSystem& taskSystem) {
         if (m_frameRecords == nullptr || m_frameScheduler == nullptr) {
             return;
         }
@@ -398,9 +397,20 @@ private:
 
             const NCommon::ETaskStatus status = taskSystem.GetStatus(record.DrawTask);
 
-            if (IsTerminalTaskStatus(status)) {
-                record = {};
+            if (!IsTerminalTaskStatus(status)) {
+                continue;
             }
+
+            if (status == NCommon::ETaskStatus::COMPLETED) {
+                m_frameScheduler->RecycleFrame(record.Frame);
+            } else {
+                try {
+                    m_frameScheduler->AbortFrame(record.Frame);
+                } catch (...) {
+                }
+            }
+
+            record = {};
         }
     }
 
