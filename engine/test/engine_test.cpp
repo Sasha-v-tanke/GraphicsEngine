@@ -3,10 +3,12 @@
 #include <cstddef>
 #include <exception>
 #include <future>
+#include <memory_resource>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <engine/engine.h>
 #include <engine/runtime/frame_runtime.h>
@@ -65,6 +67,48 @@ public:
 private:
     std::promise<void>& m_drawStarted;
     int m_updateCount = 0;
+};
+
+class AllocatingFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    void Update(const NEngine::NRuntime::FrameContext& frame) override {
+        std::pmr::vector<int> values{&frame.GetMemoryResource()};
+        values.push_back(1);
+        values.push_back(2);
+
+        m_updateFrame = frame.GetFrame();
+        ++m_updateCount;
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext& frame) override {
+        std::pmr::vector<int> values{&frame.GetMemoryResource()};
+        values.push_back(3);
+
+        m_drawFrame = frame.GetFrame();
+        ++m_drawCount;
+    }
+
+    [[nodiscard]] int GetUpdateCount() const noexcept {
+        return m_updateCount;
+    }
+
+    [[nodiscard]] int GetDrawCount() const noexcept {
+        return m_drawCount;
+    }
+
+    [[nodiscard]] NEngine::NController::FrameHandle GetUpdateFrame() const noexcept {
+        return m_updateFrame;
+    }
+
+    [[nodiscard]] NEngine::NController::FrameHandle GetDrawFrame() const noexcept {
+        return m_drawFrame;
+    }
+
+private:
+    int m_updateCount = 0;
+    int m_drawCount = 0;
+    NEngine::NController::FrameHandle m_updateFrame;
+    NEngine::NController::FrameHandle m_drawFrame;
 };
 
 class BlockingFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
@@ -405,6 +449,31 @@ TEST(Engine, KeepsCompletedFrameActiveUntilDrawTaskReturns) {
     EXPECT_TRUE(engine->Draw());
 
     engine->Stop();
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(Engine, ProvidesFrameScopedStorageToRuntimeContext) {
+    auto runtime = std::make_unique<AllocatingFrameRuntime>();
+    AllocatingFrameRuntime& runtimeRef = *runtime;
+
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 1,
+                    .WorkerCount = 1,
+            },
+            std::move(runtime));
+
+    engine->Start();
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+
+    engine->Stop();
+
+    EXPECT_EQ(runtimeRef.GetUpdateCount(), 1);
+    EXPECT_EQ(runtimeRef.GetDrawCount(), 1);
+    EXPECT_TRUE(runtimeRef.GetUpdateFrame().IsValid());
+    EXPECT_EQ(runtimeRef.GetUpdateFrame(), runtimeRef.GetDrawFrame());
     EXPECT_FALSE(engine->GetLastError().has_value());
 }
 

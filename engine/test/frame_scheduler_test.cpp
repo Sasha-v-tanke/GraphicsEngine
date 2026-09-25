@@ -282,7 +282,7 @@ TEST(FrameScheduler, RejectsForeignHandle) {
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { secondScheduler.RecycleFrame(firstFrame); });
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                [&] { static_cast<void>(secondScheduler.GetMemoryResource(firstFrame)); });
+                [&] { static_cast<void>(secondScheduler.GetFrameStorage(firstFrame)); });
 }
 
 TEST(FrameScheduler, ReusesSlotOwnedMemoryResourceAcrossGenerations) {
@@ -292,20 +292,22 @@ TEST(FrameScheduler, ReusesSlotOwnedMemoryResourceAcrossGenerations) {
 
     const FrameHandle first = *scheduler.TryAcquireFrame();
 
-    std::pmr::memory_resource* firstResource = &scheduler.GetMemoryResource(first);
+    const NEngine::NController::FrameStorage firstStorage = scheduler.GetFrameStorage(first);
+    std::pmr::memory_resource* firstResource = &firstStorage.GetMemoryResource();
 
     CompleteFrame(scheduler, first);
     scheduler.RecycleFrame(first);
 
     const FrameHandle second = *scheduler.TryAcquireFrame();
 
-    std::pmr::memory_resource* secondResource = &scheduler.GetMemoryResource(second);
+    const NEngine::NController::FrameStorage secondStorage = scheduler.GetFrameStorage(second);
+    std::pmr::memory_resource* secondResource = &secondStorage.GetMemoryResource();
 
     EXPECT_EQ(first.GetSlotIndex(), second.GetSlotIndex());
     EXPECT_NE(first.GetGeneration(), second.GetGeneration());
     EXPECT_EQ(firstResource, secondResource);
 
-    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(scheduler.GetMemoryResource(first)); });
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(firstStorage.GetMemoryResource()); });
 }
 
 TEST(FrameScheduler, FollowsRequiredStateLifecycle) {
@@ -366,8 +368,7 @@ TEST(FrameScheduler, RejectsHandleFromDestroyedSchedulerReusedAtSameAddress) {
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { scheduler->RecycleFrame(staleHandle); });
 
-    ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                [&] { static_cast<void>(scheduler->GetMemoryResource(staleHandle)); });
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(scheduler->GetFrameStorage(staleHandle)); });
 }
 
 TEST(FrameScheduler, RejectsIllegalStateTransitions) {
@@ -486,7 +487,7 @@ TEST(FrameScheduler, RejectsDefaultHandleAsInvalidArgument) {
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { scheduler.ArmFrame(frame); });
 
-    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(scheduler.GetMemoryResource(frame)); });
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(scheduler.GetFrameStorage(frame)); });
 }
 
 TEST(FrameScheduler, KeepsNextMappedSlotAsBackpressureBoundary) {
@@ -526,26 +527,29 @@ TEST(FrameScheduler, OwnsIndependentFrameMemoryResources) {
 
     const FrameHandle second = *scheduler.TryAcquireFrame();
 
-    std::pmr::memory_resource& firstResource = scheduler.GetMemoryResource(first);
+    const NEngine::NController::FrameStorage firstStorage = scheduler.GetFrameStorage(first);
+    std::pmr::memory_resource& firstResource = firstStorage.GetMemoryResource();
 
-    std::pmr::memory_resource& secondResource = scheduler.GetMemoryResource(second);
+    const NEngine::NController::FrameStorage secondStorage = scheduler.GetFrameStorage(second);
+    std::pmr::memory_resource& secondResource = secondStorage.GetMemoryResource();
 
     EXPECT_NE(&firstResource, &secondResource);
 
-    EXPECT_EQ(&firstResource, &scheduler.GetMemoryResource(first));
+    EXPECT_EQ(&firstResource, &firstStorage.GetMemoryResource());
 }
 
-TEST(FrameScheduler, RejectsMemoryAccessThroughStaleHandle) {
+TEST(FrameScheduler, RejectsMemoryAccessThroughStaleFrameStorage) {
     FrameScheduler scheduler{EngineConfig{
             .MaxActiveFrames = 1,
     }};
 
     const FrameHandle frame = *scheduler.TryAcquireFrame();
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
 
     CompleteFrame(scheduler, frame);
     scheduler.RecycleFrame(frame);
 
-    EXPECT_THROW(static_cast<void>(scheduler.GetMemoryResource(frame)), NCommon::Exception);
+    EXPECT_THROW(static_cast<void>(storage.GetMemoryResource()), NCommon::Exception);
 }
 
 TEST(FrameScheduler, ReportsConfiguredSlotCount) {

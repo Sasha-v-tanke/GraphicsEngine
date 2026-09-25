@@ -82,6 +82,32 @@ private:
 
     friend class FrameExecutionSlot;
     friend class FrameScheduler;
+    friend class FrameStorage;
+};
+
+class FrameScheduler;
+
+class FrameStorage final {
+public:
+    FrameStorage() = default;
+
+    [[nodiscard]] FrameHandle GetFrame() const noexcept {
+        return m_frame;
+    }
+
+    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() const;
+
+private:
+    FrameStorage(FrameScheduler& scheduler, FrameHandle frame) noexcept
+        : m_scheduler(&scheduler)
+        , m_frame(frame) {
+    }
+
+private:
+    FrameScheduler* m_scheduler = nullptr;
+    FrameHandle m_frame;
+
+    friend class FrameScheduler;
 };
 
 class FrameExecutionSlot final: private NCommon::NonTransferable {
@@ -195,7 +221,7 @@ public:
 
     [[nodiscard]] Duration GetDeltaTime(FrameHandle frame) const;
 
-    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
+    [[nodiscard]] FrameStorage GetFrameStorage(FrameHandle frame);
 
     [[nodiscard]] std::size_t GetMaxActiveFrames() const noexcept {
         return m_maxActiveFrames;
@@ -213,6 +239,8 @@ private:
 
     [[nodiscard]] const FrameExecutionSlot& GetSlotLocked(FrameHandle frame) const;
 
+    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
+
 private:
     mutable std::mutex m_mutex;
 
@@ -225,6 +253,8 @@ private:
     std::uint64_t m_nextApplicationFrameIndex = 0;
     std::uint64_t m_nextSimulationIndex = 0;
     std::optional<Clock::time_point> m_previousSimulationStartedAt;
+
+    friend class FrameStorage;
 };
 
 } // namespace NEngine::NController

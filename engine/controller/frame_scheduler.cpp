@@ -7,6 +7,14 @@
 
 namespace NEngine::NController {
 
+std::pmr::memory_resource& FrameStorage::GetMemoryResource() const {
+    if (m_scheduler == nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame storage");
+    }
+
+    return m_scheduler->GetMemoryResource(m_frame);
+}
+
 void FrameExecutionSlot::Configure(std::uint64_t ownerId, std::size_t slotIndex) noexcept {
     m_ownerId = ownerId;
     m_slotIndex = slotIndex;
@@ -359,6 +367,14 @@ FrameScheduler::Duration FrameScheduler::GetDeltaTime(FrameHandle frame) const {
     std::lock_guard lock{m_mutex};
 
     return GetSlotLocked(frame).GetDeltaTime(frame);
+}
+
+FrameStorage FrameScheduler::GetFrameStorage(FrameHandle frame) {
+    std::lock_guard lock{m_mutex};
+
+    static_cast<void>(GetSlotLocked(frame).GetState(frame));
+
+    return FrameStorage{*this, frame};
 }
 
 std::pmr::memory_resource& FrameScheduler::GetMemoryResource(FrameHandle frame) {

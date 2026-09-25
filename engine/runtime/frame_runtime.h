@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <memory_resource>
 
 #include <engine/controller/frame_scheduler.h>
 #include <engine/engine.h>
@@ -10,16 +11,26 @@ namespace NEngine::NRuntime {
 
 class FrameContext final {
 public:
-    explicit FrameContext(NController::FrameHandle frame) noexcept
-        : m_frame(frame) {
+    FrameContext(NController::FrameHandle frame, NController::FrameStorage storage) noexcept
+        : m_frame(frame)
+        , m_storage(storage) {
     }
 
     [[nodiscard]] NController::FrameHandle GetFrame() const noexcept {
         return m_frame;
     }
 
+    [[nodiscard]] NController::FrameStorage GetStorage() const noexcept {
+        return m_storage;
+    }
+
+    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() const {
+        return m_storage.GetMemoryResource();
+    }
+
 private:
     NController::FrameHandle m_frame;
+    NController::FrameStorage m_storage;
 };
 
 class IFrameRuntime {

@@ -314,7 +314,7 @@ private:
 
             frameScheduler->BeginUpdate(frame);
 
-            const NRuntime::FrameContext context{frame};
+            const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame)};
             frameRuntime->Update(context);
 
             frameScheduler->EndUpdate(frame);
@@ -342,7 +342,7 @@ private:
 
             frameScheduler->BeginFinalize(frame);
 
-            const NRuntime::FrameContext context{frame};
+            const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame)};
             frameRuntime->Draw(context);
 
             frameScheduler->CompleteFrame(frame);
