@@ -203,6 +203,10 @@ private:
         [[nodiscard]] LinkedDependencies
         LinkDependencyEdgesLocked(std::uint64_t taskId, Task& task, std::span<const TaskHandle> dependencies);
         void RollbackDependencyEdgesLocked(std::uint64_t taskId, std::span<const std::uint64_t> dependencyIds);
+        void UnlinkDependencyEdgesLocked(std::uint64_t taskId,
+                                         const Task& task,
+                                         std::uint64_t lockedDependencyId = 0,
+                                         Task* lockedDependencyTask = nullptr);
         void CommitActiveTaskLocked(std::uint64_t taskId, std::shared_ptr<TaskHandle::State> state);
         void RollbackAllocationLocked(std::uint64_t taskId);
     };
@@ -245,7 +249,12 @@ private:
     void CompleteState(const std::shared_ptr<TaskHandle::State>& state,
                        ETaskStatus status,
                        std::optional<ErrorInfo> error = std::nullopt);
-    void PropagateCancellationLocked(Task& task);
+    void CancelTaskLocked(std::uint64_t taskId,
+                          const std::shared_ptr<TaskHandle::State>& state,
+                          Task& task,
+                          std::uint64_t lockedDependencyId = 0,
+                          Task* lockedDependencyTask = nullptr);
+    void PropagateCancellationLocked(std::uint64_t taskId, Task& task);
     void CancelPendingTasksLocked() noexcept;
     [[noreturn]] static void FailDagInvariantLocked(const char* message) noexcept;
 #ifndef NDEBUG

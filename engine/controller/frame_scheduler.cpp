@@ -7,6 +7,233 @@
 
 namespace NEngine::NController {
 
+std::pmr::memory_resource& FrameStorage::GetMemoryResource() const {
+    if (m_scheduler == nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame storage");
+    }
+
+    return m_scheduler->GetMemoryResource(m_frame);
+}
+
+void FrameExecutionSlot::Configure(std::uint64_t ownerId, std::size_t slotIndex) noexcept {
+    m_ownerId = ownerId;
+    m_slotIndex = slotIndex;
+}
+
+bool FrameExecutionSlot::IsFree() const noexcept {
+    return m_state == EFrameState::FREE;
+}
+
+FrameHandle FrameExecutionSlot::Acquire(std::uint64_t applicationFrameIndex,
+                                        std::uint64_t simulationIndex,
+                                        std::optional<Clock::time_point> previousSimulationStartedAt) {
+    if (!IsFree()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame slot {} cannot be acquired from state {}",
+                              m_slotIndex,
+                              static_cast<int>(m_state));
+    }
+
+    if (m_generation == std::numeric_limits<std::uint64_t>::max()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame slot {} generation space is exhausted",
+                              m_slotIndex);
+    }
+
+    ++m_generation;
+
+    const Clock::time_point now = Clock::now();
+
+    m_applicationFrameIndex = applicationFrameIndex;
+    m_simulationIndex = simulationIndex;
+    m_state = EFrameState::ACQUIRED;
+    m_updateSignal = FrameSignal{
+            .IsSet = true,
+            .Generation = m_generation,
+            .ApplicationFrameIndex = m_applicationFrameIndex,
+            .SimulationIndex = m_simulationIndex,
+    };
+    m_drawSignal = {};
+    m_simulationStartedAt = now;
+    m_deltaTime = previousSimulationStartedAt.has_value() ? now - *previousSimulationStartedAt : Duration::zero();
+
+    return FrameHandle{
+            m_ownerId,
+            m_applicationFrameIndex,
+            m_simulationIndex,
+            m_slotIndex,
+            m_generation,
+    };
+}
+
+void FrameExecutionSlot::SignalDraw(FrameHandle frame) {
+    Validate(frame);
+
+    if (!m_updateSignal.IsSet || m_updateSignal.Generation != frame.GetGeneration()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame {} in slot {} has no update signal for generation {}",
+                              frame.GetApplicationFrameIndex(),
+                              frame.GetFrameSlotIndex(),
+                              frame.GetGeneration());
+    }
+
+    if (m_drawSignal.IsSet) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame {} in slot {} already has draw signal for generation {}",
+                              frame.GetApplicationFrameIndex(),
+                              frame.GetFrameSlotIndex(),
+                              frame.GetGeneration());
+    }
+
+    m_drawSignal = FrameSignal{
+            .IsSet = true,
+            .Generation = m_generation,
+            .ApplicationFrameIndex = m_applicationFrameIndex,
+            .SimulationIndex = m_simulationIndex,
+    };
+}
+
+void FrameExecutionSlot::Arm(FrameHandle frame) {
+    Transition(frame, EFrameState::ACQUIRED, EFrameState::WAITING_UPDATE);
+}
+
+void FrameExecutionSlot::BeginUpdate(FrameHandle frame) {
+    Transition(frame, EFrameState::WAITING_UPDATE, EFrameState::UPDATING);
+}
+
+void FrameExecutionSlot::EndUpdate(FrameHandle frame) {
+    Transition(frame, EFrameState::UPDATING, EFrameState::WAITING_DRAW);
+}
+
+void FrameExecutionSlot::BeginFinalize(FrameHandle frame) {
+    Validate(frame);
+
+    if (!m_drawSignal.IsSet || m_drawSignal.Generation != frame.GetGeneration()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame {} in slot {} has no draw signal for generation {}",
+                              frame.GetApplicationFrameIndex(),
+                              frame.GetFrameSlotIndex(),
+                              frame.GetGeneration());
+    }
+
+    Transition(frame, EFrameState::WAITING_DRAW, EFrameState::FINALIZE);
+}
+
+void FrameExecutionSlot::Complete(FrameHandle frame) {
+    Transition(frame, EFrameState::FINALIZE, EFrameState::COMPLETE);
+}
+
+void FrameExecutionSlot::Recycle(FrameHandle frame) {
+    Validate(frame);
+
+    if (m_state != EFrameState::COMPLETE) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame {} in slot {} cannot be recycled from state {}",
+                              frame.GetFrameIndex(),
+                              frame.GetSlotIndex(),
+                              static_cast<int>(m_state));
+    }
+
+    ResetFrameData();
+}
+
+void FrameExecutionSlot::Abort(FrameHandle frame) {
+    Validate(frame);
+
+    if (m_state == EFrameState::FREE) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame {} in slot {} cannot be aborted from state {}",
+                              frame.GetFrameIndex(),
+                              frame.GetSlotIndex(),
+                              static_cast<int>(m_state));
+    }
+
+    ResetFrameData();
+}
+
+bool FrameExecutionSlot::ShouldReleaseDrawCheckpointOnAbort(FrameHandle frame,
+                                                            std::uint64_t nextApplicationFrameIndex) const {
+    Validate(frame);
+
+    return !m_drawSignal.IsSet && m_applicationFrameIndex + 1 == nextApplicationFrameIndex;
+}
+
+EFrameState FrameExecutionSlot::GetState(FrameHandle frame) const {
+    Validate(frame);
+
+    return m_state;
+}
+
+FrameExecutionSlot::Duration FrameExecutionSlot::GetDeltaTime(FrameHandle frame) const {
+    Validate(frame);
+
+    return m_deltaTime;
+}
+
+std::pmr::memory_resource& FrameExecutionSlot::GetMemoryResource(FrameHandle frame) {
+    Validate(frame);
+
+    return m_arena.GetMemoryResource();
+}
+
+FrameExecutionSlot::Clock::time_point FrameExecutionSlot::GetSimulationStartedAt(FrameHandle frame) const {
+    Validate(frame);
+
+    return *m_simulationStartedAt;
+}
+
+void FrameExecutionSlot::Validate(FrameHandle frame) const {
+    if (!frame.IsValid()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame handle");
+    }
+
+    if (frame.m_ownerId != m_ownerId) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Frame handle belongs to another FrameScheduler");
+    }
+
+    if (frame.GetSlotIndex() != m_slotIndex) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "Frame slot {} does not match execution slot {}",
+                              frame.GetSlotIndex(),
+                              m_slotIndex);
+    }
+
+    if (m_applicationFrameIndex != frame.GetApplicationFrameIndex() ||
+        m_simulationIndex != frame.GetSimulationIndex() || m_generation != frame.GetGeneration()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Stale frame handle: frame {}, slot {}, generation {}",
+                              frame.GetApplicationFrameIndex(),
+                              frame.GetFrameSlotIndex(),
+                              frame.GetGeneration());
+    }
+}
+
+void FrameExecutionSlot::Transition(FrameHandle frame, EFrameState expectedState, EFrameState nextState) {
+    Validate(frame);
+
+    if (m_state != expectedState) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Frame {} in slot {} has state {}, expected {}",
+                              frame.GetFrameIndex(),
+                              frame.GetSlotIndex(),
+                              static_cast<int>(m_state),
+                              static_cast<int>(expectedState));
+    }
+
+    m_state = nextState;
+}
+
+void FrameExecutionSlot::ResetFrameData() {
+    m_arena.Reset();
+    m_applicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
+    m_simulationIndex = FrameHandle::INVALID_FRAME_INDEX;
+    m_updateSignal = {};
+    m_drawSignal = {};
+    m_simulationStartedAt.reset();
+    m_deltaTime = Duration::zero();
+    m_state = EFrameState::FREE;
+}
+
 FrameScheduler::FrameScheduler(const EngineConfig& config)
     : m_ownerId(AcquireOwnerId())
     , m_maxActiveFrames(config.MaxActiveFrames) {
@@ -16,6 +243,10 @@ FrameScheduler::FrameScheduler(const EngineConfig& config)
     }
 
     m_slots = std::make_unique<FrameExecutionSlot[]>(m_maxActiveFrames);
+
+    for (std::size_t slotIndex = 0; slotIndex < m_maxActiveFrames; ++slotIndex) {
+        m_slots[slotIndex].Configure(m_ownerId, slotIndex);
+    }
 }
 
 std::optional<FrameHandle> FrameScheduler::TryAcquireFrame() {
@@ -37,40 +268,13 @@ std::optional<FrameHandle> FrameScheduler::TryAcquireFrame() {
 
     FrameExecutionSlot& slot = m_slots[slotIndex];
 
-    if (slot.State != EFrameState::FREE) {
+    if (!slot.IsFree()) {
         return std::nullopt;
     }
 
-    if (slot.Generation == std::numeric_limits<std::uint64_t>::max()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Frame slot {} generation space is exhausted", slotIndex);
-    }
-
-    ++slot.Generation;
-
-    const Clock::time_point now = Clock::now();
-
-    slot.ApplicationFrameIndex = m_nextApplicationFrameIndex;
-    slot.SimulationIndex = m_nextSimulationIndex;
-    slot.State = EFrameState::ACQUIRED;
-    slot.UpdateSignal = FrameSignal{
-            .IsSet = true,
-            .Generation = slot.Generation,
-            .ApplicationFrameIndex = slot.ApplicationFrameIndex,
-            .SimulationIndex = slot.SimulationIndex,
-    };
-    slot.DrawSignal = {};
-    slot.SimulationStartedAt = now;
-    slot.DeltaTime =
-            m_previousSimulationStartedAt.has_value() ? now - *m_previousSimulationStartedAt : Duration::zero();
-    m_previousSimulationStartedAt = now;
-
-    const FrameHandle frame{
-            m_ownerId,
-            slot.ApplicationFrameIndex,
-            slot.SimulationIndex,
-            slotIndex,
-            slot.Generation,
-    };
+    const FrameHandle frame =
+            slot.Acquire(m_nextApplicationFrameIndex, m_nextSimulationIndex, m_previousSimulationStartedAt);
+    m_previousSimulationStartedAt = slot.GetSimulationStartedAt(frame);
 
     ++m_nextApplicationFrameIndex;
     ++m_nextSimulationIndex;
@@ -88,28 +292,7 @@ void FrameScheduler::SignalDraw(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    if (!slot.UpdateSignal.IsSet || slot.UpdateSignal.Generation != frame.GetGeneration()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Frame {} in slot {} has no update signal for generation {}",
-                              frame.GetApplicationFrameIndex(),
-                              frame.GetFrameSlotIndex(),
-                              frame.GetGeneration());
-    }
-
-    if (slot.DrawSignal.IsSet) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Frame {} in slot {} already has draw signal for generation {}",
-                              frame.GetApplicationFrameIndex(),
-                              frame.GetFrameSlotIndex(),
-                              frame.GetGeneration());
-    }
-
-    slot.DrawSignal = FrameSignal{
-            .IsSet = true,
-            .Generation = slot.Generation,
-            .ApplicationFrameIndex = slot.ApplicationFrameIndex,
-            .SimulationIndex = slot.SimulationIndex,
-    };
+    slot.SignalDraw(frame);
     m_nextCheckpointSignal = ECheckpointSignal::UPDATE;
 }
 
@@ -118,7 +301,7 @@ void FrameScheduler::ArmFrame(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    TransitionLocked(frame, slot, EFrameState::ACQUIRED, EFrameState::WAITING_UPDATE);
+    slot.Arm(frame);
 }
 
 void FrameScheduler::BeginUpdate(FrameHandle frame) {
@@ -126,7 +309,7 @@ void FrameScheduler::BeginUpdate(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    TransitionLocked(frame, slot, EFrameState::WAITING_UPDATE, EFrameState::UPDATING);
+    slot.BeginUpdate(frame);
 }
 
 void FrameScheduler::EndUpdate(FrameHandle frame) {
@@ -134,7 +317,7 @@ void FrameScheduler::EndUpdate(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    TransitionLocked(frame, slot, EFrameState::UPDATING, EFrameState::WAITING_DRAW);
+    slot.EndUpdate(frame);
 }
 
 void FrameScheduler::BeginFinalize(FrameHandle frame) {
@@ -142,15 +325,7 @@ void FrameScheduler::BeginFinalize(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    if (!slot.DrawSignal.IsSet || slot.DrawSignal.Generation != frame.GetGeneration()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Frame {} in slot {} has no draw signal for generation {}",
-                              frame.GetApplicationFrameIndex(),
-                              frame.GetFrameSlotIndex(),
-                              frame.GetGeneration());
-    }
-
-    TransitionLocked(frame, slot, EFrameState::WAITING_DRAW, EFrameState::FINALIZE);
+    slot.BeginFinalize(frame);
 }
 
 void FrameScheduler::CompleteFrame(FrameHandle frame) {
@@ -158,7 +333,7 @@ void FrameScheduler::CompleteFrame(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    TransitionLocked(frame, slot, EFrameState::FINALIZE, EFrameState::COMPLETE);
+    slot.Complete(frame);
 }
 
 void FrameScheduler::RecycleFrame(FrameHandle frame) {
@@ -166,22 +341,7 @@ void FrameScheduler::RecycleFrame(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    if (slot.State != EFrameState::COMPLETE) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Frame {} in slot {} cannot be recycled from state {}",
-                              frame.GetFrameIndex(),
-                              frame.GetSlotIndex(),
-                              static_cast<int>(slot.State));
-    }
-
-    slot.Arena.Reset();
-    slot.ApplicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
-    slot.SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
-    slot.UpdateSignal = {};
-    slot.DrawSignal = {};
-    slot.SimulationStartedAt.reset();
-    slot.DeltaTime = Duration::zero();
-    slot.State = EFrameState::FREE;
+    slot.Recycle(frame);
 }
 
 void FrameScheduler::AbortFrame(FrameHandle frame) {
@@ -189,45 +349,38 @@ void FrameScheduler::AbortFrame(FrameHandle frame) {
 
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
-    if (slot.State == EFrameState::FREE) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Frame {} in slot {} cannot be aborted from state {}",
-                              frame.GetFrameIndex(),
-                              frame.GetSlotIndex(),
-                              static_cast<int>(slot.State));
-    }
-
-    if (m_nextCheckpointSignal == ECheckpointSignal::DRAW && !slot.DrawSignal.IsSet &&
-        slot.ApplicationFrameIndex + 1 == m_nextApplicationFrameIndex) {
+    if (m_nextCheckpointSignal == ECheckpointSignal::DRAW &&
+        slot.ShouldReleaseDrawCheckpointOnAbort(frame, m_nextApplicationFrameIndex)) {
         m_nextCheckpointSignal = ECheckpointSignal::UPDATE;
     }
 
-    slot.Arena.Reset();
-    slot.ApplicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
-    slot.SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
-    slot.UpdateSignal = {};
-    slot.DrawSignal = {};
-    slot.SimulationStartedAt.reset();
-    slot.DeltaTime = Duration::zero();
-    slot.State = EFrameState::FREE;
+    slot.Abort(frame);
 }
 
 EFrameState FrameScheduler::GetState(FrameHandle frame) const {
     std::lock_guard lock{m_mutex};
 
-    return GetSlotLocked(frame).State;
+    return GetSlotLocked(frame).GetState(frame);
 }
 
 FrameScheduler::Duration FrameScheduler::GetDeltaTime(FrameHandle frame) const {
     std::lock_guard lock{m_mutex};
 
-    return GetSlotLocked(frame).DeltaTime;
+    return GetSlotLocked(frame).GetDeltaTime(frame);
+}
+
+FrameStorage FrameScheduler::GetFrameStorage(FrameHandle frame) {
+    std::lock_guard lock{m_mutex};
+
+    static_cast<void>(GetSlotLocked(frame).GetState(frame));
+
+    return FrameStorage{*this, frame};
 }
 
 std::pmr::memory_resource& FrameScheduler::GetMemoryResource(FrameHandle frame) {
     std::lock_guard lock{m_mutex};
 
-    return GetSlotLocked(frame).Arena.GetMemoryResource();
+    return GetSlotLocked(frame).GetMemoryResource(frame);
 }
 
 std::uint64_t FrameScheduler::AcquireOwnerId() {
@@ -249,11 +402,11 @@ std::uint64_t FrameScheduler::AcquireOwnerId() {
     }
 }
 
-FrameScheduler::FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHandle frame) {
+FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHandle frame) {
     return const_cast<FrameExecutionSlot&>(static_cast<const FrameScheduler&>(*this).GetSlotLocked(frame));
 }
 
-const FrameScheduler::FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHandle frame) const {
+const FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHandle frame) const {
     if (!frame.IsValid()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame handle");
     }
@@ -269,34 +422,7 @@ const FrameScheduler::FrameExecutionSlot& FrameScheduler::GetSlotLocked(FrameHan
                               m_maxActiveFrames);
     }
 
-    const FrameExecutionSlot& slot = m_slots[frame.GetSlotIndex()];
-
-    if (slot.ApplicationFrameIndex != frame.GetApplicationFrameIndex() ||
-        slot.SimulationIndex != frame.GetSimulationIndex() || slot.Generation != frame.GetGeneration()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Stale frame handle: frame {}, slot {}, generation {}",
-                              frame.GetApplicationFrameIndex(),
-                              frame.GetFrameSlotIndex(),
-                              frame.GetGeneration());
-    }
-
-    return slot;
-}
-
-void FrameScheduler::TransitionLocked(FrameHandle frame,
-                                      FrameExecutionSlot& slot,
-                                      EFrameState expectedState,
-                                      EFrameState nextState) {
-    if (slot.State != expectedState) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Frame {} in slot {} has state {}, expected {}",
-                              frame.GetFrameIndex(),
-                              frame.GetSlotIndex(),
-                              static_cast<int>(slot.State),
-                              static_cast<int>(expectedState));
-    }
-
-    slot.State = nextState;
+    return m_slots[frame.GetSlotIndex()];
 }
 
 } // namespace NEngine::NController

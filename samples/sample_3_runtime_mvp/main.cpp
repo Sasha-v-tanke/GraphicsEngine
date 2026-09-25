@@ -1,7 +1,7 @@
 #include <exception>
 #include <iostream>
 
-#include <application/application.h>
+#include <GraphicsEngine/application/application.h>
 
 namespace {
 

@@ -80,13 +80,122 @@ private:
     std::size_t m_frameSlotIndex = INVALID_SLOT_INDEX;
     std::uint64_t m_generation = 0;
 
+    friend class FrameExecutionSlot;
     friend class FrameScheduler;
+    friend class FrameStorage;
+};
+
+class FrameScheduler;
+
+class FrameStorage final {
+public:
+    FrameStorage() = default;
+
+    [[nodiscard]] FrameHandle GetFrame() const noexcept {
+        return m_frame;
+    }
+
+    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() const;
+
+private:
+    FrameStorage(FrameScheduler& scheduler, FrameHandle frame) noexcept
+        : m_scheduler(&scheduler)
+        , m_frame(frame) {
+    }
+
+private:
+    FrameScheduler* m_scheduler = nullptr;
+    FrameHandle m_frame;
+
+    friend class FrameScheduler;
+};
+
+class FrameExecutionSlot final: private NCommon::NonTransferable {
+public:
+    using Clock = std::chrono::steady_clock;
+    using Duration = Clock::duration;
+
+    void Configure(std::uint64_t ownerId, std::size_t slotIndex) noexcept;
+
+    [[nodiscard]] bool IsFree() const noexcept;
+
+    [[nodiscard]] FrameHandle Acquire(std::uint64_t applicationFrameIndex,
+                                      std::uint64_t simulationIndex,
+                                      std::optional<Clock::time_point> previousSimulationStartedAt);
+
+    void SignalDraw(FrameHandle frame);
+
+    void Arm(FrameHandle frame);
+
+    void BeginUpdate(FrameHandle frame);
+
+    void EndUpdate(FrameHandle frame);
+
+    void BeginFinalize(FrameHandle frame);
+
+    void Complete(FrameHandle frame);
+
+    void Recycle(FrameHandle frame);
+
+    void Abort(FrameHandle frame);
+
+    [[nodiscard]] bool ShouldReleaseDrawCheckpointOnAbort(FrameHandle frame,
+                                                          std::uint64_t nextApplicationFrameIndex) const;
+
+    [[nodiscard]] EFrameState GetState(FrameHandle frame) const;
+
+    [[nodiscard]] Duration GetDeltaTime(FrameHandle frame) const;
+
+    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
+
+    [[nodiscard]] Clock::time_point GetSimulationStartedAt(FrameHandle frame) const;
+
+private:
+    struct FrameSignal {
+        bool IsSet = false;
+        std::uint64_t Generation = 0;
+        std::uint64_t ApplicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
+        std::uint64_t SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
+    };
+
+    class FrameArena final: private NCommon::NonTransferable {
+    public:
+        [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() noexcept {
+            return m_resource;
+        }
+
+        void Reset() {
+            m_resource.release();
+        }
+
+    private:
+        std::pmr::synchronized_pool_resource m_resource;
+    };
+
+    void Validate(FrameHandle frame) const;
+
+    void Transition(FrameHandle frame, EFrameState expectedState, EFrameState nextState);
+
+    void ResetFrameData();
+
+private:
+    std::uint64_t m_ownerId = 0;
+    std::size_t m_slotIndex = FrameHandle::INVALID_SLOT_INDEX;
+    EFrameState m_state = EFrameState::FREE;
+    std::uint64_t m_applicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
+    std::uint64_t m_simulationIndex = FrameHandle::INVALID_FRAME_INDEX;
+    std::uint64_t m_generation = 0;
+    FrameSignal m_updateSignal;
+    FrameSignal m_drawSignal;
+    std::optional<Clock::time_point> m_simulationStartedAt;
+    Duration m_deltaTime = Duration::zero();
+    FrameArena m_arena;
 };
 
 class FrameScheduler final: private NCommon::NonTransferable {
 public:
-    using Clock = std::chrono::steady_clock;
-    using Duration = Clock::duration;
+    using Clock = FrameExecutionSlot::Clock;
+    using Duration = FrameExecutionSlot::Duration;
 
     explicit FrameScheduler(const EngineConfig& config);
 
@@ -112,7 +221,7 @@ public:
 
     [[nodiscard]] Duration GetDeltaTime(FrameHandle frame) const;
 
-    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
+    [[nodiscard]] FrameStorage GetFrameStorage(FrameHandle frame);
 
     [[nodiscard]] std::size_t GetMaxActiveFrames() const noexcept {
         return m_maxActiveFrames;
@@ -124,47 +233,13 @@ private:
         DRAW,
     };
 
-    struct FrameSignal {
-        bool IsSet = false;
-        std::uint64_t Generation = 0;
-        std::uint64_t ApplicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
-        std::uint64_t SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
-    };
-
-    class FrameArena final: private NCommon::NonTransferable {
-    public:
-        [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() noexcept {
-            return m_resource;
-        }
-
-        void Reset() {
-            m_resource.release();
-        }
-
-    private:
-        std::pmr::synchronized_pool_resource m_resource;
-    };
-
-    struct FrameExecutionSlot {
-        EFrameState State = EFrameState::FREE;
-        std::uint64_t ApplicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
-        std::uint64_t SimulationIndex = FrameHandle::INVALID_FRAME_INDEX;
-        std::uint64_t Generation = 0;
-        FrameSignal UpdateSignal;
-        FrameSignal DrawSignal;
-        std::optional<Clock::time_point> SimulationStartedAt;
-        Duration DeltaTime = Duration::zero();
-        FrameArena Arena;
-    };
-
     [[nodiscard]] static std::uint64_t AcquireOwnerId();
 
     [[nodiscard]] FrameExecutionSlot& GetSlotLocked(FrameHandle frame);
 
     [[nodiscard]] const FrameExecutionSlot& GetSlotLocked(FrameHandle frame) const;
 
-    static void
-    TransitionLocked(FrameHandle frame, FrameExecutionSlot& slot, EFrameState expectedState, EFrameState nextState);
+    [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
 
 private:
     mutable std::mutex m_mutex;
@@ -178,6 +253,8 @@ private:
     std::uint64_t m_nextApplicationFrameIndex = 0;
     std::uint64_t m_nextSimulationIndex = 0;
     std::optional<Clock::time_point> m_previousSimulationStartedAt;
+
+    friend class FrameStorage;
 };
 
 } // namespace NEngine::NController

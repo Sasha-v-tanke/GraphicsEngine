@@ -102,16 +102,10 @@ std::unique_ptr<NWindow::NEngine::IWindowEngine> CreateFakeWindowEngine(const NW
 
 class BlockingFirstDrawRuntime final: public NEngine::NRuntime::IFrameRuntime {
 public:
-    void Update(NEngine::NController::FrameScheduler& frameScheduler,
-                NEngine::NController::FrameHandle frame) override {
-        frameScheduler.BeginUpdate(frame);
-        frameScheduler.EndUpdate(frame);
+    void Update(const NEngine::NRuntime::FrameContext&) override {
     }
 
-    void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
-        frameScheduler.BeginFinalize(frame);
-        frameScheduler.CompleteFrame(frame);
-
+    void Draw(const NEngine::NRuntime::FrameContext& frame) override {
         {
             std::lock_guard lock{m_mutex};
             ++m_drawCount;
@@ -119,12 +113,12 @@ public:
 
         m_condition.notify_all();
 
-        if (frame.GetFrameIndex() == 0) {
+        if (frame.GetFrame().GetFrameIndex() == 0) {
             std::unique_lock lock{m_mutex};
             m_condition.wait(lock, [this] { return m_finishFirstDraw; });
         }
 
-        if (frame.GetFrameIndex() == 0) {
+        if (frame.GetFrame().GetFrameIndex() == 0) {
             {
                 std::lock_guard lock{m_mutex};
                 m_firstDrawFinished = true;

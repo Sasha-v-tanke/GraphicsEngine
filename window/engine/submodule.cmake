@@ -1,6 +1,7 @@
 SUBMODULE()
 
 SOURCES(
+    application_thread.cpp
     factory.cpp
 )
 

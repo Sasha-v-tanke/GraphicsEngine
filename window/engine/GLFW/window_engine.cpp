@@ -13,6 +13,7 @@
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 #include <lib/common/wrapper/non_transferable.h>
+#include <window/engine/application_thread.h>
 #include <window/engine/event_queue.h>
 #include <window/engine/event_sink.h>
 
@@ -34,6 +35,8 @@ std::string GetGlfwErrorMessage(std::string_view fallback) {
 class GlfwRuntime final: public NCommon::NonTransferable {
 public:
     static std::shared_ptr<GlfwRuntime> Acquire() {
+        ValidateApplicationThread("GLFW runtime initialization");
+
         std::lock_guard lock{GetMutex()};
 
         std::weak_ptr<GlfwRuntime>& weakRuntime = GetWeakRuntime();
@@ -54,6 +57,8 @@ public:
             std::terminate();
         }
 
+        ValidateApplicationThread("GLFW runtime termination");
+
         glfwTerminate();
     }
 
@@ -71,6 +76,8 @@ public:
 private:
     GlfwRuntime()
         : m_threadId(std::this_thread::get_id()) {
+        ValidateApplicationThread("glfwInit");
+
         if (glfwInit() == GLFW_FALSE) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "{}",
@@ -189,6 +196,8 @@ private:
     }
 
     static WindowPtr CreateWindow(const WindowConfig& config) {
+        ValidateApplicationThread("GLFW window creation");
+
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
         GLFWwindow* window = glfwCreateWindow(ClampSize(config.Size.Width),

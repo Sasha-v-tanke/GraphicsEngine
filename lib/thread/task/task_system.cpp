@@ -173,6 +173,38 @@ void TaskSystem::TaskRegistry::RollbackDependencyEdgesLocked(std::uint64_t taskI
     }
 }
 
+void TaskSystem::TaskRegistry::UnlinkDependencyEdgesLocked(std::uint64_t taskId,
+                                                           const Task& task,
+                                                           std::uint64_t lockedDependencyId,
+                                                           Task* lockedDependencyTask) {
+    for (const std::uint64_t dependencyId: task.Dependencies) {
+        if (dependencyId == lockedDependencyId && lockedDependencyTask != nullptr) {
+            std::vector<std::uint64_t>& dependents = lockedDependencyTask->Dependents;
+            const auto dependentIt = std::ranges::find(dependents, taskId);
+
+            if (dependentIt != dependents.end()) {
+                dependents.erase(dependentIt);
+            }
+
+            continue;
+        }
+
+        const auto dependencyIt = ActiveTasks.find(dependencyId);
+
+        if (dependencyIt == ActiveTasks.end()) {
+            continue;
+        }
+
+        std::lock_guard dependencyLock{dependencyIt->second->Mutex};
+        std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
+        const auto dependentIt = std::ranges::find(dependents, taskId);
+
+        if (dependentIt != dependents.end()) {
+            dependents.erase(dependentIt);
+        }
+    }
+}
+
 void TaskSystem::TaskRegistry::CommitActiveTaskLocked(std::uint64_t taskId, std::shared_ptr<TaskHandle::State> state) {
     ActiveTasks.emplace(taskId, std::move(state));
 }
@@ -318,12 +350,11 @@ void TaskSystem::Cancel(const TaskHandle& task) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Running task cannot be cancelled");
     }
 
-    storedTask.Status = ETaskStatus::CANCELLED;
-    PropagateCancellationLocked(storedTask);
-    TaskLifetime::ReleaseExecutionPayloadLocked(storedTask);
-    m_registry.ActiveTasks.erase(task.GetId());
-    task.m_state->Condition.notify_all();
-    m_lifetime.ReleaseOutstandingTask();
+    CancelTaskLocked(task.GetId(), task.m_state, storedTask);
+
+#ifndef NDEBUG
+    ValidateDagLocked();
+#endif
 }
 
 void TaskSystem::Wait(const TaskHandle& task) {
@@ -650,7 +681,7 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
     } else {
         state->Task.Error = std::move(error);
         state->Task.Status = status;
-        PropagateCancellationLocked(state->Task);
+        PropagateCancellationLocked(state->Id, state->Task);
         TaskLifetime::ReleaseExecutionPayloadLocked(state->Task);
     }
 
@@ -659,8 +690,24 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
     m_lifetime.ReleaseOutstandingTask();
 }
 
-void TaskSystem::PropagateCancellationLocked(Task& task) {
-    for (const std::uint64_t dependent: task.Dependents) {
+void TaskSystem::CancelTaskLocked(std::uint64_t taskId,
+                                  const std::shared_ptr<TaskHandle::State>& state,
+                                  Task& task,
+                                  std::uint64_t lockedDependencyId,
+                                  Task* lockedDependencyTask) {
+    task.Status = ETaskStatus::CANCELLED;
+    PropagateCancellationLocked(taskId, task);
+    m_registry.UnlinkDependencyEdgesLocked(taskId, task, lockedDependencyId, lockedDependencyTask);
+    TaskLifetime::ReleaseExecutionPayloadLocked(task);
+    m_registry.ActiveTasks.erase(taskId);
+    state->Condition.notify_all();
+    m_lifetime.ReleaseOutstandingTask();
+}
+
+void TaskSystem::PropagateCancellationLocked(std::uint64_t taskId, Task& task) {
+    const std::vector<std::uint64_t> dependents = task.Dependents;
+
+    for (const std::uint64_t dependent: dependents) {
         const auto dependentIt = m_registry.ActiveTasks.find(dependent);
 
         if (dependentIt == m_registry.ActiveTasks.end()) {
@@ -675,12 +722,7 @@ void TaskSystem::PropagateCancellationLocked(Task& task) {
             continue;
         }
 
-        dependentTask.Status = ETaskStatus::CANCELLED;
-        PropagateCancellationLocked(dependentTask);
-        TaskLifetime::ReleaseExecutionPayloadLocked(dependentTask);
-        m_registry.ActiveTasks.erase(dependent);
-        dependentState->Condition.notify_all();
-        m_lifetime.ReleaseOutstandingTask();
+        CancelTaskLocked(dependent, dependentState, dependentTask, taskId, &task);
     }
 }
 
@@ -696,6 +738,7 @@ void TaskSystem::CancelPendingTasksLocked() noexcept {
         }
 
         task.Status = ETaskStatus::CANCELLED;
+        m_registry.UnlinkDependencyEdgesLocked(state->Id, task);
         TaskLifetime::ReleaseExecutionPayloadLocked(task);
         taskIt = m_registry.ActiveTasks.erase(taskIt);
         state->Condition.notify_all();
@@ -777,7 +820,7 @@ void TaskSystem::ValidateDagLocked() const {
             const auto dependentIt = m_registry.ActiveTasks.find(dependentId);
 
             if (dependentIt == m_registry.ActiveTasks.end()) {
-                continue;
+                FailDagInvariantLocked("Task dependent is not active");
             }
 
             std::lock_guard dependentLock{dependentIt->second->Mutex};

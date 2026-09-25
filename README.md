@@ -78,8 +78,8 @@ integration layer.
 `ApplicationConfig`, переопределяет `OnUpdate()` и `OnDraw()`, затем вызывает `Run()`:
 
 ```cpp
-#include <application/application.h>
-#include <window/window_type.h>
+#include <GraphicsEngine/application/application.h>
+#include <GraphicsEngine/window/window_type.h>
 
 class MyApplication final: public NApplication::Application {
 public:
