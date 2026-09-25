@@ -69,14 +69,10 @@ namespace NRuntime {
 
 class DefaultFrameRuntime final: public IFrameRuntime {
 public:
-    void Update(NController::FrameScheduler& frameScheduler, NController::FrameHandle frame) override {
-        frameScheduler.BeginUpdate(frame);
-        frameScheduler.EndUpdate(frame);
+    void Update(const FrameContext&) override {
     }
 
-    void Draw(NController::FrameScheduler& frameScheduler, NController::FrameHandle frame) override {
-        frameScheduler.BeginFinalize(frame);
-        frameScheduler.CompleteFrame(frame);
+    void Draw(const FrameContext&) override {
     }
 };
 
@@ -316,7 +312,12 @@ private:
                 frameRuntime = m_frameRuntime.get();
             }
 
-            frameRuntime->Update(*frameScheduler, frame);
+            frameScheduler->BeginUpdate(frame);
+
+            const NRuntime::FrameContext context{frame};
+            frameRuntime->Update(context);
+
+            frameScheduler->EndUpdate(frame);
         } catch (...) {
             LatchRuntimeFailure(frame, std::current_exception());
             throw;
@@ -339,7 +340,12 @@ private:
                 frameRuntime = m_frameRuntime.get();
             }
 
-            frameRuntime->Draw(*frameScheduler, frame);
+            frameScheduler->BeginFinalize(frame);
+
+            const NRuntime::FrameContext context{frame};
+            frameRuntime->Draw(context);
+
+            frameScheduler->CompleteFrame(frame);
         } catch (...) {
             LatchRuntimeFailure(frame, std::current_exception());
             throw;

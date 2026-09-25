@@ -25,12 +25,12 @@ public:
         : m_updateStarted(updateStarted) {
     }
 
-    void Update(NEngine::NController::FrameScheduler&, NEngine::NController::FrameHandle) override {
+    void Update(const NEngine::NRuntime::FrameContext&) override {
         m_updateStarted.set_value();
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected update failure");
     }
 
-    void Draw(NEngine::NController::FrameScheduler&, NEngine::NController::FrameHandle) override {
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
         ++m_drawCount;
     }
 
@@ -43,10 +43,33 @@ private:
     int m_drawCount = 0;
 };
 
+class ThrowingDrawFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    explicit ThrowingDrawFrameRuntime(std::promise<void>& drawStarted)
+        : m_drawStarted(drawStarted) {
+    }
+
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ++m_updateCount;
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+        m_drawStarted.set_value();
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected draw failure");
+    }
+
+    [[nodiscard]] int GetUpdateCount() const noexcept {
+        return m_updateCount;
+    }
+
+private:
+    std::promise<void>& m_drawStarted;
+    int m_updateCount = 0;
+};
+
 class BlockingFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
 public:
-    void Update(NEngine::NController::FrameScheduler& frameScheduler,
-                NEngine::NController::FrameHandle frame) override {
+    void Update(const NEngine::NRuntime::FrameContext&) override {
         {
             std::lock_guard lock{m_mutex};
             m_updateEntered = true;
@@ -56,15 +79,9 @@ public:
 
         std::unique_lock lock{m_mutex};
         m_condition.wait(lock, [this] { return m_finishUpdate; });
-        lock.unlock();
-
-        frameScheduler.BeginUpdate(frame);
-        frameScheduler.EndUpdate(frame);
     }
 
-    void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
-        frameScheduler.BeginFinalize(frame);
-        frameScheduler.CompleteFrame(frame);
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
     }
 
     [[nodiscard]] bool WaitUpdateEntered(std::chrono::milliseconds timeout) {
@@ -90,16 +107,10 @@ private:
 
 class BlockingFirstDrawRuntime final: public NEngine::NRuntime::IFrameRuntime {
 public:
-    void Update(NEngine::NController::FrameScheduler& frameScheduler,
-                NEngine::NController::FrameHandle frame) override {
-        frameScheduler.BeginUpdate(frame);
-        frameScheduler.EndUpdate(frame);
+    void Update(const NEngine::NRuntime::FrameContext&) override {
     }
 
-    void Draw(NEngine::NController::FrameScheduler& frameScheduler, NEngine::NController::FrameHandle frame) override {
-        frameScheduler.BeginFinalize(frame);
-        frameScheduler.CompleteFrame(frame);
-
+    void Draw(const NEngine::NRuntime::FrameContext& frame) override {
         {
             std::lock_guard lock{m_mutex};
             ++m_drawCount;
@@ -107,12 +118,12 @@ public:
 
         m_condition.notify_all();
 
-        if (frame.GetFrameIndex() == 0) {
+        if (frame.GetFrame().GetFrameIndex() == 0) {
             std::unique_lock lock{m_mutex};
             m_condition.wait(lock, [this] { return m_finishFirstDraw; });
         }
 
-        if (frame.GetFrameIndex() == 0) {
+        if (frame.GetFrame().GetFrameIndex() == 0) {
             {
                 std::lock_guard lock{m_mutex};
                 m_firstDrawFinished = true;
@@ -431,6 +442,42 @@ TEST(Engine, LatchesRuntimeErrorAndFailsDependentWork) {
 
     engine->ClearLastError();
     EXPECT_FALSE(engine->GetLastError().has_value());
+
+    engine->Stop();
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
+}
+
+TEST(Engine, LatchesDrawRuntimeErrorWithoutCompletingFrame) {
+    std::promise<void> drawStarted;
+    std::future<void> drawStartedResult = drawStarted.get_future();
+    auto runtime = std::make_unique<ThrowingDrawFrameRuntime>(drawStarted);
+    ThrowingDrawFrameRuntime& runtimeRef = *runtime;
+
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 1,
+                    .WorkerCount = 1,
+            },
+            std::move(runtime));
+
+    engine->Start();
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+
+    ASSERT_EQ(drawStartedResult.wait_for(2s), std::future_status::ready);
+    drawStartedResult.get();
+    EXPECT_TRUE(WaitForState(*engine, NEngine::EEngineState::STOPPING, 2s));
+
+    std::optional<NCommon::ErrorInfo> error = engine->GetLastError();
+
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->Code, NCommon::make_error_code(NCommon::EError::INVALID_STATE));
+    EXPECT_EQ(error->Message, "Injected draw failure");
+    EXPECT_EQ(runtimeRef.GetUpdateCount(), 1);
+
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine->Update()); });
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(engine->Draw()); });
 
     engine->Stop();
     EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
