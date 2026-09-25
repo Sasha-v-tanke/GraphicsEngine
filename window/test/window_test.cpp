@@ -1,18 +1,21 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
+#include <window/engine/application_thread.h>
 #include <window/engine/engine.h>
 #include <window/engine/event_queue.h>
 #include <window/engine/event_sink.h>
 #include <window/engine/factory.h>
 #include <window/window.h>
 #include <window/window_config.h>
+#include <window/window_runtime.h>
 #include <window/window_size.h>
 #include <window/window_type.h>
 
@@ -170,6 +173,8 @@ protected:
 class WindowTest: public testing::Test {
 protected:
     void SetUp() override {
+        m_runtime = std::make_unique<NWindow::WindowRuntime>();
+
         g_fakeState = &m_state;
         g_fakeEngine = nullptr;
 
@@ -181,8 +186,11 @@ protected:
 
         g_fakeEngine = nullptr;
         g_fakeState = nullptr;
+
+        m_runtime.reset();
     }
 
+    std::unique_ptr<NWindow::WindowRuntime> m_runtime;
     FakeWindowState m_state;
 };
 
@@ -211,6 +219,65 @@ static_assert(!std::is_copy_constructible_v<NWindow::Window>);
 static_assert(!std::is_copy_assignable_v<NWindow::Window>);
 static_assert(!std::is_move_constructible_v<NWindow::Window>);
 static_assert(!std::is_move_assignable_v<NWindow::Window>);
+
+// -----------------------------------------------------------------------------
+// Runtime thread affinity
+// -----------------------------------------------------------------------------
+
+TEST(WindowRuntime, AllowsRegisteredApplicationThread) {
+    NWindow::WindowRuntime runtime;
+
+    EXPECT_NO_THROW(NWindow::NEngine::ValidateApplicationThread("test window operation"));
+}
+
+TEST(WindowRuntime, RejectsAccessFromAnotherThread) {
+    NWindow::WindowRuntime runtime;
+
+    bool rejected = false;
+
+    std::thread thread{[&rejected] {
+        try {
+            NWindow::NEngine::ValidateApplicationThread("test window operation");
+        } catch (const NCommon::Exception& exception) {
+            rejected = exception.code() == NCommon::make_error_code(NCommon::EError::INVALID_STATE) &&
+                       std::string_view{exception.GetMessage()}.find("registered application thread") !=
+                               std::string_view::npos;
+        }
+    }};
+
+    thread.join();
+
+    EXPECT_TRUE(rejected);
+}
+
+TEST(WindowRuntime, ValidatesBeforeCreatingGlfwBackend) {
+    NWindow::NEngine::SetWindowEngineFactoryForTests(&CreateFakeWindowEngine);
+
+    FakeWindowState state;
+    g_fakeState = &state;
+
+    try {
+        NWindow::Window window{
+                NWindow::WindowConfig{NWindow::EWindowType::GLFW},
+        };
+    } catch (const NCommon::Exception& exception) {
+        EXPECT_EQ(exception.code(), NCommon::make_error_code(NCommon::EError::INVALID_STATE));
+        EXPECT_NE(std::string_view{exception.GetMessage()}.find("WindowRuntime"), std::string_view::npos);
+
+        g_fakeState = nullptr;
+        NWindow::NEngine::SetWindowEngineFactoryForTests(nullptr);
+
+        EXPECT_EQ(state.CreatedCount, 0);
+        EXPECT_EQ(g_fakeEngine, nullptr);
+
+        return;
+    }
+
+    g_fakeState = nullptr;
+    NWindow::NEngine::SetWindowEngineFactoryForTests(nullptr);
+
+    FAIL() << "Creating GLFW window without WindowRuntime did not throw";
+}
 
 // -----------------------------------------------------------------------------
 // Construction and ownership

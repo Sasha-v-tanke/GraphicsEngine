@@ -4,6 +4,7 @@
 
 #include <application/runtime/frame_loop.h>
 #include <window/window.h>
+#include <window/window_runtime.h>
 
 namespace NApplication {
 
@@ -50,7 +51,8 @@ private:
 };
 
 Application::Application(const ApplicationConfig& config)
-    : m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
+    : m_windowRuntime(std::make_unique<NWindow::WindowRuntime>())
+    , m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
     , m_frameLoop(std::make_unique<NRuntime::FrameLoop>(config)) {
 }
 
@@ -61,6 +63,7 @@ Application::~Application() {
     }
 
     m_window.reset();
+    m_windowRuntime.reset();
 }
 
 void Application::Run() {

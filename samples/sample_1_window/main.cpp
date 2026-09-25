@@ -2,6 +2,7 @@
 #include <iostream>
 
 #include <window/window.h>
+#include <window/window_runtime.h>
 
 namespace {
 
@@ -35,6 +36,7 @@ int main() {
                 .Height = 720,
         };
 
+        NWindow::WindowRuntime windowRuntime;
         SampleWindow window{config};
 
         while (!window.ShouldClose()) {

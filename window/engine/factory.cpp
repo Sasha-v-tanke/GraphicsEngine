@@ -4,6 +4,7 @@
 
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
+#include <window/engine/application_thread.h>
 #include <window/engine/engine.h>
 
 #ifdef GRAPHICS_ENGINE_WINDOW_HAS_GLFW
@@ -40,6 +41,10 @@ thread_local WindowEngineFactory g_testFactory = nullptr;
 } // namespace
 
 std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config) {
+    if (config.Type == EWindowType::GLFW) {
+        ValidateApplicationThread("GLFW window creation");
+    }
+
     if (g_testFactory != nullptr) {
         return ValidateWindowEngine(g_testFactory(config));
     }

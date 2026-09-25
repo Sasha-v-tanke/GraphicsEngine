@@ -73,14 +73,18 @@ GLFW является первой concrete implementation за внутренн
 Callbacks GLFW преобразуются внутри модуля в `OnResize()`,
 `OnFramebufferResize()` и `OnClose()`.
 
-GLFW runtime инициализируется лениво при создании первого GLFW-window и
-завершается после уничтожения последнего active window. Несколько окон
-разделяют один runtime ownership и один GLFW main thread.
+`WindowRuntime` фиксирует application thread для оконного runtime. Для
+standalone использования `Window` объект `WindowRuntime` должен быть создан на
+application/process main thread до создания GLFW-window и жить дольше окон.
+`Application` делает это автоматически.
 
-Первый успешно созданный GLFW-window фиксирует runtime main thread. На этом же
-thread должны выполняться `glfwInit`, `glfwTerminate`, создание и уничтожение
-всех GLFW-window, а также event processing. GLFW implementation проверяет этот
-thread перед window operations.
+GLFW runtime инициализируется лениво после регистрации `WindowRuntime` и
+завершается после уничтожения последнего active window. Несколько окон
+разделяют один runtime ownership и один зарегистрированный application thread.
+
+На зарегистрированном application thread должны выполняться `glfwInit`,
+`glfwTerminate`, создание и уничтожение всех GLFW-window, а также event
+processing. GLFW implementation проверяет этот thread перед window operations.
 
 GLFW callbacks не вызывают пользовательские `Window::On*()` напрямую. Callback
 только кладёт framework-independent событие во внутреннюю очередь, а

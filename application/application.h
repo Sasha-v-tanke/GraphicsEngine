@@ -9,8 +9,9 @@
 namespace NWindow {
 
 class Window;
+class WindowRuntime;
 
-}
+} // namespace NWindow
 
 namespace NApplication::NRuntime {
 
@@ -54,6 +55,7 @@ private:
     void RunFrame();
 
 private:
+    std::unique_ptr<NWindow::WindowRuntime> m_windowRuntime;
     std::unique_ptr<NWindow::Window> m_window;
     std::unique_ptr<NRuntime::FrameLoop> m_frameLoop;
 };
