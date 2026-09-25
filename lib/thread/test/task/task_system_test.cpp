@@ -671,6 +671,136 @@ TEST(TaskSystem, WaitIdleCompletesAfterCancelledReadyTaskLeavesOnlyQueueTombston
     taskSystem.Wait(blocker);
 }
 
+TEST(TaskSystem, CancellingWaitingDependentUnlinksMultiplePrerequisites) {
+    NCommon::TaskSystem taskSystem{2};
+    Gate firstStarted;
+    Gate secondStarted;
+    Gate finish;
+
+    const NCommon::TaskHandle first = taskSystem.Submit([&](NCommon::TaskContext&) {
+        firstStarted.Open();
+        finish.Wait();
+    });
+    const NCommon::TaskHandle second = taskSystem.Submit([&](NCommon::TaskContext&) {
+        secondStarted.Open();
+        finish.Wait();
+    });
+
+    ASSERT_TRUE(firstStarted.WaitForOpen());
+    ASSERT_TRUE(secondStarted.WaitForOpen());
+
+    const std::vector<NCommon::TaskHandle> dependencies{first, second};
+    const NCommon::TaskHandle dependent = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+
+    taskSystem.Cancel(dependent);
+
+    EXPECT_EQ(taskSystem.GetStatus(dependent), NCommon::ETaskStatus::CANCELLED);
+
+    finish.Open();
+    taskSystem.Wait(first);
+    taskSystem.Wait(second);
+}
+
+TEST(TaskSystem, CancellingOneFanOutDependentKeepsOtherBacklinks) {
+    NCommon::TaskSystem taskSystem{1};
+    Gate finish;
+
+    const NCommon::TaskHandle prerequisite = taskSystem.Submit([&](NCommon::TaskContext&) { finish.Wait(); });
+    const std::vector<NCommon::TaskHandle> dependencies{prerequisite};
+    const NCommon::TaskHandle first = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+    const NCommon::TaskHandle second = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+
+    taskSystem.Cancel(first);
+
+    EXPECT_EQ(taskSystem.GetStatus(first), NCommon::ETaskStatus::CANCELLED);
+
+    taskSystem.Cancel(second);
+
+    EXPECT_EQ(taskSystem.GetStatus(second), NCommon::ETaskStatus::CANCELLED);
+
+    finish.Open();
+    taskSystem.Wait(prerequisite);
+}
+
+TEST(TaskSystem, CascadeCancellationUnlinksFanInBacklinks) {
+    NCommon::TaskSystem taskSystem{1};
+    Gate finishRoot;
+
+    const NCommon::TaskHandle root = taskSystem.Submit([&](NCommon::TaskContext&) { finishRoot.Wait(); });
+    const std::vector<NCommon::TaskHandle> rootDependencies{root};
+    const NCommon::TaskHandle left = taskSystem.Submit([](NCommon::TaskContext&) {}, rootDependencies);
+    const NCommon::TaskHandle right = taskSystem.Submit([](NCommon::TaskContext&) {}, rootDependencies);
+
+    const std::vector<NCommon::TaskHandle> leafDependencies{left, right};
+    const NCommon::TaskHandle leaf = taskSystem.Submit([](NCommon::TaskContext&) {}, leafDependencies);
+
+    taskSystem.Cancel(left);
+
+    EXPECT_EQ(taskSystem.GetStatus(left), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_EQ(taskSystem.GetStatus(leaf), NCommon::ETaskStatus::CANCELLED);
+
+    finishRoot.Open();
+    taskSystem.Wait(root);
+    taskSystem.Wait(right);
+}
+
+TEST(TaskSystem, RepeatedCreateCancelCyclesDoNotAccumulateBacklinks) {
+    NCommon::TaskSystem taskSystem{1};
+    Gate finish;
+
+    const NCommon::TaskHandle prerequisite = taskSystem.Submit([&](NCommon::TaskContext&) { finish.Wait(); });
+
+    for (std::size_t iteration = 0; iteration < 128; ++iteration) {
+        const std::vector<NCommon::TaskHandle> dependencies{prerequisite};
+        const NCommon::TaskHandle dependent = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+
+        taskSystem.Cancel(dependent);
+
+        EXPECT_EQ(taskSystem.GetStatus(dependent), NCommon::ETaskStatus::CANCELLED);
+    }
+
+    finish.Open();
+    taskSystem.Wait(prerequisite);
+}
+
+TEST(TaskSystem, HandlesConcurrentPrerequisiteCompletionAndDependentCancellation) {
+    constexpr std::size_t iterations = 128;
+
+    for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
+        NCommon::TaskSystem taskSystem{1};
+        Gate finishPrerequisite;
+
+        const NCommon::TaskHandle prerequisite =
+                taskSystem.Submit([&](NCommon::TaskContext&) { finishPrerequisite.Wait(); });
+        const std::vector<NCommon::TaskHandle> dependencies{prerequisite};
+        const NCommon::TaskHandle dependent = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
+
+        std::atomic<bool> cancelReturned = false;
+        std::thread canceller{[&] {
+            try {
+                taskSystem.Cancel(dependent);
+            } catch (const NCommon::Exception&) {
+            }
+
+            cancelReturned = true;
+        }};
+
+        std::thread completer{[&] { finishPrerequisite.Open(); }};
+
+        canceller.join();
+        completer.join();
+
+        taskSystem.Wait(prerequisite);
+
+        if (taskSystem.GetStatus(dependent) != NCommon::ETaskStatus::CANCELLED) {
+            taskSystem.Wait(dependent);
+        }
+
+        taskSystem.WaitIdle();
+        EXPECT_TRUE(cancelReturned.load());
+    }
+}
+
 TEST(TaskSystem, CopiesDependencySetWhenTaskIsPublished) {
     NCommon::TaskSystem taskSystem{1};
 
