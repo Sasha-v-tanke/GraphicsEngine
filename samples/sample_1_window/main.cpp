@@ -1,8 +1,8 @@
 #include <exception>
 #include <iostream>
 
-#include <window/window.h>
-#include <window/window_runtime.h>
+#include <GraphicsEngine/window/window.h>
+#include <GraphicsEngine/window/window_runtime.h>
 
 namespace {
 

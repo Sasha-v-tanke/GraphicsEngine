@@ -1,6 +1,6 @@
 #pragma once
 
-#include <lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 
 namespace NWindow {
 

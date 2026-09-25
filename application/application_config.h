@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-#include <window/window_config.h>
+#include <GraphicsEngine/window/window_config.h>
 
 namespace NApplication {
 

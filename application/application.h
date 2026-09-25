@@ -2,9 +2,9 @@
 
 #include <memory>
 
-#include <application/application_config.h>
-#include <lib/common/wrapper/non_transferable.h>
-#include <window/window_size.h>
+#include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/window/window_size.h>
 
 namespace NWindow {
 

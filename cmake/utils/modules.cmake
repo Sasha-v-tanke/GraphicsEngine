@@ -1,5 +1,63 @@
 include_guard(GLOBAL)
 
+function(_GRAPHICS_ENGINE_PREPARE_BUILD_INCLUDE_TREE)
+    get_property(
+        prepared
+        GLOBAL
+        PROPERTY GRAPHICS_ENGINE_BUILD_INCLUDE_TREE_PREPARED
+    )
+
+    if (prepared)
+        return()
+    endif ()
+
+    set(
+        buildIncludeRoot
+        "${GraphicsEngine_BINARY_DIR}/include"
+    )
+
+    set(
+        buildIncludeNamespace
+        "${buildIncludeRoot}/GraphicsEngine"
+    )
+
+    file(
+        MAKE_DIRECTORY
+        "${buildIncludeRoot}"
+    )
+
+    if (
+        EXISTS "${buildIncludeNamespace}"
+        OR IS_SYMLINK "${buildIncludeNamespace}"
+    )
+        file(
+            REMOVE_RECURSE
+            "${buildIncludeNamespace}"
+        )
+    endif ()
+
+    cmake_policy(PUSH)
+
+    if (POLICY CMP0205)
+        cmake_policy(SET CMP0205 NEW)
+    endif ()
+
+    file(
+        CREATE_LINK
+        "${GraphicsEngine_SOURCE_DIR}"
+        "${buildIncludeNamespace}"
+        SYMBOLIC
+        COPY_ON_ERROR
+    )
+
+    cmake_policy(POP)
+
+    set_property(
+        GLOBAL
+        PROPERTY GRAPHICS_ENGINE_BUILD_INCLUDE_TREE_PREPARED TRUE
+    )
+endfunction()
+
 macro(MODULE name)
     set(
         moduleTarget
@@ -48,20 +106,28 @@ macro(MODULE name)
         "${moduleTarget}"
     )
 
+    file(
+        REAL_PATH
+        "${CMAKE_CURRENT_LIST_DIR}"
+        moduleDirectory
+    )
+
     set_property(
         TARGET ${moduleTarget}
         PROPERTY
         GRAPHICS_ENGINE_MODULE_DIRECTORY
-        "${CMAKE_CURRENT_LIST_DIR}"
+        "${moduleDirectory}"
     )
 
     _GRAPHICS_ENGINE_ADD_LOCAL_HEADERS()
+    _GRAPHICS_ENGINE_PREPARE_BUILD_INCLUDE_TREE()
 
     target_include_directories(
         ${GRAPHICS_ENGINE_CURRENT_TARGET}
         PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/GraphicsEngine>
+        $<BUILD_INTERFACE:${GraphicsEngine_BINARY_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     )
 
     set_target_properties(
@@ -105,7 +171,13 @@ macro(API)
         GRAPHICS_ENGINE_MODULE_DIRECTORY
     )
 
-    if (NOT CMAKE_CURRENT_LIST_DIR STREQUAL moduleDirectory)
+    file(
+        REAL_PATH
+        "${CMAKE_CURRENT_LIST_DIR}"
+        currentListDirectory
+    )
+
+    if (NOT currentListDirectory STREQUAL moduleDirectory)
         message(FATAL_ERROR
             "API: may only be declared in the root module entry file"
         )

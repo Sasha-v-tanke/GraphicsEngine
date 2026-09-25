@@ -3,9 +3,9 @@
 #include <memory>
 #include <string_view>
 
-#include <lib/common/wrapper/non_transferable.h>
-#include <window/window_config.h>
-#include <window/window_size.h>
+#include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/window/window_config.h>
+#include <GraphicsEngine/window/window_size.h>
 
 namespace NWindow {
 

@@ -40,9 +40,130 @@ set(
     "${testDirectory}/invalid-component"
 )
 
+set(
+    buildInterfaceSourceDirectory
+    "${testDirectory}/build-interface-consumer"
+)
+
+set(
+    buildInterfaceEngineSourceDirectory
+    "${testDirectory}/engine-src"
+)
+
+set(
+    buildInterfaceBuildDirectory
+    "${testDirectory}/build-interface-build"
+)
+
 file(
     REMOVE_RECURSE
     "${testDirectory}"
+)
+
+file(
+    MAKE_DIRECTORY
+    "${testDirectory}"
+)
+
+cmake_policy(PUSH)
+
+if (POLICY CMP0205)
+    cmake_policy(SET CMP0205 NEW)
+endif ()
+
+
+# =============================================================================
+# Build interface
+# =============================================================================
+
+file(
+    CREATE_LINK
+    "${GRAPHICS_ENGINE_SOURCE_DIR}"
+    "${buildInterfaceEngineSourceDirectory}"
+    SYMBOLIC
+    COPY_ON_ERROR
+)
+
+cmake_policy(POP)
+
+file(
+    MAKE_DIRECTORY
+    "${buildInterfaceSourceDirectory}"
+)
+
+file(
+    WRITE
+    "${buildInterfaceSourceDirectory}/CMakeLists.txt"
+    [=[
+cmake_minimum_required(VERSION 3.31)
+
+project(GraphicsEngineBuildInterfaceConsumer LANGUAGES CXX)
+
+set(GRAPHICS_ENGINE_INSTALL OFF CACHE BOOL "" FORCE)
+set(GRAPHICS_ENGINE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GRAPHICS_ENGINE_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(GRAPHICS_ENGINE_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+set(GRAPHICS_ENGINE_BUILD_GLFW OFF CACHE BOOL "" FORCE)
+set(GRAPHICS_ENGINE_BUILD_VULKAN OFF CACHE BOOL "" FORCE)
+
+add_subdirectory("${GRAPHICS_ENGINE_TEST_ENGINE_SOURCE_DIR}" engine)
+
+add_executable(GraphicsEngineBuildInterfaceConsumer main.cpp)
+target_link_libraries(GraphicsEngineBuildInterfaceConsumer PRIVATE GraphicsEngine::GraphicsEngine)
+]=]
+)
+
+file(
+    WRITE
+    "${buildInterfaceSourceDirectory}/main.cpp"
+    [=[
+#include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/window/window_config.h>
+
+int main() {
+    const NWindow::WindowConfig windowConfig{NWindow::EWindowType::GLFW};
+
+    return windowConfig.Size.Width > 0 ? 0 : 1;
+}
+]=]
+)
+
+set(buildInterfaceConfigureArguments)
+
+if (GRAPHICS_ENGINE_TEST_CONFIG)
+    list(APPEND
+        buildInterfaceConfigureArguments
+        "-DCMAKE_BUILD_TYPE=${GRAPHICS_ENGINE_TEST_CONFIG}"
+    )
+endif ()
+
+_GRAPHICS_ENGINE_RUN(
+    "Build-interface consumer configuration"
+    "${CMAKE_COMMAND}"
+    -S
+    "${buildInterfaceSourceDirectory}"
+    -B
+    "${buildInterfaceBuildDirectory}"
+    "-DGRAPHICS_ENGINE_TEST_ENGINE_SOURCE_DIR=${buildInterfaceEngineSourceDirectory}"
+    ${buildInterfaceConfigureArguments}
+)
+
+set(buildInterfaceBuildArguments)
+
+if (GRAPHICS_ENGINE_TEST_CONFIG)
+    list(APPEND
+        buildInterfaceBuildArguments
+        --config
+        "${GRAPHICS_ENGINE_TEST_CONFIG}"
+    )
+endif ()
+
+_GRAPHICS_ENGINE_RUN(
+    "Build-interface consumer build"
+    "${CMAKE_COMMAND}"
+    --build
+    "${buildInterfaceBuildDirectory}"
+    ${buildInterfaceBuildArguments}
 )
 
 

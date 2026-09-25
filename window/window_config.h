@@ -2,8 +2,8 @@
 
 #include <string>
 
-#include <window/window_size.h>
-#include <window/window_type.h>
+#include <GraphicsEngine/window/window_size.h>
+#include <GraphicsEngine/window/window_type.h>
 
 namespace NWindow {
 

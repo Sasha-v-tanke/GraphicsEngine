@@ -1,5 +1,5 @@
-#include <application/application_config.h>
-#include <window/window_type.h>
+#include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/window/window_type.h>
 
 int main() {
     NApplication::ApplicationConfig config{
