@@ -8,6 +8,7 @@
 
 namespace NCommon {
 
+// Exception type thrown by GraphicsEngine validation and runtime failures.
 class Exception final: public std::system_error {
 public:
     Exception(std::error_code code, std::string message, std::source_location location)
