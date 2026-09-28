@@ -41,6 +41,8 @@ Application
 - **Window** — абстракция окна без зависимости от конкретной оконной библиотеки. GLFW, Qt, SDL и другие реализации
   скрыты за внутренними интерфейсами и фабриками.
 - **Engine** — основной runtime и координатор подсистем. Связывает мир, ресурсы, renderer и систему задач.
+- **Math** — engine-owned value types и conventions для World/Renderer. GLM остаётся implementation detail и не входит
+  в public API.
 - **ECS** — entities, components, systems и состояние мира. Не зависит от graphics backend.
 - **Resources** — backend-independent ресурсы и управление их жизненным циклом: textures, meshes, materials, shaders и
   т.д.
