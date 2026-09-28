@@ -200,6 +200,11 @@ set(
     expectedPublicHeaders
     "GraphicsEngine/application/application.h"
     "GraphicsEngine/application/application_config.h"
+    "GraphicsEngine/graphics/completion_point.h"
+    "GraphicsEngine/graphics/frame_submission.h"
+    "GraphicsEngine/graphics/graphics.h"
+    "GraphicsEngine/graphics/graphics_capabilities.h"
+    "GraphicsEngine/graphics/graphics_config.h"
     "GraphicsEngine/lib/common/error/assert.h"
     "GraphicsEngine/lib/common/error/error.h"
     "GraphicsEngine/lib/common/error/exception.h"
@@ -239,6 +244,8 @@ set(
     internalHeaders
     "GraphicsEngine/engine/controller/frame_scheduler.h"
     "GraphicsEngine/engine/runtime/frame_runtime.h"
+    "GraphicsEngine/graphics/backend/backend.h"
+    "GraphicsEngine/graphics/backend/factory.h"
     "GraphicsEngine/lib/thread/task/task_system.h"
     "GraphicsEngine/window/engine/engine.h"
     "GraphicsEngine/window/engine/event_sink.h"

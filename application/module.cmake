@@ -11,6 +11,7 @@ SOURCES(
 
 PUBLIC_DEPENDS(
     Window
+    Graphics
     Common
 )
 

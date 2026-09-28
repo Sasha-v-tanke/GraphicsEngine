@@ -1,4 +1,5 @@
 #include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
@@ -16,8 +17,19 @@ int main() {
     };
 
     const std::error_code error = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
+    const bool supportsRequiredGraphics = NGraphics::SatisfiesRequirements(
+            {
+                    .Presentation = true,
+                    .TimelineCompletion = true,
+                    .MaxFramesInFlight = 2,
+            },
+            {
+                    .Presentation = true,
+                    .TimelineCompletion = false,
+                    .MaxFramesInFlight = 1,
+            });
 
-    if (!error) {
+    if (!error || !supportsRequiredGraphics) {
         return 1;
     }
 
