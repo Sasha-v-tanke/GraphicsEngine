@@ -176,11 +176,14 @@ VKAPI_ATTR VkBool32 VKAPI_CALL HandleDebugMessage(VkDebugUtilsMessageSeverityFla
     auto* handler = static_cast<VulkanDebugMessageHandler*>(userData);
 
     if (handler != nullptr && *handler) {
-        (*handler)({
-                .Severity = severity,
-                .Type = type,
-                .Message = data != nullptr && data->pMessage != nullptr ? data->pMessage : "",
-        });
+        try {
+            (*handler)({
+                    .Severity = severity,
+                    .Type = type,
+                    .Message = data != nullptr && data->pMessage != nullptr ? data->pMessage : "",
+            });
+        } catch (...) {
+        }
     }
 
     return VK_FALSE;
@@ -276,17 +279,28 @@ public:
         : m_plan(MakeVulkanInstancePlan(config, ReadEnvironment()))
         , m_debugMessageHandler(config.DebugMessageHandler)
         , m_instance(CreateInstance(config)) {
-        volkLoadInstanceOnly(m_instance);
-        CreateDebugMessenger();
+        try {
+            volkLoadInstanceOnly(m_instance);
+            CreateDebugMessenger();
+        } catch (...) {
+            Destroy();
+            throw;
+        }
     }
 
     ~Impl() {
+        Destroy();
+    }
+
+    void Destroy() noexcept {
         if (m_debugMessenger != VK_NULL_HANDLE) {
             vkDestroyDebugUtilsMessengerEXT(m_instance, m_debugMessenger, nullptr);
+            m_debugMessenger = VK_NULL_HANDLE;
         }
 
         if (m_instance != VK_NULL_HANDLE) {
             vkDestroyInstance(m_instance, nullptr);
+            m_instance = VK_NULL_HANDLE;
         }
     }
 

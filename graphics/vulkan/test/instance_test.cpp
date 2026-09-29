@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -103,15 +104,118 @@ TEST(VulkanInstancePlan, SkipsOptionalValidationLayerWhenMissing) {
 }
 
 TEST(VulkanInstance, CreatesAndDestroysInstance) {
+    std::vector<NVulkan::VulkanDebugMessage> validationErrors;
+
     NVulkan::VulkanInstanceConfig config;
     config.ApplicationName = "GraphicsEngineVulkanInstanceTest";
     config.ValidationMode = NVulkan::EValidationMode::EnabledIfAvailable;
+    config.EnableDebugUtils = true;
+    config.DebugMessageHandler = [&validationErrors](const NVulkan::VulkanDebugMessage& message) {
+        if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+            validationErrors.push_back(message);
+        }
+    };
 
     try {
         const NVulkan::VulkanInstance instance{config};
 
         EXPECT_NE(instance.GetHandle(), VK_NULL_HANDLE);
         EXPECT_EQ(instance.GetApiVersion(), VK_API_VERSION_1_3);
+        EXPECT_TRUE(validationErrors.empty());
+    } catch (const NCommon::Exception& exception) {
+        if (exception.GetMessage().find("VK_ERROR_INCOMPATIBLE_DRIVER") != std::string::npos) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+
+        throw;
+    }
+}
+
+TEST(VulkanInstance, DeliversDebugMessages) {
+    std::vector<NVulkan::VulkanDebugMessage> messages;
+
+    NVulkan::VulkanInstanceConfig config;
+    config.ApplicationName = "GraphicsEngineVulkanDebugMessageTest";
+    config.ValidationMode = NVulkan::EValidationMode::EnabledIfAvailable;
+    config.EnableDebugUtils = true;
+    config.DebugMessageHandler = [&messages](const NVulkan::VulkanDebugMessage& message) {
+        messages.push_back(message);
+    };
+
+    try {
+        const NVulkan::VulkanInstance instance{config};
+
+        if (!instance.IsDebugUtilsEnabled()) {
+            GTEST_SKIP() << "VK_EXT_debug_utils is not available";
+        }
+
+        const VkDebugUtilsMessengerCallbackDataEXT data{
+                .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT,
+                .pNext = nullptr,
+                .flags = 0,
+                .pMessageIdName = "GraphicsEngineVulkanDebugMessageTest",
+                .messageIdNumber = 1,
+                .pMessage = "synthetic debug utils error",
+                .queueLabelCount = 0,
+                .pQueueLabels = nullptr,
+                .cmdBufLabelCount = 0,
+                .pCmdBufLabels = nullptr,
+                .objectCount = 0,
+                .pObjects = nullptr,
+        };
+
+        vkSubmitDebugUtilsMessageEXT(instance.GetHandle(),
+                                     VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
+                                     &data);
+
+        ASSERT_EQ(messages.size(), 1);
+        EXPECT_EQ(messages.front().Severity, VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
+        EXPECT_NE(messages.front().Message.find("synthetic debug utils error"), std::string::npos);
+    } catch (const NCommon::Exception& exception) {
+        if (exception.GetMessage().find("VK_ERROR_INCOMPATIBLE_DRIVER") != std::string::npos) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+
+        throw;
+    }
+}
+
+TEST(VulkanInstance, DebugMessageHandlerExceptionsDoNotEscapeCallback) {
+    NVulkan::VulkanInstanceConfig config;
+    config.ApplicationName = "GraphicsEngineVulkanDebugExceptionTest";
+    config.ValidationMode = NVulkan::EValidationMode::EnabledIfAvailable;
+    config.EnableDebugUtils = true;
+    config.DebugMessageHandler = [](const NVulkan::VulkanDebugMessage&) {
+        throw std::runtime_error{"handler failure"};
+    };
+
+    try {
+        const NVulkan::VulkanInstance instance{config};
+
+        if (!instance.IsDebugUtilsEnabled()) {
+            GTEST_SKIP() << "VK_EXT_debug_utils is not available";
+        }
+
+        const VkDebugUtilsMessengerCallbackDataEXT data{
+                .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT,
+                .pNext = nullptr,
+                .flags = 0,
+                .pMessageIdName = "GraphicsEngineVulkanDebugExceptionTest",
+                .messageIdNumber = 1,
+                .pMessage = "synthetic throwing debug message",
+                .queueLabelCount = 0,
+                .pQueueLabels = nullptr,
+                .cmdBufLabelCount = 0,
+                .pCmdBufLabels = nullptr,
+                .objectCount = 0,
+                .pObjects = nullptr,
+        };
+
+        EXPECT_NO_THROW(vkSubmitDebugUtilsMessageEXT(instance.GetHandle(),
+                                                     VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
+                                                     VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
+                                                     &data));
     } catch (const NCommon::Exception& exception) {
         if (exception.GetMessage().find("VK_ERROR_INCOMPATIBLE_DRIVER") != std::string::npos) {
             GTEST_SKIP() << exception.GetMessage();
