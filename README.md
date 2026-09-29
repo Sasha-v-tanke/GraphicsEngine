@@ -41,6 +41,8 @@ Application
 - **Window** — абстракция окна без зависимости от конкретной оконной библиотеки. GLFW, Qt, SDL и другие реализации
   скрыты за внутренними интерфейсами и фабриками.
 - **Engine** — основной runtime и координатор подсистем. Связывает мир, ресурсы, renderer и систему задач.
+- **Math** — engine-owned value types и conventions для World/Renderer. GLM остаётся implementation detail и не входит
+  в public API.
 - **ECS** — entities, components, systems и состояние мира. Не зависит от graphics backend.
 - **Resources** — backend-independent ресурсы и управление их жизненным циклом: textures, meshes, materials, shaders и
   т.д.
@@ -138,6 +140,19 @@ draw checkpoint.
 - Backend-specific поведение выбирается через capabilities backend, а не через проверки `if Vulkan` / `if OpenGL` в
   высокоуровневых модулях.
 - Высокоуровневые системы зависят от абстракций, а конкретные реализации остаются изолированными внутри своих модулей.
+
+### Graphics core
+
+`Graphics` задаёт backend-independent границу GPU execution. Public core отвечает за:
+
+- lifecycle backend через единый facade `NGraphics::Graphics`;
+- immutable `GraphicsCapabilities` и проверку `RequiredGraphicsCapabilities`;
+- единственный presentation-aware frame submission path;
+- backend-independent `CompletionPoint`, который можно использовать для frame/resource lifetime decisions.
+
+Concrete backend выбирается централизованно через graphics backend factory. Public Graphics API не содержит Vulkan,
+OpenGL, GLFW или других native types. Buffer, Image, Shader, Pipeline, descriptor/binding и RenderGraph API добавляются
+только при появлении их прямых потребителей.
 
 ## Frame Pipeline and Multithreading
 

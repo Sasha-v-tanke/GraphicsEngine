@@ -31,6 +31,7 @@ target_link_libraries(
 if (
     TARGET GraphicsEngine::Window
     OR TARGET GraphicsEngine::Common
+    OR TARGET GraphicsEngine::Graphics
     OR TARGET GraphicsEngine::Vulkan
     OR TARGET GraphicsEngine::GLFW
 )
