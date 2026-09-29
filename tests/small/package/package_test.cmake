@@ -200,6 +200,7 @@ set(
     expectedPublicHeaders
     "GraphicsEngine/application/application.h"
     "GraphicsEngine/application/application_config.h"
+    "GraphicsEngine/graphics/buffer.h"
     "GraphicsEngine/graphics/completion_point.h"
     "GraphicsEngine/graphics/frame_submission.h"
     "GraphicsEngine/graphics/graphics.h"

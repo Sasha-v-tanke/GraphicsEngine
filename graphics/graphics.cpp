@@ -1,6 +1,7 @@
 #include <atomic>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 #include <graphics/backend/backend.h>
 #include <graphics/backend/factory.h>
@@ -48,6 +49,87 @@ CompletionPoint Graphics::SubmitFrame(const FrameSubmission& submission) {
 }
 
 bool Graphics::IsCompleted(CompletionPoint completion) const {
+    ValidateCompletionOwner(completion);
+    return m_backend->IsCompleted(completion.m_value);
+}
+
+BufferHandle Graphics::CreateBuffer(const BufferDescriptor& descriptor) {
+    if (descriptor.SizeBytes == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer size must be greater than zero");
+    }
+
+    if (descriptor.Usage == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer usage must not be empty");
+    }
+
+    if (descriptor.Access == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer access must not be empty");
+    }
+
+    const std::uint64_t value = m_backend->CreateBuffer(descriptor);
+
+    if (value == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned invalid buffer handle");
+    }
+
+    if (m_nextBufferGeneration == std::numeric_limits<std::uint64_t>::max()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::OUT_OF_MEMORY, "Buffer generation space is exhausted");
+    }
+
+    const std::uint64_t generation = m_nextBufferGeneration;
+    const auto [it, inserted] = m_buffers.emplace(value,
+                                                  BufferRecord{
+                                                          .Descriptor = descriptor,
+                                                          .Generation = generation,
+                                                  });
+
+    if (!inserted) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned duplicate buffer handle");
+    }
+
+    ++m_nextBufferGeneration;
+
+    return BufferHandle{m_ownerId, value, it->second.Generation};
+}
+
+void Graphics::DestroyBuffer(BufferHandle buffer, CompletionPoint completedAfter) {
+    const BufferRecord& record = ResolveBuffer(buffer);
+    (void)record;
+
+    std::optional<std::uint64_t> completedAfterValue;
+
+    if (completedAfter.IsValid()) {
+        ValidateCompletionOwner(completedAfter);
+        completedAfterValue = completedAfter.m_value;
+    }
+
+    m_buffers.erase(buffer.m_value);
+    m_backend->DestroyBuffer(buffer.m_value, completedAfterValue);
+}
+
+const BufferDescriptor& Graphics::GetBufferDescriptor(BufferHandle buffer) const {
+    return ResolveBuffer(buffer).Descriptor;
+}
+
+const Graphics::BufferRecord& Graphics::ResolveBuffer(BufferHandle buffer) const {
+    if (!buffer.IsValid()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer handle is invalid");
+    }
+
+    if (buffer.m_ownerId != m_ownerId) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer handle belongs to another Graphics");
+    }
+
+    const auto it = m_buffers.find(buffer.m_value);
+
+    if (it == m_buffers.end() || it->second.Generation != buffer.m_generation) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer handle is stale");
+    }
+
+    return it->second;
+}
+
+void Graphics::ValidateCompletionOwner(CompletionPoint completion) const {
     if (!completion.IsValid()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Completion point is invalid");
     }
@@ -55,8 +137,6 @@ bool Graphics::IsCompleted(CompletionPoint completion) const {
     if (completion.m_ownerId != m_ownerId) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Completion point belongs to another Graphics");
     }
-
-    return m_backend->IsCompleted(completion.m_value);
 }
 
 std::uint64_t Graphics::AcquireOwnerId() {

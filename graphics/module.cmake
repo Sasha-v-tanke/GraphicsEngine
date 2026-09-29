@@ -1,6 +1,7 @@
 MODULE(Graphics)
 
 API(
+    buffer.h
     completion_point.h
     frame_submission.h
     graphics.h
