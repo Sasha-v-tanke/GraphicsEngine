@@ -14,3 +14,11 @@ stable state model that later loaders and graphics backends will extend without 
   `FAILED -> LOADING` for retry.
 - Loading operations have their own generation. Retry or unload invalidates stale completion publication.
 - CPU payload is separate from future GPU representation and is visible only after `READY`.
+
+## Shader artifacts
+
+Shader resources load prebuilt SPIR-V artifacts only. The loader records explicit shader stage metadata and validates the
+binary container enough for runtime ingestion: non-empty word-aligned data, SPIR-V magic, version, and bound fields.
+
+Runtime shader compilation, reflection, and backend-native shader module creation are separate responsibilities. A failed
+shader load publishes `FAILED` with resource identity and file path context in `ErrorInfo`.
