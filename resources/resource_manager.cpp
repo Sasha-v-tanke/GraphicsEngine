@@ -199,7 +199,7 @@ EResourceState ResourceManager::GetState(const Entry& entry) noexcept {
     return entry.State;
 }
 
-const ResourceIdentity& ResourceManager::GetIdentity(const Entry& entry) noexcept {
+ResourceIdentity ResourceManager::GetIdentity(const Entry& entry) {
     return entry.Identity;
 }
 

@@ -68,7 +68,7 @@ public:
     }
 
     template<typename T>
-    [[nodiscard]] const ResourceIdentity& GetIdentity(ResourceHandle<T> handle) const {
+    [[nodiscard]] ResourceIdentity GetIdentity(ResourceHandle<T> handle) const {
         return GetIdentity(Validate(handle, std::type_index{typeid(T)}));
     }
 
@@ -123,7 +123,7 @@ private:
 
     [[nodiscard]] static EResourceState GetState(const Entry& entry) noexcept;
 
-    [[nodiscard]] static const ResourceIdentity& GetIdentity(const Entry& entry) noexcept;
+    [[nodiscard]] static ResourceIdentity GetIdentity(const Entry& entry);
 
     [[nodiscard]] static std::optional<NCommon::ErrorInfo> GetFailure(const Entry& entry);
 

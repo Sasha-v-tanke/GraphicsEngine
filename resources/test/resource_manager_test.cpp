@@ -43,6 +43,21 @@ TEST(ResourceManager, CoalescesDuplicateIdentity) {
     EXPECT_EQ(first, second);
 }
 
+TEST(ResourceManager, ReturnsIdentityByStableValue) {
+    ResourceManager resources;
+
+    const auto shader = resources.Request<ShaderArtifact>(ResourceIdentity{"shader", "basic.vert.spv"});
+    const ResourceIdentity identity = resources.GetIdentity(shader);
+
+    for (int index = 0; index < 128; ++index) {
+        static_cast<void>(
+                resources.Request<TextureArtifact>(ResourceIdentity{"texture", "texture-" + std::to_string(index)}));
+    }
+
+    EXPECT_EQ(identity.GetResourceClass(), std::string_view{"shader"});
+    EXPECT_EQ(identity.GetKey(), std::string_view{"basic.vert.spv"});
+}
+
 TEST(ResourceManager, RejectsSameIdentityWithDifferentType) {
     ResourceManager resources;
 
