@@ -1,6 +1,7 @@
 #pragma once
 
-#include <graphics/completion_point.h>
+#include <cstdint>
+
 #include <graphics/frame_submission.h>
 #include <graphics/graphics_capabilities.h>
 #include <lib/common/wrapper/non_transferable.h>
@@ -12,8 +13,8 @@ public:
     virtual ~IGraphicsBackend() = default;
 
     [[nodiscard]] virtual const GraphicsCapabilities& GetCapabilities() const noexcept = 0;
-    [[nodiscard]] virtual CompletionPoint SubmitFrame(const FrameSubmission& submission) = 0;
-    [[nodiscard]] virtual bool IsCompleted(CompletionPoint completion) const = 0;
+    [[nodiscard]] virtual std::uint64_t SubmitFrame(const FrameSubmission& submission) = 0;
+    [[nodiscard]] virtual bool IsCompleted(std::uint64_t completionValue) const = 0;
 };
 
 } // namespace NGraphics::NBackend

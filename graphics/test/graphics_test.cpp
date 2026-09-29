@@ -42,33 +42,34 @@ public:
         return m_state.Capabilities;
     }
 
-    [[nodiscard]] NGraphics::CompletionPoint SubmitFrame(const NGraphics::FrameSubmission& submission) override {
+    [[nodiscard]] std::uint64_t SubmitFrame(const NGraphics::FrameSubmission& submission) override {
         m_state.Submissions.push_back(submission);
-        return NGraphics::CompletionPoint{m_state.NextCompletion++};
+        return m_state.NextCompletion++;
     }
 
-    [[nodiscard]] bool IsCompleted(NGraphics::CompletionPoint completion) const override {
-        return completion.GetValue() <= m_state.CompletedValue;
+    [[nodiscard]] bool IsCompleted(std::uint64_t completionValue) const override {
+        return completionValue <= m_state.CompletedValue;
     }
 
 private:
     FakeGraphicsState& m_state;
 };
 
-std::unique_ptr<NGraphics::NBackend::IGraphicsBackend> CreateFakeGraphicsBackend(const NGraphics::GraphicsConfig&) {
-    return std::make_unique<FakeGraphicsBackend>(*g_fakeGraphicsState);
-}
-
 class GraphicsTest: public testing::Test {
 protected:
     void SetUp() override {
         g_fakeGraphicsState = &m_state;
-        NGraphics::NBackend::SetGraphicsBackendFactoryForTests(&CreateFakeGraphicsBackend);
     }
 
     void TearDown() override {
-        NGraphics::NBackend::SetGraphicsBackendFactoryForTests(nullptr);
         g_fakeGraphicsState = nullptr;
+    }
+
+    [[nodiscard]] static NGraphics::Graphics
+    CreateGraphics(const NGraphics::RequiredGraphicsCapabilities& requiredCapabilities = {}) {
+        return NGraphics::NBackend::CreateGraphicsForBackend(
+                std::make_unique<FakeGraphicsBackend>(*g_fakeGraphicsState),
+                requiredCapabilities);
     }
 
     FakeGraphicsState m_state;
@@ -76,7 +77,7 @@ protected:
 
 TEST_F(GraphicsTest, CreatesBackendAndPublishesImmutableCapabilities) {
     {
-        const NGraphics::Graphics graphics;
+        const NGraphics::Graphics graphics = CreateGraphics();
 
         EXPECT_EQ(m_state.CreatedCount, 1);
         EXPECT_EQ(m_state.DestroyedCount, 0);
@@ -91,17 +92,18 @@ TEST_F(GraphicsTest, CreatesBackendAndPublishesImmutableCapabilities) {
 TEST_F(GraphicsTest, RejectsBackendThatDoesNotSatisfyRequiredCapabilities) {
     m_state.Capabilities.TimelineCompletion = false;
 
-    NGraphics::GraphicsConfig config;
-    config.RequiredCapabilities.TimelineCompletion = true;
+    NGraphics::RequiredGraphicsCapabilities requiredCapabilities;
+    requiredCapabilities.TimelineCompletion = true;
 
-    ExpectError(NCommon::EError::UNSUPPORTED, [&] { const NGraphics::Graphics graphics{config}; });
+    ExpectError(NCommon::EError::UNSUPPORTED,
+                [&] { const NGraphics::Graphics graphics = CreateGraphics(requiredCapabilities); });
 
     EXPECT_EQ(m_state.CreatedCount, 1);
     EXPECT_EQ(m_state.DestroyedCount, 1);
 }
 
 TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
-    NGraphics::Graphics graphics;
+    NGraphics::Graphics graphics = CreateGraphics();
 
     const auto completion = graphics.SubmitFrame({
             .FrameIndex = 42,
@@ -122,10 +124,10 @@ TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
 TEST_F(GraphicsTest, RejectsPresentationSubmissionWhenBackendHasNoPresentationPath) {
     m_state.Capabilities.Presentation = false;
 
-    NGraphics::GraphicsConfig config;
-    config.RequiredCapabilities.Presentation = false;
+    NGraphics::RequiredGraphicsCapabilities requiredCapabilities;
+    requiredCapabilities.Presentation = false;
 
-    NGraphics::Graphics graphics{config};
+    NGraphics::Graphics graphics = CreateGraphics(requiredCapabilities);
 
     ExpectError(NCommon::EError::UNSUPPORTED, [&] {
         (void)graphics.SubmitFrame({
@@ -136,9 +138,25 @@ TEST_F(GraphicsTest, RejectsPresentationSubmissionWhenBackendHasNoPresentationPa
 }
 
 TEST_F(GraphicsTest, RejectsInvalidCompletionPoint) {
-    const NGraphics::Graphics graphics;
+    const NGraphics::Graphics graphics = CreateGraphics();
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graphics.IsCompleted(NGraphics::CompletionPoint{}); });
+}
+
+TEST_F(GraphicsTest, RejectsCompletionPointFromAnotherGraphics) {
+    NGraphics::Graphics first = CreateGraphics();
+
+    FakeGraphicsState otherState;
+    g_fakeGraphicsState = &otherState;
+    NGraphics::Graphics second = CreateGraphics();
+    g_fakeGraphicsState = &m_state;
+
+    const auto completion = first.SubmitFrame({
+            .FrameIndex = 1,
+            .RequiresPresentation = true,
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)second.IsCompleted(completion); });
 }
 
 } // namespace
