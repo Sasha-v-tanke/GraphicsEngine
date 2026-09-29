@@ -12,7 +12,9 @@ SOURCES(
 PUBLIC_DEPENDS(
     Window
     Resources
+    Graphics
     Common
+    Math
 )
 
 PRIVATE_DEPENDS(
