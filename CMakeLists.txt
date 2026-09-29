@@ -57,6 +57,7 @@ include(cmake/warnings.cmake)
 # Modules
 include(external/external.cmake)
 include(lib/lib.cmake)
+include(graphics/module.cmake)
 include(window/module.cmake)
 include(engine/module.cmake)
 include(application/module.cmake)
