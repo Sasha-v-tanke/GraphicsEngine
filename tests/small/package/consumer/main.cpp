@@ -1,4 +1,5 @@
 #include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/math/transform.h>
@@ -18,6 +19,8 @@ int main() {
     };
 
     const std::error_code error = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
+    NEcs::World world;
+    const NEcs::Entity entity = world.CreateEntity();
     const bool supportsRequiredGraphics = NGraphics::SatisfiesRequirements(
             {
                     .Presentation = true,
@@ -35,5 +38,8 @@ int main() {
         return 1;
     }
 
-    return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F ? 0 : 1;
+    return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F &&
+                           world.IsAlive(entity)
+                 ? 0
+                 : 1;
 }
