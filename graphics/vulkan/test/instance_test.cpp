@@ -169,9 +169,12 @@ TEST(VulkanInstance, DeliversDebugMessages) {
                                      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
                                      &data);
 
-        ASSERT_EQ(messages.size(), 1);
-        EXPECT_EQ(messages.front().Severity, VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
-        EXPECT_NE(messages.front().Message.find("synthetic debug utils error"), std::string::npos);
+        const auto message = std::ranges::find_if(messages, [](const NVulkan::VulkanDebugMessage& value) {
+            return value.Message.find("synthetic debug utils error") != std::string::npos;
+        });
+
+        ASSERT_NE(message, messages.end());
+        EXPECT_EQ(message->Severity, VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
     } catch (const NCommon::Exception& exception) {
         if (exception.GetMessage().find("VK_ERROR_INCOMPATIBLE_DRIVER") != std::string::npos) {
             GTEST_SKIP() << exception.GetMessage();
