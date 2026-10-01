@@ -209,6 +209,8 @@ set(
     "GraphicsEngine/graphics/graphics.h"
     "GraphicsEngine/graphics/graphics_capabilities.h"
     "GraphicsEngine/graphics/graphics_config.h"
+    "GraphicsEngine/graphics/graphics_pipeline.h"
+    "GraphicsEngine/graphics/shader.h"
     "GraphicsEngine/lib/common/error/assert.h"
     "GraphicsEngine/lib/common/error/error.h"
     "GraphicsEngine/lib/common/error/exception.h"
