@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
@@ -99,7 +100,7 @@ private:
     std::thread::id m_threadId;
 };
 
-class WindowEngine final: public IWindowEngine {
+class WindowEngine final: public IGlfwWindowEngine {
 public:
     explicit WindowEngine(const WindowConfig& config)
         : m_runtime(GlfwRuntime::Acquire())
@@ -180,6 +181,12 @@ public:
         glfwPollEvents();
 
         DispatchQueuedEvents();
+    }
+
+    [[nodiscard]] GLFWwindow& GetGlfwWindow() override {
+        m_runtime->ValidateThread();
+
+        return *m_window;
     }
 
 private:
@@ -271,6 +278,28 @@ private:
 
 std::unique_ptr<IWindowEngine> CreateWindowEngine(const WindowConfig& config) {
     return std::make_unique<WindowEngine>(config);
+}
+
+std::vector<std::string> GetRequiredVulkanInstanceExtensions() {
+    const std::shared_ptr<GlfwRuntime> runtime = GlfwRuntime::Acquire();
+    runtime->ValidateThread();
+
+    std::uint32_t count = 0;
+    const char** extensions = glfwGetRequiredInstanceExtensions(&count);
+    if (extensions == nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "{}",
+                              GetGlfwErrorMessage("Failed to get GLFW Vulkan instance extensions"));
+    }
+
+    std::vector<std::string> result;
+    result.reserve(count);
+
+    for (std::uint32_t index = 0; index < count; ++index) {
+        result.emplace_back(extensions[index]);
+    }
+
+    return result;
 }
 
 } // namespace NWindow::NEngine::NGlfw
