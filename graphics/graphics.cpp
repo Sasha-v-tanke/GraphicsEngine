@@ -11,6 +11,45 @@
 
 namespace NGraphics {
 
+namespace {
+
+constexpr BufferUsageFlags KNOWN_BUFFER_USAGE_MASK =
+        BufferUsage(EBufferUsage::TransferSource) | BufferUsage(EBufferUsage::TransferDestination) |
+        BufferUsage(EBufferUsage::Vertex) | BufferUsage(EBufferUsage::Index) | BufferUsage(EBufferUsage::Uniform) |
+        BufferUsage(EBufferUsage::Storage);
+
+constexpr BufferAccessFlags KNOWN_BUFFER_ACCESS_MASK =
+        BufferAccess(EBufferAccess::CpuRead) | BufferAccess(EBufferAccess::CpuWrite) |
+        BufferAccess(EBufferAccess::GpuRead) | BufferAccess(EBufferAccess::GpuWrite);
+
+class BufferCreationGuard final {
+public:
+    BufferCreationGuard(NBackend::IGraphicsBackend& backend, std::uint64_t value) noexcept
+        : m_backend(backend)
+        , m_value(value) {
+    }
+
+    ~BufferCreationGuard() noexcept {
+        if (m_active) {
+            try {
+                m_backend.DestroyBuffer(m_value, std::nullopt);
+            } catch (...) {
+            }
+        }
+    }
+
+    void Release() noexcept {
+        m_active = false;
+    }
+
+private:
+    NBackend::IGraphicsBackend& m_backend;
+    std::uint64_t m_value = 0;
+    bool m_active = true;
+};
+
+} // namespace
+
 Graphics::Graphics(const GraphicsConfig& config)
     : Graphics(NBackend::CreateGraphicsBackend(config), config.RequiredCapabilities) {
 }
@@ -62,8 +101,20 @@ BufferHandle Graphics::CreateBuffer(const BufferDescriptor& descriptor) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer usage must not be empty");
     }
 
+    if ((descriptor.Usage & ~KNOWN_BUFFER_USAGE_MASK) != 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer usage contains unknown flags");
+    }
+
     if (descriptor.Access == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer access must not be empty");
+    }
+
+    if ((descriptor.Access & ~KNOWN_BUFFER_ACCESS_MASK) != 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer access contains unknown flags");
+    }
+
+    if (m_nextBufferGeneration == std::numeric_limits<std::uint64_t>::max()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::OUT_OF_MEMORY, "Buffer generation space is exhausted");
     }
 
     const std::uint64_t value = m_backend->CreateBuffer(descriptor);
@@ -72,9 +123,7 @@ BufferHandle Graphics::CreateBuffer(const BufferDescriptor& descriptor) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned invalid buffer handle");
     }
 
-    if (m_nextBufferGeneration == std::numeric_limits<std::uint64_t>::max()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::OUT_OF_MEMORY, "Buffer generation space is exhausted");
-    }
+    BufferCreationGuard creationGuard{*m_backend, value};
 
     const std::uint64_t generation = m_nextBufferGeneration;
     const auto [it, inserted] = m_buffers.emplace(value,
@@ -88,6 +137,7 @@ BufferHandle Graphics::CreateBuffer(const BufferDescriptor& descriptor) {
     }
 
     ++m_nextBufferGeneration;
+    creationGuard.Release();
 
     return BufferHandle{m_ownerId, value, it->second.Generation};
 }
@@ -103,11 +153,11 @@ void Graphics::DestroyBuffer(BufferHandle buffer, CompletionPoint completedAfter
         completedAfterValue = completedAfter.m_value;
     }
 
-    m_buffers.erase(buffer.m_value);
     m_backend->DestroyBuffer(buffer.m_value, completedAfterValue);
+    m_buffers.erase(buffer.m_value);
 }
 
-const BufferDescriptor& Graphics::GetBufferDescriptor(BufferHandle buffer) const {
+BufferDescriptor Graphics::GetBufferDescriptor(BufferHandle buffer) const {
     return ResolveBuffer(buffer).Descriptor;
 }
 

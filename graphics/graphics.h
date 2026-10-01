@@ -35,7 +35,7 @@ public:
 
     [[nodiscard]] BufferHandle CreateBuffer(const BufferDescriptor& descriptor);
     void DestroyBuffer(BufferHandle buffer, CompletionPoint completedAfter = {});
-    [[nodiscard]] const BufferDescriptor& GetBufferDescriptor(BufferHandle buffer) const;
+    [[nodiscard]] BufferDescriptor GetBufferDescriptor(BufferHandle buffer) const;
 
 private:
     explicit Graphics(std::unique_ptr<NBackend::IGraphicsBackend> backend,

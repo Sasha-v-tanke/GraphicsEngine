@@ -27,6 +27,7 @@ struct FakeGraphicsState {
     std::uint64_t NextBuffer = 1;
     std::uint64_t NextCompletion = 1;
     std::uint64_t CompletedValue = 0;
+    bool ThrowOnDestroyBuffer = false;
 };
 
 thread_local FakeGraphicsState* g_fakeGraphicsState = nullptr;
@@ -61,6 +62,10 @@ public:
     }
 
     void DestroyBuffer(std::uint64_t bufferValue, std::optional<std::uint64_t> completedAfter) override {
+        if (m_state.ThrowOnDestroyBuffer) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected buffer destroy failure");
+        }
+
         m_state.DestroyedBuffers.emplace_back(bufferValue, completedAfter);
     }
 
@@ -219,6 +224,22 @@ TEST_F(GraphicsTest, RejectsInvalidBufferDescriptor) {
                 .Access = 0,
         });
     });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateBuffer({
+                .SizeBytes = 1,
+                .Usage = 0x80000000U,
+                .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateBuffer({
+                .SizeBytes = 1,
+                .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Vertex),
+                .Access = 0x40000000U,
+        });
+    });
 }
 
 TEST_F(GraphicsTest, DestroysBufferAfterCompletionPoint) {
@@ -265,6 +286,70 @@ TEST_F(GraphicsTest, RejectsInvalidForeignAndStaleBufferHandles) {
     graphics.DestroyBuffer(buffer);
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graphics.GetBufferDescriptor(buffer); });
+}
+
+TEST_F(GraphicsTest, RollsBackBackendBufferWhenPublicationFails) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::BufferHandle first = graphics.CreateBuffer({
+            .SizeBytes = 32,
+            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform),
+            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+    });
+
+    m_state.NextBuffer = first.GetValue();
+
+    ExpectError(NCommon::EError::INVALID_STATE, [&] {
+        (void)graphics.CreateBuffer({
+                .SizeBytes = 64,
+                .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Storage),
+                .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+        });
+    });
+
+    ASSERT_EQ(m_state.DestroyedBuffers.size(), 1U);
+    EXPECT_EQ(m_state.DestroyedBuffers[0].first, first.GetValue());
+    EXPECT_FALSE(m_state.DestroyedBuffers[0].second.has_value());
+    EXPECT_EQ(graphics.GetBufferDescriptor(first).SizeBytes, 32U);
+}
+
+TEST_F(GraphicsTest, KeepsBufferTrackedWhenBackendDestroyFails) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::BufferHandle buffer = graphics.CreateBuffer({
+            .SizeBytes = 128,
+            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Storage),
+            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+    });
+
+    m_state.ThrowOnDestroyBuffer = true;
+
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { graphics.DestroyBuffer(buffer); });
+    EXPECT_EQ(graphics.GetBufferDescriptor(buffer).SizeBytes, 128U);
+
+    m_state.ThrowOnDestroyBuffer = false;
+    graphics.DestroyBuffer(buffer);
+
+    ASSERT_EQ(m_state.DestroyedBuffers.size(), 1U);
+    EXPECT_EQ(m_state.DestroyedBuffers[0].first, buffer.GetValue());
+}
+
+TEST_F(GraphicsTest, ReturnsBufferDescriptorByValue) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::BufferHandle buffer = graphics.CreateBuffer({
+            .SizeBytes = 256,
+            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Vertex),
+            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+    });
+
+    const NGraphics::BufferDescriptor descriptor = graphics.GetBufferDescriptor(buffer);
+
+    graphics.DestroyBuffer(buffer);
+
+    EXPECT_EQ(descriptor.SizeBytes, 256U);
+    EXPECT_EQ(descriptor.Usage, NGraphics::BufferUsage(NGraphics::EBufferUsage::Vertex));
+    EXPECT_EQ(descriptor.Access, NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead));
 }
 
 TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredBufferDestruction) {
