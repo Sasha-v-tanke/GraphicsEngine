@@ -177,6 +177,10 @@ private:
 
     class FrameArena final: private NCommon::NonTransferable {
     public:
+        ~FrameArena() {
+            Reset();
+        }
+
         [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() noexcept {
             return m_resource;
         }

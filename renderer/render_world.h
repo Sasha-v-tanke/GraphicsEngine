@@ -7,7 +7,7 @@
 
 #include <GraphicsEngine/math/camera.h>
 #include <GraphicsEngine/math/transform.h>
-#include <GraphicsEngine/resources/resource_handle.h>
+#include <GraphicsEngine/resources/resource_lease.h>
 
 namespace NResources {
 
@@ -56,8 +56,8 @@ struct RenderView {
 struct RenderObject {
     RenderObjectId Id;
     NMath::Transform WorldTransform;
-    NResources::ResourceHandle<NResources::MeshData> Mesh;
-    NResources::ResourceHandle<NResources::Material> Material;
+    NResources::ResourceLease<NResources::MeshData> Mesh;
+    NResources::ResourceLease<NResources::Material> Material;
 };
 
 class RenderWorld final {

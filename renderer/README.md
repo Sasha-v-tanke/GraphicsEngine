@@ -15,16 +15,21 @@ The Engine draw checkpoint is published before extraction. `IFrameRuntime::Extra
 next Engine Update is not admitted until extraction completes.
 
 Extraction reads `World` through its const query API and copies only render-facing data into the current
-`FrameExecutionSlot` arena. The resulting `RenderWorld` contains stable render object IDs, camera data, transforms and
-logical resource handles. Renderer code receives read-only spans and does not access mutable `World` for that frame.
+`FrameExecutionSlot`. Renderables acquire versioned `ResourceLease` values from Resources. A renderable whose required
+mesh or material has no READY representation is not published into the snapshot.
 
-After extraction completes, Update N+1 may overlap render work for N.
+The resulting `RenderWorld` contains stable render object IDs, camera data, transforms and retained resource versions.
+Renderer code receives read-only spans and does not access mutable `World` for that frame.
+
+After extraction completes, Update N+1 may overlap render work for N. Logical unload or reload after extraction prevents
+new acquisitions but does not replace the versions already retained by `RenderWorld N`.
 
 ## Frame ownership
 
-`RenderWorld` storage belongs to the `FrameExecutionSlot` generation identified by `RenderFrameIdentity`. Its spans are
-valid only until that frame is recycled. Recycle resets the slot arena; retaining or reading a previous generation's
-snapshot after recycle is invalid.
+`RenderWorld`, its containers and its resource leases belong to the `FrameExecutionSlot` generation identified by
+`RenderFrameIdentity`. Non-trivial frame-owned objects are destroyed on recycle or abort before the slot arena is reset.
+Retained resource versions therefore remain alive for all CPU users of the frame and are released at the frame lifetime
+boundary.
 
-Logical `ResourceHandle` values copied into the snapshot are non-owning. Resource retention across in-flight frames is a
-separate resource-lifetime concern and is not implemented by extraction.
+Transferring retained resource usage into backend submission and GPU completion lifetime remains a later Graphics
+integration concern; extraction itself does not own backend objects or GPU retirement policy.

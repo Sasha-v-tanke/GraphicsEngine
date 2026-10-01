@@ -1,11 +1,11 @@
 #include "extraction.h"
 #include "render_components.h"
 
-#include <cstddef>
-#include <memory>
 #include <memory_resource>
 #include <new>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
@@ -13,15 +13,6 @@
 namespace NRenderer::NInternal {
 
 namespace {
-
-template<typename T>
-[[nodiscard]] T* AllocateArray(std::pmr::memory_resource& memory, std::size_t count) {
-    if (count == 0) {
-        return nullptr;
-    }
-
-    return static_cast<T*>(memory.allocate(sizeof(T) * count, alignof(T)));
-}
 
 [[nodiscard]] RenderObjectId MakeRenderObjectId(NEcs::Entity entity) noexcept {
     return {
@@ -36,19 +27,17 @@ class RenderWorldBuilder final {
 public:
     [[nodiscard]] static const RenderWorld& Build(std::pmr::memory_resource& memory,
                                                   RenderFrameIdentity frame,
-                                                  const RenderView* views,
-                                                  std::size_t viewCount,
-                                                  const RenderObject* objects,
-                                                  std::size_t objectCount) {
+                                                  const std::pmr::vector<RenderView>& views,
+                                                  const std::pmr::vector<RenderObject>& objects) {
         void* storage = memory.allocate(sizeof(RenderWorld), alignof(RenderWorld));
 
-        return *::new (storage) RenderWorld{frame, views, viewCount, objects, objectCount};
+        return *::new (storage) RenderWorld{frame, views.data(), views.size(), objects.data(), objects.size()};
     }
 };
 
-const RenderWorld& ExtractRenderWorld(const NEcs::World& world, const NEngine::NController::FrameStorage& storage) {
-    static_assert(std::is_trivially_destructible_v<RenderView>);
-    static_assert(std::is_trivially_destructible_v<RenderObject>);
+const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
+                                      const NResources::ResourceManager& resources,
+                                      const NEngine::NController::FrameStorage& storage) {
     static_assert(std::is_trivially_destructible_v<RenderWorld>);
 
     if (storage.GetState() != NEngine::NController::EFrameState::FINALIZE) {
@@ -64,32 +53,36 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world, const NEngine::N
             [&](NEcs::Entity, const TransformComponent&, const RenderableComponent&) { ++objectCount; });
 
     std::pmr::memory_resource& memory = storage.GetMemoryResource();
-    RenderView* views = AllocateArray<RenderView>(memory, viewCount);
-    RenderObject* objects = AllocateArray<RenderObject>(memory, objectCount);
+    auto& views = storage.Emplace<std::pmr::vector<RenderView>>(&memory);
+    auto& objects = storage.Emplace<std::pmr::vector<RenderObject>>(&memory);
 
-    std::size_t viewIndex = 0;
+    views.reserve(viewCount);
+    objects.reserve(objectCount);
+
     world.Query<TransformComponent, CameraComponent>(
             [&](NEcs::Entity entity, const TransformComponent& transform, const CameraComponent& camera) {
-                std::construct_at(&views[viewIndex],
-                                  RenderView{
-                                          .Id = MakeRenderObjectId(entity),
-                                          .WorldTransform = transform.Value,
-                                          .Projection = camera.Projection,
-                                  });
-                ++viewIndex;
+                views.push_back(RenderView{
+                        .Id = MakeRenderObjectId(entity),
+                        .WorldTransform = transform.Value,
+                        .Projection = camera.Projection,
+                });
             });
 
-    std::size_t objectIndex = 0;
     world.Query<TransformComponent, RenderableComponent>(
             [&](NEcs::Entity entity, const TransformComponent& transform, const RenderableComponent& renderable) {
-                std::construct_at(&objects[objectIndex],
-                                  RenderObject{
-                                          .Id = MakeRenderObjectId(entity),
-                                          .WorldTransform = transform.Value,
-                                          .Mesh = renderable.Mesh,
-                                          .Material = renderable.Material,
-                                  });
-                ++objectIndex;
+                auto mesh = resources.TryAcquire(renderable.Mesh);
+                auto material = resources.TryAcquire(renderable.Material);
+
+                if (!mesh.has_value() || !material.has_value()) {
+                    return;
+                }
+
+                objects.push_back(RenderObject{
+                        .Id = MakeRenderObjectId(entity),
+                        .WorldTransform = transform.Value,
+                        .Mesh = std::move(*mesh),
+                        .Material = std::move(*material),
+                });
             });
 
     const NEngine::NController::FrameHandle frame = storage.GetFrame();
@@ -102,9 +95,7 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world, const NEngine::N
                                              .Generation = frame.GetGeneration(),
                                      },
                                      views,
-                                     viewCount,
-                                     objects,
-                                     objectCount);
+                                     objects);
 }
 
 } // namespace NRenderer::NInternal

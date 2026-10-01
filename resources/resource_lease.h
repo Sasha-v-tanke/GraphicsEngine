@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 
 #include <GraphicsEngine/resources/resource_handle.h>
 
