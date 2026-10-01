@@ -9,11 +9,18 @@ stable state model that later loaders and graphics backends will extend without 
 
 - `ResourceHandle<T>` is a typed, non-owning identifier. It does not own CPU data and is not a GPU object.
 - `ResourceIdentity` is the deterministic cache key for a logical resource request.
-- Duplicate requests for the same identity and type return the same handle.
+- Path-backed identities use `ResourceIdentity::FromPath`, which performs lexical normalization and stores generic
+  separators without resolving the filesystem.
+- Duplicate requests for the same canonical identity and type return the same handle, including concurrent requests.
 - The state machine is `UNLOADED -> LOADING -> READY -> UNLOADING -> UNLOADED`, with `LOADING -> FAILED` and
   `FAILED -> LOADING` for retry.
 - Loading operations have their own generation. Retry or unload invalidates stale completion publication.
+- Unloading a `LOADING` resource records cooperative cancellation for that operation. Load work can query
+  `IsCancellationRequested` at safe points before publishing.
+- `ResourceManager` serializes state mutations and allows concurrent state/identity/payload observation through its
+  public API. Callers never mutate public atomics or internal state directly.
 - CPU payload is separate from future GPU representation and is visible only after `READY`.
+- `Forget` is only legal from `UNLOADED` and invalidates existing logical handles through the handle generation.
 
 ## Shader artifacts
 
