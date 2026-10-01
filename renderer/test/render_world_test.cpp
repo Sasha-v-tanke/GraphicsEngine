@@ -73,7 +73,7 @@ TEST(RenderWorld, RequiresDrawCheckpointBeforeExtraction) {
 
     scheduler.BeginFinalize(frame);
 
-    const RenderWorld renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, storage);
+    const RenderWorld& renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, storage);
 
     EXPECT_TRUE(renderWorld.GetViews().empty());
     EXPECT_TRUE(renderWorld.GetObjects().empty());
@@ -128,7 +128,7 @@ TEST(RenderWorld, IsolatesWorldAndResourceMutationsAfterExtraction) {
     }};
     const FrameHandle frame = BeginExtractionFrame(scheduler);
     const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
-    const RenderWorld renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, storage);
+    const RenderWorld& renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, storage);
 
     ASSERT_EQ(renderWorld.GetViews().size(), 1);
     ASSERT_EQ(renderWorld.GetObjects().size(), 1);
@@ -167,7 +167,7 @@ TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
 
     const FrameHandle firstFrame = BeginExtractionFrame(scheduler);
     const NEngine::NController::FrameStorage firstStorage = scheduler.GetFrameStorage(firstFrame);
-    const RenderWorld firstWorld = NRenderer::NInternal::ExtractRenderWorld(world, firstStorage);
+    const RenderWorld& firstWorld = NRenderer::NInternal::ExtractRenderWorld(world, firstStorage);
     const NRenderer::RenderFrameIdentity firstIdentity = firstWorld.GetFrame();
 
     ASSERT_EQ(firstWorld.GetObjects().size(), 1);
@@ -179,7 +179,7 @@ TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
 
     const FrameHandle secondFrame = BeginExtractionFrame(scheduler);
     const NEngine::NController::FrameStorage secondStorage = scheduler.GetFrameStorage(secondFrame);
-    const RenderWorld secondWorld = NRenderer::NInternal::ExtractRenderWorld(world, secondStorage);
+    const RenderWorld& secondWorld = NRenderer::NInternal::ExtractRenderWorld(world, secondStorage);
     const NRenderer::RenderFrameIdentity secondIdentity = secondWorld.GetFrame();
 
     EXPECT_EQ(firstIdentity.FrameSlotIndex, secondIdentity.FrameSlotIndex);

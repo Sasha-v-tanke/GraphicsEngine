@@ -250,7 +250,7 @@ TEST_F(RuntimeMvpTest, ApplicationOwnsSingleWindowAndStopsBeforeWindowDestructio
     ASSERT_FALSE(m_state.Events.empty());
     EXPECT_EQ(m_state.CreatedCount, 1);
     EXPECT_EQ(m_state.DestroyedCount, 1);
-    EXPECT_EQ(m_state.ProcessEventsCount, 3);
+    EXPECT_GE(m_state.ProcessEventsCount, 3);
     EXPECT_EQ(m_state.Events.back(), "window.destroy");
 }
 

@@ -480,6 +480,7 @@ TEST(Engine, WraparoundWaitsForNextMappedSlotRecycle) {
     runtimeRef.FinishFirstDraw();
     finishFirstDrawGuard.Release();
     EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
+    EXPECT_TRUE(runtimeRef.WaitDrawCountAtLeast(2, 2s));
 
     EXPECT_TRUE(engine->Update());
     EXPECT_TRUE(engine->Draw());

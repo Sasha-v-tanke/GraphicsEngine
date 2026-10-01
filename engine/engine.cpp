@@ -256,6 +256,13 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool CanAcceptUpdate() const {
+        std::lock_guard lock{m_mutex};
+        RequireRunningLocked("accept update");
+
+        return m_updateAdmissionOpen;
+    }
+
     [[nodiscard]] EEngineState GetState() const noexcept {
         std::lock_guard lock{m_mutex};
 
@@ -520,6 +527,10 @@ bool Engine::Update() {
 
 bool Engine::Draw() {
     return m_impl->Draw();
+}
+
+bool Engine::CanAcceptUpdate() const {
+    return m_impl->CanAcceptUpdate();
 }
 
 EEngineState Engine::GetState() const noexcept {

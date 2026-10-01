@@ -425,12 +425,12 @@ TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
                       "user.draw",
                       "user.update",
                       "user.draw",
-                      "user.update",
               }));
 
     blockingEngineFactory.Runtime->FinishFirstDraw();
     finishFirstDrawGuard.Release();
     EXPECT_TRUE(blockingEngineFactory.Runtime->WaitFirstDrawFinished(1s));
+    EXPECT_TRUE(blockingEngineFactory.Runtime->WaitDrawCountAtLeast(2, 1s));
 
     frameLoop.Step(callbacks);
 

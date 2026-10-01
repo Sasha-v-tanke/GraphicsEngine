@@ -6,7 +6,7 @@
 
 namespace NRenderer::NInternal {
 
-[[nodiscard]] RenderWorld ExtractRenderWorld(const NEcs::World& world,
-                                             const NEngine::NController::FrameStorage& storage);
+[[nodiscard]] const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
+                                                    const NEngine::NController::FrameStorage& storage);
 
 } // namespace NRenderer::NInternal

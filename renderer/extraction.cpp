@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
+#include <new>
 #include <type_traits>
 
 #include <GraphicsEngine/lib/common/error/error.h>
@@ -33,18 +34,23 @@ template<typename T>
 
 class RenderWorldBuilder final {
 public:
-    [[nodiscard]] static RenderWorld Build(RenderFrameIdentity frame,
-                                           const RenderView* views,
-                                           std::size_t viewCount,
-                                           const RenderObject* objects,
-                                           std::size_t objectCount) noexcept {
-        return RenderWorld{frame, views, viewCount, objects, objectCount};
+    [[nodiscard]] static const RenderWorld& Build(std::pmr::memory_resource& memory,
+                                                  RenderFrameIdentity frame,
+                                                  const RenderView* views,
+                                                  std::size_t viewCount,
+                                                  const RenderObject* objects,
+                                                  std::size_t objectCount) noexcept {
+        void* storage = memory.allocate(sizeof(RenderWorld), alignof(RenderWorld));
+
+        return *::new (storage) RenderWorld{frame, views, viewCount, objects, objectCount};
     }
 };
 
-RenderWorld ExtractRenderWorld(const NEcs::World& world, const NEngine::NController::FrameStorage& storage) {
+const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
+                                      const NEngine::NController::FrameStorage& storage) {
     static_assert(std::is_trivially_destructible_v<RenderView>);
     static_assert(std::is_trivially_destructible_v<RenderObject>);
+    static_assert(std::is_trivially_destructible_v<RenderWorld>);
 
     if (storage.GetState() != NEngine::NController::EFrameState::FINALIZE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Render extraction requires an active draw frame");
@@ -90,6 +96,7 @@ RenderWorld ExtractRenderWorld(const NEcs::World& world, const NEngine::NControl
     const NEngine::NController::FrameHandle frame = storage.GetFrame();
 
     return RenderWorldBuilder::Build(
+            memory,
             RenderFrameIdentity{
                     .ApplicationFrameIndex = frame.GetApplicationFrameIndex(),
                     .SimulationIndex = frame.GetSimulationIndex(),

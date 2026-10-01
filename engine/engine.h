@@ -35,6 +35,8 @@ public:
 
     bool Draw();
 
+    [[nodiscard]] bool CanAcceptUpdate() const;
+
     [[nodiscard]] EEngineState GetState() const noexcept;
 
     [[nodiscard]] std::optional<NCommon::ErrorInfo> GetLastError() const;
