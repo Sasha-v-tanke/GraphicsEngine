@@ -105,10 +105,8 @@ PublishShaderArtifact(NResources::ResourceManager& resources,
                                            NResources::EShaderStage stage,
                                            std::string key,
                                            std::uint32_t payload) {
-    const auto artifact = PublishShaderArtifact(resources,
-                                                stage,
-                                                std::move(key),
-                                                {0x07230203U, 0x00010000U, 0U, 2U, 0U, payload});
+    const auto artifact =
+            PublishShaderArtifact(resources, stage, std::move(key), {0x07230203U, 0x00010000U, 0U, 2U, 0U, payload});
     return NGraphics::Shader{resources, artifact};
 }
 
@@ -480,11 +478,10 @@ TEST_F(GraphicsTest, ShaderKeepsResourceIdentityAndArtifactSnapshot) {
     ExpectError(NCommon::EError::INVALID_STATE, [&] { const NGraphics::Shader unavailable{m_resources, handle}; });
 
     const auto operation = m_resources.BeginLoading(handle);
-    m_resources.PublishReady(
-            operation,
-            std::make_shared<NResources::ShaderArtifact>(
-                    NResources::EShaderStage::VERTEX,
-                    std::vector<std::uint32_t>{0x07230203U, 0x00010000U, 0U, 2U, 0U, 4U}));
+    m_resources.PublishReady(operation,
+                             std::make_shared<NResources::ShaderArtifact>(
+                                     NResources::EShaderStage::VERTEX,
+                                     std::vector<std::uint32_t>{0x07230203U, 0x00010000U, 0U, 2U, 0U, 4U}));
 
     const NGraphics::Shader second{m_resources, handle};
     NGraphics::GraphicsPipelineDescriptor firstDescriptor = MakeGraphicsPipelineDescriptor(m_resources);
@@ -539,11 +536,10 @@ TEST_F(GraphicsTest, RejectsUnknownGraphicsPipelineEnumValues) {
     descriptor.Samples = static_cast<NGraphics::ESampleCount>(0x7fffffff);
     expectInvalid(descriptor);
 
-    const auto invalidStageArtifact = PublishShaderArtifact(
-            m_resources,
-            static_cast<NResources::EShaderStage>(0x7fffffff),
-            "invalid-stage",
-            {0x07230203U, 0x00010000U, 0U, 2U, 0U, 5U});
+    const auto invalidStageArtifact = PublishShaderArtifact(m_resources,
+                                                            static_cast<NResources::EShaderStage>(0x7fffffff),
+                                                            "invalid-stage",
+                                                            {0x07230203U, 0x00010000U, 0U, 2U, 0U, 5U});
     descriptor = MakeGraphicsPipelineDescriptor(m_resources);
     descriptor.Shaders[0] = NGraphics::Shader{m_resources, invalidStageArtifact};
     expectInvalid(descriptor);
@@ -575,10 +571,8 @@ TEST_F(GraphicsTest, RejectsInvalidGraphicsPipelineDescriptors) {
                 [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidDepthState); });
 
     NGraphics::GraphicsPipelineDescriptor invalidShader = MakeGraphicsPipelineDescriptor(m_resources);
-    const auto invalidArtifact = PublishShaderArtifact(m_resources,
-                                                       NResources::EShaderStage::VERTEX,
-                                                       "invalid",
-                                                       {1U, 2U, 3U});
+    const auto invalidArtifact =
+            PublishShaderArtifact(m_resources, NResources::EShaderStage::VERTEX, "invalid", {1U, 2U, 3U});
     invalidShader.Shaders[0] = NGraphics::Shader{m_resources, invalidArtifact};
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
@@ -633,7 +627,8 @@ TEST_F(GraphicsTest, RejectsForeignAndStaleGraphicsPipelineHandles) {
 
 TEST_F(GraphicsTest, RollsBackBackendPipelineWhenPublicationFails) {
     NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::GraphicsPipelineHandle first = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources));
+    const NGraphics::GraphicsPipelineHandle first =
+            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources));
 
     m_state.NextGraphicsPipeline = first.GetValue();
 
