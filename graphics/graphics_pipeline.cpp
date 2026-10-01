@@ -405,11 +405,10 @@ bool operator==(const GraphicsPipelineDescriptor& left, const GraphicsPipelineDe
         return false;
     }
 
-    const bool shadersEqual =
-            leftStages.IsCanonical
-                    ? EqualOptionalShader(leftStages.Vertex, rightStages.Vertex) &&
-                              EqualOptionalShader(leftStages.Fragment, rightStages.Fragment)
-                    : EqualShaderSequence(left.Shaders, right.Shaders);
+    const bool shadersEqual = leftStages.IsCanonical
+                                    ? EqualOptionalShader(leftStages.Vertex, rightStages.Vertex) &&
+                                              EqualOptionalShader(leftStages.Fragment, rightStages.Fragment)
+                                    : EqualShaderSequence(left.Shaders, right.Shaders);
 
     return shadersEqual && left.VertexLayout == right.VertexLayout && left.Topology == right.Topology &&
            left.RasterState == right.RasterState && left.DepthState == right.DepthState &&
