@@ -564,8 +564,7 @@ TEST_F(GraphicsTest, RejectsUnknownGraphicsPipelineEnumValues) {
 }
 
 TEST_F(GraphicsTest, RejectsInvalidGraphicsPipelineDescriptors) {
-    NGraphics::GraphicsPipelineDescriptor colorPipelineWithoutFragment =
-            MakeGraphicsPipelineDescriptor(m_resources);
+    NGraphics::GraphicsPipelineDescriptor colorPipelineWithoutFragment = MakeGraphicsPipelineDescriptor(m_resources);
     colorPipelineWithoutFragment.Shaders.pop_back();
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
