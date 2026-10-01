@@ -212,7 +212,8 @@ void ValidateGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descri
         switch (shader.GetStage()) {
         case EShaderStage::VERTEX:
             if (hasVertexShader) {
-                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,\n                                      "Graphics pipeline has duplicate vertex shader");
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                      "Graphics pipeline has duplicate vertex shader");
             }
 
             hasVertexShader = true;
