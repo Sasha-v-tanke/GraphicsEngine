@@ -51,29 +51,6 @@ private:
     bool m_active = true;
 };
 
-class BufferCreationGuard final {
-public:
-    BufferCreationGuard(NBackend::IGraphicsBackend& backend, std::uint64_t value) noexcept
-        : m_backend(backend)
-        , m_value(value) {
-    }
-
-    ~BufferCreationGuard() noexcept {
-        if (m_active) {
-            m_backend.DestroyBuffer(m_value, std::nullopt);
-        }
-    }
-
-    void Release() noexcept {
-        m_active = false;
-    }
-
-private:
-    NBackend::IGraphicsBackend& m_backend;
-    std::uint64_t m_value = 0;
-    bool m_active = true;
-};
-
 } // namespace
 
 Graphics::Graphics(const GraphicsConfig& config)

@@ -24,7 +24,10 @@ struct FakeGraphicsState {
     std::vector<NGraphics::FrameSubmission> Submissions;
     std::vector<NGraphics::BufferDescriptor> CreatedBuffers;
     std::vector<std::pair<std::uint64_t, std::optional<std::uint64_t>>> DestroyedBuffers;
+    std::vector<NGraphics::GraphicsPipelineDescriptor> CreatedGraphicsPipelines;
+    std::vector<std::pair<std::uint64_t, std::optional<std::uint64_t>>> DestroyedGraphicsPipelines;
     std::uint64_t NextBuffer = 1;
+    std::uint64_t NextGraphicsPipeline = 1;
     std::uint64_t NextCompletion = 1;
     std::uint64_t CompletedValue = 0;
 };
@@ -64,9 +67,82 @@ public:
         m_state.DestroyedBuffers.emplace_back(bufferValue, completedAfter);
     }
 
+    [[nodiscard]] std::uint64_t
+    CreateGraphicsPipeline(const NGraphics::GraphicsPipelineDescriptor& descriptor) override {
+        m_state.CreatedGraphicsPipelines.push_back(descriptor);
+        return m_state.NextGraphicsPipeline++;
+    }
+
+    void DestroyGraphicsPipeline(std::uint64_t pipelineValue,
+                                 std::optional<std::uint64_t> completedAfter) noexcept override {
+        m_state.DestroyedGraphicsPipelines.emplace_back(pipelineValue, completedAfter);
+    }
+
 private:
     FakeGraphicsState& m_state;
 };
+
+[[nodiscard]] NGraphics::Shader MakeShader(NGraphics::EShaderStage stage, std::uint32_t payload) {
+    return NGraphics::Shader{
+            stage,
+            NGraphics::ShaderArtifact{
+                    .Format = NGraphics::EShaderArtifactFormat::SPIR_V,
+                    .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U, payload},
+            },
+    };
+}
+
+[[nodiscard]] NGraphics::GraphicsPipelineDescriptor MakeGraphicsPipelineDescriptor() {
+    return {
+            .Shaders = {
+                    MakeShader(NGraphics::EShaderStage::VERTEX, 1U),
+                    MakeShader(NGraphics::EShaderStage::FRAGMENT, 2U),
+            },
+            .VertexLayout =
+                    {
+                            .Bindings =
+                                    {
+                                            {
+                                                    .Binding = 0,
+                                                    .StrideBytes = 20,
+                                                    .InputRate = NGraphics::EVertexInputRate::VERTEX,
+                                            },
+                                    },
+                            .Attributes =
+                                    {
+                                            {
+                                                    .Location = 0,
+                                                    .Binding = 0,
+                                                    .Format = NGraphics::EVertexFormat::FLOAT32_3,
+                                                    .OffsetBytes = 0,
+                                            },
+                                            {
+                                                    .Location = 1,
+                                                    .Binding = 0,
+                                                    .Format = NGraphics::EVertexFormat::FLOAT32_2,
+                                                    .OffsetBytes = 12,
+                                            },
+                                    },
+                    },
+            .Topology = NGraphics::EPrimitiveTopology::TRIANGLE_LIST,
+            .RasterState =
+                    {
+                            .PolygonMode = NGraphics::EPolygonMode::FILL,
+                            .CullMode = NGraphics::ECullMode::BACK,
+                            .FrontFace = NGraphics::EFrontFace::COUNTER_CLOCKWISE,
+                    },
+            .DepthState =
+                    {
+                            .TestEnabled = false,
+                            .WriteEnabled = false,
+                            .CompareOperation = NGraphics::ECompareOperation::LESS,
+                    },
+            .ColorAttachmentFormats = {NGraphics::EPixelFormat::BGRA8_SRGB},
+            .ColorBlendAttachments = {NGraphics::BlendAttachmentDescriptor{}},
+            .DepthAttachmentFormat = NGraphics::EPixelFormat::UNDEFINED,
+            .Samples = NGraphics::ESampleCount::X1,
+    };
+}
 
 class GraphicsTest: public testing::Test {
 protected:
@@ -347,6 +423,130 @@ TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredBufferDestruction) {
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { graphics.DestroyBuffer(buffer, otherCompletion); });
     EXPECT_EQ(m_state.DestroyedBuffers.size(), 0U);
+}
+
+TEST_F(GraphicsTest, GraphicsPipelineDescriptorEqualityAndHashAreStable) {
+    const NGraphics::GraphicsPipelineDescriptor first = MakeGraphicsPipelineDescriptor();
+    NGraphics::GraphicsPipelineDescriptor second = first;
+
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
+
+    second.Topology = NGraphics::EPrimitiveTopology::LINE_LIST;
+
+    EXPECT_NE(first, second);
+    EXPECT_NE(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
+}
+
+TEST_F(GraphicsTest, RejectsInvalidGraphicsPipelineDescriptors) {
+    NGraphics::GraphicsPipelineDescriptor missingFragment = MakeGraphicsPipelineDescriptor();
+    missingFragment.Shaders.pop_back();
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { NGraphics::ValidateGraphicsPipelineDescriptor(missingFragment); });
+
+    NGraphics::GraphicsPipelineDescriptor invalidVertexLayout = MakeGraphicsPipelineDescriptor();
+    invalidVertexLayout.VertexLayout.Attributes[1].OffsetBytes = 16;
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidVertexLayout); });
+
+    NGraphics::GraphicsPipelineDescriptor invalidBlendState = MakeGraphicsPipelineDescriptor();
+    invalidBlendState.ColorBlendAttachments.clear();
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidBlendState); });
+
+    NGraphics::GraphicsPipelineDescriptor invalidDepthState = MakeGraphicsPipelineDescriptor();
+    invalidDepthState.DepthState.TestEnabled = true;
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidDepthState); });
+
+    NGraphics::GraphicsPipelineDescriptor invalidShader = MakeGraphicsPipelineDescriptor();
+    invalidShader.Shaders[0] =
+            NGraphics::Shader{NGraphics::EShaderStage::VERTEX, NGraphics::ShaderArtifact{.Words = {1U, 2U, 3U}}};
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidShader); });
+}
+
+TEST_F(GraphicsTest, CreatesGraphicsPipelineAndPreservesDescriptor) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    const NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor();
+
+    const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(descriptor);
+
+    ASSERT_TRUE(pipeline.IsValid());
+    ASSERT_EQ(m_state.CreatedGraphicsPipelines.size(), 1U);
+    EXPECT_EQ(m_state.CreatedGraphicsPipelines[0], descriptor);
+    EXPECT_EQ(graphics.GetGraphicsPipelineDescriptor(pipeline), descriptor);
+}
+
+TEST_F(GraphicsTest, DestroysGraphicsPipelineAfterCompletionPoint) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+    const NGraphics::CompletionPoint completion = graphics.SubmitFrame({
+            .FrameIndex = 11,
+            .RequiresPresentation = false,
+    });
+
+    graphics.DestroyGraphicsPipeline(pipeline, completion);
+
+    ASSERT_EQ(m_state.DestroyedGraphicsPipelines.size(), 1U);
+    EXPECT_EQ(m_state.DestroyedGraphicsPipelines[0].first, pipeline.GetValue());
+    ASSERT_TRUE(m_state.DestroyedGraphicsPipelines[0].second.has_value());
+    EXPECT_EQ(*m_state.DestroyedGraphicsPipelines[0].second, completion.GetValue());
+}
+
+TEST_F(GraphicsTest, RejectsForeignAndStaleGraphicsPipelineHandles) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+
+    FakeGraphicsState otherState;
+    g_fakeGraphicsState = &otherState;
+    NGraphics::Graphics other = CreateGraphics();
+    g_fakeGraphicsState = &m_state;
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { other.DestroyGraphicsPipeline(pipeline); });
+
+    graphics.DestroyGraphicsPipeline(pipeline);
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graphics.GetGraphicsPipelineDescriptor(pipeline); });
+}
+
+TEST_F(GraphicsTest, RollsBackBackendPipelineWhenPublicationFails) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    const NGraphics::GraphicsPipelineHandle first = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+
+    m_state.NextGraphicsPipeline = first.GetValue();
+
+    ExpectError(NCommon::EError::INVALID_STATE,
+                [&] { (void)graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor()); });
+
+    ASSERT_EQ(m_state.DestroyedGraphicsPipelines.size(), 1U);
+    EXPECT_EQ(m_state.DestroyedGraphicsPipelines[0].first, first.GetValue());
+    EXPECT_FALSE(m_state.DestroyedGraphicsPipelines[0].second.has_value());
+    EXPECT_EQ(graphics.GetGraphicsPipelineDescriptor(first), MakeGraphicsPipelineDescriptor());
+}
+
+TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredGraphicsPipelineDestruction) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+
+    FakeGraphicsState otherState;
+    g_fakeGraphicsState = &otherState;
+    NGraphics::Graphics other = CreateGraphics();
+    g_fakeGraphicsState = &m_state;
+
+    const NGraphics::CompletionPoint otherCompletion = other.SubmitFrame({
+            .FrameIndex = 1,
+            .RequiresPresentation = false,
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { graphics.DestroyGraphicsPipeline(pipeline, otherCompletion); });
+    EXPECT_EQ(m_state.DestroyedGraphicsPipelines.size(), 0U);
 }
 
 } // namespace

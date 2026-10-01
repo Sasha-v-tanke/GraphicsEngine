@@ -6,6 +6,8 @@
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
+#include <GraphicsEngine/graphics/graphics_pipeline.h>
+#include <GraphicsEngine/graphics/shader.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/resources/resource_manager.h>
@@ -47,8 +49,29 @@ int main() {
             .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
             .Lifetime = NGraphics::EBufferLifetime::Persistent,
     };
+    const NGraphics::GraphicsPipelineDescriptor pipeline{
+            .Shaders = {
+                    NGraphics::Shader{
+                            NGraphics::EShaderStage::VERTEX,
+                            NGraphics::ShaderArtifact{
+                                    .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
+                            },
+                    },
+                    NGraphics::Shader{
+                            NGraphics::EShaderStage::FRAGMENT,
+                            NGraphics::ShaderArtifact{
+                                    .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
+                            },
+                    },
+            },
+            .ColorAttachmentFormats = {NGraphics::EPixelFormat::BGRA8_SRGB},
+            .ColorBlendAttachments = {NGraphics::BlendAttachmentDescriptor{}},
+    };
 
-    if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256) {
+    NGraphics::ValidateGraphicsPipelineDescriptor(pipeline);
+    const std::uint64_t pipelineHash = NGraphics::HashGraphicsPipelineDescriptor(pipeline);
+
+    if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256 || pipelineHash == 0) {
         return 1;
     }
 

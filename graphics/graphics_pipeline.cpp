@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -23,13 +25,17 @@ constexpr ColorComponentFlags KNOWN_COLOR_COMPONENT_MASK =
 
 template<typename T>
 void HashIntegral(std::uint64_t& hash, T value) noexcept {
-    using UnsignedType = std::make_unsigned_t<T>;
-    UnsignedType bits = static_cast<UnsignedType>(value);
+    if constexpr (std::is_same_v<std::remove_cv_t<T>, bool>) {
+        HashIntegral(hash, static_cast<std::uint8_t>(value));
+    } else {
+        using UnsignedType = std::make_unsigned_t<T>;
+        UnsignedType bits = static_cast<UnsignedType>(value);
 
-    for (std::size_t index = 0; index < sizeof(UnsignedType); ++index) {
-        hash ^= static_cast<std::uint8_t>(bits & 0xFFU);
-        hash *= HASH_PRIME;
-        bits >>= 8U;
+        for (std::size_t index = 0; index < sizeof(UnsignedType); ++index) {
+            hash ^= static_cast<std::uint8_t>(bits & 0xFFU);
+            hash *= HASH_PRIME;
+            bits >>= 8U;
+        }
     }
 }
 
