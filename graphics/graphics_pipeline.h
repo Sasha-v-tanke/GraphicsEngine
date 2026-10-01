@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-#include <graphics/shader.h>
+#include <GraphicsEngine/graphics/shader.h>
 
 namespace NGraphics {
 
