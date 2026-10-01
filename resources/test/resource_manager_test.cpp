@@ -52,6 +52,45 @@ void WriteBytes(const std::filesystem::path& path, const std::vector<std::uint8_
     file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
+std::vector<std::uint8_t>
+MakeTga(std::uint16_t width, std::uint16_t height, std::uint8_t imageType, std::uint8_t bitsPerPixel) {
+    return {
+            0U,
+            0U,
+            imageType,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            static_cast<std::uint8_t>(width & 0xFFU),
+            static_cast<std::uint8_t>(width >> 8U),
+            static_cast<std::uint8_t>(height & 0xFFU),
+            static_cast<std::uint8_t>(height >> 8U),
+            bitsPerPixel,
+            0x20U,
+    };
+}
+
+std::shared_ptr<const ImageData> LoadImageData(const std::filesystem::path& path,
+                                               const std::vector<std::uint8_t>& bytes) {
+    WriteBytes(path, bytes);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", path.filename().string()}, path);
+    std::shared_ptr<const ImageData> data = resources.GetCpuResource(image);
+
+    EXPECT_EQ(resources.GetState(image), EResourceState::READY);
+    std::filesystem::remove(path);
+
+    return data;
+}
+
 TEST(ResourceManager, CreatesTypedHandleForLogicalIdentity) {
     ResourceManager resources;
 
@@ -403,6 +442,93 @@ TEST(ImageLoader, LoadsValidRgbImageAsRgba8) {
               }));
 
     std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, ConvertsGrayscaleImageToRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-grayscale-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(2, 1, 3, 8);
+    bytes.insert(bytes.end(), {0x22U, 0xCCU});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      0x22U,
+                      0x22U,
+                      0x22U,
+                      255U,
+                      0xCCU,
+                      0xCCU,
+                      0xCCU,
+                      255U,
+              }));
+}
+
+TEST(ImageLoader, PreservesGrayscaleAlphaImageAsRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-grayscale-alpha-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(2, 1, 3, 16);
+    bytes.insert(bytes.end(), {0x33U, 0x44U, 0xAAU, 0xBBU});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      0x33U,
+                      0x33U,
+                      0x33U,
+                      0x44U,
+                      0xAAU,
+                      0xAAU,
+                      0xAAU,
+                      0xBBU,
+              }));
+}
+
+TEST(ImageLoader, ConvertsRgbImageToRgba8WithoutVerticalFlip) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-rgb-two-row-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(1, 2, 2, 24);
+    bytes.insert(bytes.end(), {0U, 0U, 255U, 0U, 255U, 0U});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetWidth(), 1U);
+    EXPECT_EQ(data->GetHeight(), 2U);
+    EXPECT_EQ(data->GetFormat(), EImagePixelFormat::RGBA8);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      255U,
+                      0U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+              }));
+}
+
+TEST(ImageLoader, PreservesRgbaImageAsRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-rgba-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(2, 1, 2, 32);
+    bytes.insert(bytes.end(), {0U, 0U, 255U, 17U, 0U, 255U, 0U, 221U});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      255U,
+                      0U,
+                      0U,
+                      17U,
+                      0U,
+                      255U,
+                      0U,
+                      221U,
+              }));
 }
 
 TEST(ImageLoader, FailsCorruptImageData) {

@@ -67,7 +67,7 @@ LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::file
     int width = 0;
     int height = 0;
     int sourceChannels = 0;
-    stbi_set_flip_vertically_on_load(0);
+    stbi_set_flip_vertically_on_load_thread(0);
     std::unique_ptr<stbi_uc, StbImageDeleter> pixels{
             stbi_load_from_memory(bytes.data(),
                                   static_cast<int>(bytes.size()),
