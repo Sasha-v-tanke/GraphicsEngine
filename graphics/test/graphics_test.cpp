@@ -464,6 +464,35 @@ TEST_F(GraphicsTest, GraphicsPipelineDescriptorEqualityAndHashAreStable) {
     EXPECT_NE(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
 }
 
+TEST_F(GraphicsTest, GraphicsPipelineVertexBindingOrderDoesNotAffectIdentity) {
+    NGraphics::GraphicsPipelineDescriptor first = MakeGraphicsPipelineDescriptor(m_resources);
+    first.VertexLayout.Bindings.push_back({
+            .Binding = 1,
+            .StrideBytes = 16,
+            .InputRate = NGraphics::EVertexInputRate::INSTANCE,
+    });
+    NGraphics::GraphicsPipelineDescriptor second = first;
+
+    std::swap(second.VertexLayout.Bindings[0], second.VertexLayout.Bindings[1]);
+
+    EXPECT_NO_THROW(NGraphics::ValidateGraphicsPipelineDescriptor(first));
+    EXPECT_NO_THROW(NGraphics::ValidateGraphicsPipelineDescriptor(second));
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
+}
+
+TEST_F(GraphicsTest, GraphicsPipelineVertexAttributeOrderDoesNotAffectIdentity) {
+    const NGraphics::GraphicsPipelineDescriptor first = MakeGraphicsPipelineDescriptor(m_resources);
+    NGraphics::GraphicsPipelineDescriptor second = first;
+
+    std::swap(second.VertexLayout.Attributes[0], second.VertexLayout.Attributes[1]);
+
+    EXPECT_NO_THROW(NGraphics::ValidateGraphicsPipelineDescriptor(first));
+    EXPECT_NO_THROW(NGraphics::ValidateGraphicsPipelineDescriptor(second));
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
+}
+
 TEST_F(GraphicsTest, AcceptsDepthOnlyGraphicsPipelineWithoutFragmentShader) {
     NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor(m_resources);
 

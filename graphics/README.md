@@ -15,7 +15,8 @@ that already retained its artifact snapshot.
 
 The descriptor contains resource-backed shaders, vertex input, topology, raster/depth/blend state, attachment formats,
 and sample count. Shader vector order does not affect pipeline identity; supported graphics stages are canonicalized by
-stage for equality and hashing. A vertex shader is required for the current primitive path. A fragment shader is
+stage for equality and hashing. Vertex bindings are identified by binding number and vertex attributes by location, so
+their vector order does not affect pipeline identity. A vertex shader is required for the current primitive path. A fragment shader is
 required when color attachments are declared, while depth-only pipelines may omit it. Runtime shader compilation is
 outside the Graphics runtime contract.
 

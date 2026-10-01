@@ -47,8 +47,7 @@ struct VertexLayoutDescriptor {
     std::vector<VertexBindingDescriptor> Bindings;
     std::vector<VertexAttributeDescriptor> Attributes;
 
-    [[nodiscard]] friend bool operator==(const VertexLayoutDescriptor& left,
-                                         const VertexLayoutDescriptor& right) noexcept = default;
+    friend bool operator==(const VertexLayoutDescriptor& left, const VertexLayoutDescriptor& right) noexcept;
 };
 
 enum class EPrimitiveTopology {

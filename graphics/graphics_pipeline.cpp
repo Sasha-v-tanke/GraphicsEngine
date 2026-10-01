@@ -150,6 +150,132 @@ void HashOptionalShader(std::uint64_t& hash, const Shader* shader) noexcept {
     return true;
 }
 
+[[nodiscard]] bool HasUniqueBindings(const std::vector<VertexBindingDescriptor>& bindings) noexcept {
+    for (std::size_t left = 0; left < bindings.size(); ++left) {
+        for (std::size_t right = left + 1; right < bindings.size(); ++right) {
+            if (bindings[left].Binding == bindings[right].Binding) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+[[nodiscard]] bool HasUniqueAttributeLocations(const std::vector<VertexAttributeDescriptor>& attributes) noexcept {
+    for (std::size_t left = 0; left < attributes.size(); ++left) {
+        for (std::size_t right = left + 1; right < attributes.size(); ++right) {
+            if (attributes[left].Location == attributes[right].Location) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+[[nodiscard]] bool IsCanonicalVertexLayout(const VertexLayoutDescriptor& layout) noexcept {
+    return HasUniqueBindings(layout.Bindings) && HasUniqueAttributeLocations(layout.Attributes);
+}
+
+[[nodiscard]] const VertexBindingDescriptor*
+FindBinding(const std::vector<VertexBindingDescriptor>& bindings, std::uint32_t binding) noexcept {
+    for (const VertexBindingDescriptor& candidate: bindings) {
+        if (candidate.Binding == binding) {
+            return &candidate;
+        }
+    }
+
+    return nullptr;
+}
+
+[[nodiscard]] const VertexAttributeDescriptor*
+FindAttribute(const std::vector<VertexAttributeDescriptor>& attributes, std::uint32_t location) noexcept {
+    for (const VertexAttributeDescriptor& candidate: attributes) {
+        if (candidate.Location == location) {
+            return &candidate;
+        }
+    }
+
+    return nullptr;
+}
+
+void HashVertexBinding(std::uint64_t& hash, const VertexBindingDescriptor& binding) noexcept {
+    HashIntegral(hash, binding.Binding);
+    HashIntegral(hash, binding.StrideBytes);
+    HashEnum(hash, binding.InputRate);
+}
+
+void HashVertexAttribute(std::uint64_t& hash, const VertexAttributeDescriptor& attribute) noexcept {
+    HashIntegral(hash, attribute.Location);
+    HashIntegral(hash, attribute.Binding);
+    HashEnum(hash, attribute.Format);
+    HashIntegral(hash, attribute.OffsetBytes);
+}
+
+[[nodiscard]] const VertexBindingDescriptor*
+FindBindingByRank(const std::vector<VertexBindingDescriptor>& bindings, std::size_t rank) noexcept {
+    for (const VertexBindingDescriptor& candidate: bindings) {
+        std::size_t lowerCount = 0;
+
+        for (const VertexBindingDescriptor& other: bindings) {
+            lowerCount += static_cast<std::size_t>(other.Binding < candidate.Binding);
+        }
+
+        if (lowerCount == rank) {
+            return &candidate;
+        }
+    }
+
+    return nullptr;
+}
+
+[[nodiscard]] const VertexAttributeDescriptor*
+FindAttributeByRank(const std::vector<VertexAttributeDescriptor>& attributes, std::size_t rank) noexcept {
+    for (const VertexAttributeDescriptor& candidate: attributes) {
+        std::size_t lowerCount = 0;
+
+        for (const VertexAttributeDescriptor& other: attributes) {
+            lowerCount += static_cast<std::size_t>(other.Location < candidate.Location);
+        }
+
+        if (lowerCount == rank) {
+            return &candidate;
+        }
+    }
+
+    return nullptr;
+}
+
+void HashVertexLayout(std::uint64_t& hash, const VertexLayoutDescriptor& layout) noexcept {
+    const bool canonical = IsCanonicalVertexLayout(layout);
+
+    HashIntegral(hash, canonical);
+    HashIntegral(hash, layout.Bindings.size());
+
+    if (canonical) {
+        for (std::size_t rank = 0; rank < layout.Bindings.size(); ++rank) {
+            HashVertexBinding(hash, *FindBindingByRank(layout.Bindings, rank));
+        }
+    } else {
+        for (const VertexBindingDescriptor& binding: layout.Bindings) {
+            HashVertexBinding(hash, binding);
+        }
+    }
+
+    HashIntegral(hash, layout.Attributes.size());
+
+    if (canonical) {
+        for (std::size_t rank = 0; rank < layout.Attributes.size(); ++rank) {
+            HashVertexAttribute(hash, *FindAttributeByRank(layout.Attributes, rank));
+        }
+    } else {
+        for (const VertexAttributeDescriptor& attribute: layout.Attributes) {
+            HashVertexAttribute(hash, attribute);
+        }
+    }
+}
+
 [[nodiscard]] std::uint32_t GetVertexFormatSize(EVertexFormat format) noexcept {
     switch (format) {
     case EVertexFormat::FLOAT32:
@@ -397,6 +523,41 @@ void ValidateSampleCount(ESampleCount samples) {
 
 } // namespace
 
+bool operator==(const VertexLayoutDescriptor& left, const VertexLayoutDescriptor& right) noexcept {
+    if (left.Bindings.size() != right.Bindings.size() || left.Attributes.size() != right.Attributes.size()) {
+        return false;
+    }
+
+    const bool leftCanonical = IsCanonicalVertexLayout(left);
+    const bool rightCanonical = IsCanonicalVertexLayout(right);
+
+    if (leftCanonical != rightCanonical) {
+        return false;
+    }
+
+    if (!leftCanonical) {
+        return left.Bindings == right.Bindings && left.Attributes == right.Attributes;
+    }
+
+    for (const VertexBindingDescriptor& binding: left.Bindings) {
+        const VertexBindingDescriptor* rightBinding = FindBinding(right.Bindings, binding.Binding);
+
+        if (rightBinding == nullptr || binding != *rightBinding) {
+            return false;
+        }
+    }
+
+    for (const VertexAttributeDescriptor& attribute: left.Attributes) {
+        const VertexAttributeDescriptor* rightAttribute = FindAttribute(right.Attributes, attribute.Location);
+
+        if (rightAttribute == nullptr || attribute != *rightAttribute) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool operator==(const GraphicsPipelineDescriptor& left, const GraphicsPipelineDescriptor& right) noexcept {
     const CanonicalShaderStages leftStages = GetCanonicalShaderStages(left.Shaders);
     const CanonicalShaderStages rightStages = GetCanonicalShaderStages(right.Shaders);
@@ -483,22 +644,7 @@ std::uint64_t HashGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& d
         }
     }
 
-    HashIntegral(hash, descriptor.VertexLayout.Bindings.size());
-
-    for (const VertexBindingDescriptor& binding: descriptor.VertexLayout.Bindings) {
-        HashIntegral(hash, binding.Binding);
-        HashIntegral(hash, binding.StrideBytes);
-        HashEnum(hash, binding.InputRate);
-    }
-
-    HashIntegral(hash, descriptor.VertexLayout.Attributes.size());
-
-    for (const VertexAttributeDescriptor& attribute: descriptor.VertexLayout.Attributes) {
-        HashIntegral(hash, attribute.Location);
-        HashIntegral(hash, attribute.Binding);
-        HashEnum(hash, attribute.Format);
-        HashIntegral(hash, attribute.OffsetBytes);
-    }
+    HashVertexLayout(hash, descriptor.VertexLayout);
 
     HashEnum(hash, descriptor.Topology);
     HashEnum(hash, descriptor.RasterState.PolygonMode);
