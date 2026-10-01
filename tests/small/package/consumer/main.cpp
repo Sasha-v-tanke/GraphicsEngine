@@ -1,13 +1,22 @@
+#include <memory>
+#include <string>
+
 #include <GraphicsEngine/application/application_config.h>
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/math/transform.h>
+#include <GraphicsEngine/resources/resource_manager.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
 
+struct ShaderArtifact {
+    std::string Name;
+};
+
 int main() {
     NWindow::WindowRuntime runtime;
+    NResources::ResourceManager resources;
 
     NApplication::ApplicationConfig config{
             .Window = NWindow::WindowConfig{NWindow::EWindowType::GLFW},
@@ -42,5 +51,15 @@ int main() {
         return 1;
     }
 
-    return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F ? 0 : 1;
+    const auto shader = resources.Request<ShaderArtifact>(NResources::ResourceIdentity{"shader", "package.spv"});
+    const auto operation = resources.BeginLoading(shader);
+
+    resources.PublishReady(operation, std::make_shared<ShaderArtifact>(ShaderArtifact{.Name = "package"}));
+
+    const std::shared_ptr<const ShaderArtifact> artifact = resources.GetCpuResource(shader);
+
+    return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F && artifact &&
+                           artifact->Name == "package"
+                 ? 0
+                 : 1;
 }
