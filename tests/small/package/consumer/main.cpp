@@ -50,20 +50,21 @@ int main() {
             .Lifetime = NGraphics::EBufferLifetime::Persistent,
     };
     const NGraphics::GraphicsPipelineDescriptor pipeline{
-            .Shaders = {
-                    NGraphics::Shader{
-                            NGraphics::EShaderStage::VERTEX,
-                            NGraphics::ShaderArtifact{
-                                    .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
+            .Shaders =
+                    {
+                            NGraphics::Shader{
+                                    NGraphics::EShaderStage::VERTEX,
+                                    NGraphics::ShaderArtifact{
+                                            .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
+                                    },
+                            },
+                            NGraphics::Shader{
+                                    NGraphics::EShaderStage::FRAGMENT,
+                                    NGraphics::ShaderArtifact{
+                                            .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
+                                    },
                             },
                     },
-                    NGraphics::Shader{
-                            NGraphics::EShaderStage::FRAGMENT,
-                            NGraphics::ShaderArtifact{
-                                    .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
-                            },
-                    },
-            },
             .ColorAttachmentFormats = {NGraphics::EPixelFormat::BGRA8_SRGB},
             .ColorBlendAttachments = {NGraphics::BlendAttachmentDescriptor{}},
     };

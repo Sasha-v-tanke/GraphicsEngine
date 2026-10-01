@@ -94,10 +94,11 @@ private:
 
 [[nodiscard]] NGraphics::GraphicsPipelineDescriptor MakeGraphicsPipelineDescriptor() {
     return {
-            .Shaders = {
-                    MakeShader(NGraphics::EShaderStage::VERTEX, 1U),
-                    MakeShader(NGraphics::EShaderStage::FRAGMENT, 2U),
-            },
+            .Shaders =
+                    {
+                            MakeShader(NGraphics::EShaderStage::VERTEX, 1U),
+                            MakeShader(NGraphics::EShaderStage::FRAGMENT, 2U),
+                    },
             .VertexLayout =
                     {
                             .Bindings =
@@ -485,7 +486,8 @@ TEST_F(GraphicsTest, CreatesGraphicsPipelineAndPreservesDescriptor) {
 
 TEST_F(GraphicsTest, DestroysGraphicsPipelineAfterCompletionPoint) {
     NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+    const NGraphics::GraphicsPipelineHandle pipeline =
+            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
     const NGraphics::CompletionPoint completion = graphics.SubmitFrame({
             .FrameIndex = 11,
             .RequiresPresentation = false,
@@ -501,7 +503,8 @@ TEST_F(GraphicsTest, DestroysGraphicsPipelineAfterCompletionPoint) {
 
 TEST_F(GraphicsTest, RejectsForeignAndStaleGraphicsPipelineHandles) {
     NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+    const NGraphics::GraphicsPipelineHandle pipeline =
+            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
 
     FakeGraphicsState otherState;
     g_fakeGraphicsState = &otherState;
@@ -532,7 +535,8 @@ TEST_F(GraphicsTest, RollsBackBackendPipelineWhenPublicationFails) {
 
 TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredGraphicsPipelineDestruction) {
     NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+    const NGraphics::GraphicsPipelineHandle pipeline =
+            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
 
     FakeGraphicsState otherState;
     g_fakeGraphicsState = &otherState;
