@@ -102,6 +102,29 @@ public:
         }
     }
 
+    template<typename... TComponents, typename TCallback>
+    void Query(TCallback&& callback) const {
+        std::vector<Entity> entities;
+        entities.reserve(Entities_.size());
+
+        for (std::uint32_t index = 0; index < Entities_.size(); ++index) {
+            if (Entities_[index].Alive) {
+                entities.push_back({
+                        .Index = index,
+                        .Generation = Entities_[index].Generation,
+                });
+            }
+        }
+
+        for (Entity entity: entities) {
+            if ((!HasComponent<TComponents>(entity) || ...)) {
+                continue;
+            }
+
+            std::invoke(callback, entity, GetComponent<TComponents>(entity)...);
+        }
+    }
+
     void RegisterSystem(SystemAccessList access, SystemCallback callback);
 
     [[nodiscard]] const std::vector<SystemAccess>& GetSystemAccess(std::size_t index) const;
