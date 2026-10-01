@@ -7,6 +7,14 @@
 
 namespace NEngine::NController {
 
+EFrameState FrameStorage::GetState() const {
+    if (m_scheduler == nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame storage");
+    }
+
+    return m_scheduler->GetState(m_frame);
+}
+
 std::pmr::memory_resource& FrameStorage::GetMemoryResource() const {
     if (m_scheduler == nullptr) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame storage");

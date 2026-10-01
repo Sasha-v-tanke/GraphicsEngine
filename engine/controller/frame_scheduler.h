@@ -95,6 +95,8 @@ public:
         return m_frame;
     }
 
+    [[nodiscard]] EFrameState GetState() const;
+
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() const;
 
 private:

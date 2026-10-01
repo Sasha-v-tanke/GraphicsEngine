@@ -39,6 +39,9 @@ public:
 
     virtual void Update(const FrameContext& frame) = 0;
 
+    virtual void Extract(const FrameContext&) {
+    }
+
     virtual void Draw(const FrameContext& frame) = 0;
 };
 
