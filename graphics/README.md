@@ -8,14 +8,21 @@ expose native backend handles.
 `GraphicsPipelineDescriptor` is copied when a pipeline is created. The published pipeline state is immutable for the
 lifetime of its `GraphicsPipelineHandle`; changing the caller's descriptor does not mutate an existing pipeline.
 
-The descriptor contains cooked shader artifacts, vertex input, topology, raster/depth/blend state, attachment formats,
+A `Shader` references a typed `ResourceHandle<NResources::ShaderArtifact>`, keeps its canonical resource identity,
+and retains an immutable shared snapshot of the ready cooked artifact. Graphics does not define a second shader stage or
+SPIR-V artifact model. Resource unload therefore stops future acquisition without invalidating a pipeline descriptor
+that already retained its artifact snapshot.
+
+The descriptor contains resource-backed shaders, vertex input, topology, raster/depth/blend state, attachment formats,
 and sample count. Runtime shader compilation is outside the Graphics runtime contract.
 
-Pipeline compatibility is validated before backend creation. Invalid shader stages, vertex layouts, attachment formats,
-blend counts, depth configuration, and sample counts fail with a structured GraphicsEngine error.
+Pipeline compatibility is validated before backend creation. Invalid shader stages, backend-mapped enum values, vertex
+layouts, attachment formats, blend counts, depth configuration, and sample counts fail with a structured GraphicsEngine
+error.
 
-The descriptor hash is deterministic over all pipeline-defining state and is intended as the foundation for the
-content-addressed `PipelineManager` cache.
+The descriptor hash includes shader resource identity, resource-handle generation, entry point, and the retained artifact
+contents together with all fixed-function pipeline state. Republishing different cooked shader contents therefore
+produces a different pipeline key even when the logical resource handle remains the same.
 
 ## Backend boundary
 

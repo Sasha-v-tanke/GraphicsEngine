@@ -14,10 +14,12 @@ API(
 SOURCES(
     graphics.cpp
     graphics_pipeline.cpp
+    shader.cpp
 )
 
 PUBLIC_DEPENDS(
     Common
+    Resources
 )
 
 RECURSE(

@@ -1,5 +1,6 @@
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include <graphics/backend/backend.h>
@@ -7,6 +8,8 @@
 #include <graphics/graphics.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <resources/resource_manager.h>
+#include <resources/shader_artifact.h>
 #include <tests/common/test_error.h>
 
 namespace {
@@ -82,22 +85,40 @@ private:
     FakeGraphicsState& m_state;
 };
 
-[[nodiscard]] NGraphics::Shader MakeShader(NGraphics::EShaderStage stage, std::uint32_t payload) {
-    return NGraphics::Shader{
-            stage,
-            NGraphics::ShaderArtifact{
-                    .Format = NGraphics::EShaderArtifactFormat::SPIR_V,
-                    .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U, payload},
-            },
-    };
+[[nodiscard]] NResources::ResourceHandle<NResources::ShaderArtifact>
+PublishShaderArtifact(NResources::ResourceManager& resources,
+                      NResources::EShaderStage stage,
+                      std::string key,
+                      std::vector<std::uint32_t> words) {
+    const auto handle =
+            resources.Request<NResources::ShaderArtifact>(NResources::ResourceIdentity{"shader", std::move(key)});
+
+    if (resources.GetState(handle) == NResources::EResourceState::UNLOADED) {
+        const auto operation = resources.BeginLoading(handle);
+        resources.PublishReady(operation, std::make_shared<NResources::ShaderArtifact>(stage, std::move(words)));
+    }
+
+    return handle;
 }
 
-[[nodiscard]] NGraphics::GraphicsPipelineDescriptor MakeGraphicsPipelineDescriptor() {
+[[nodiscard]] NGraphics::Shader MakeShader(NResources::ResourceManager& resources,
+                                           NResources::EShaderStage stage,
+                                           std::string key,
+                                           std::uint32_t payload) {
+    const auto artifact = PublishShaderArtifact(resources,
+                                                stage,
+                                                std::move(key),
+                                                {0x07230203U, 0x00010000U, 0U, 2U, 0U, payload});
+    return NGraphics::Shader{resources, artifact};
+}
+
+[[nodiscard]] NGraphics::GraphicsPipelineDescriptor
+MakeGraphicsPipelineDescriptor(NResources::ResourceManager& resources) {
     return {
             .Shaders =
                     {
-                            MakeShader(NGraphics::EShaderStage::VERTEX, 1U),
-                            MakeShader(NGraphics::EShaderStage::FRAGMENT, 2U),
+                            MakeShader(resources, NResources::EShaderStage::VERTEX, "vertex", 1U),
+                            MakeShader(resources, NResources::EShaderStage::FRAGMENT, "fragment", 2U),
                     },
             .VertexLayout =
                     {
@@ -163,6 +184,7 @@ protected:
     }
 
     FakeGraphicsState m_state;
+    NResources::ResourceManager m_resources;
 };
 
 TEST_F(GraphicsTest, CreatesBackendAndPublishesImmutableCapabilities) {
@@ -427,7 +449,7 @@ TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredBufferDestruction) {
 }
 
 TEST_F(GraphicsTest, GraphicsPipelineDescriptorEqualityAndHashAreStable) {
-    const NGraphics::GraphicsPipelineDescriptor first = MakeGraphicsPipelineDescriptor();
+    const NGraphics::GraphicsPipelineDescriptor first = MakeGraphicsPipelineDescriptor(m_resources);
     NGraphics::GraphicsPipelineDescriptor second = first;
 
     EXPECT_EQ(first, second);
@@ -439,34 +461,125 @@ TEST_F(GraphicsTest, GraphicsPipelineDescriptorEqualityAndHashAreStable) {
     EXPECT_NE(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
 }
 
+TEST_F(GraphicsTest, ShaderKeepsResourceIdentityAndArtifactSnapshot) {
+    const auto handle = PublishShaderArtifact(m_resources,
+                                              NResources::EShaderStage::VERTEX,
+                                              "snapshot",
+                                              {0x07230203U, 0x00010000U, 0U, 2U, 0U, 3U});
+    const NGraphics::Shader first{m_resources, handle};
+
+    EXPECT_EQ(first.GetArtifactResource(), handle);
+    EXPECT_EQ(first.GetArtifactIdentity(), NResources::ResourceIdentity("shader", "snapshot"));
+    EXPECT_EQ(first.GetArtifact()->GetStage(), NResources::EShaderStage::VERTEX);
+    EXPECT_EQ(first.GetArtifact()->GetWords().back(), 3U);
+
+    m_resources.RequestUnload(handle);
+    m_resources.CompleteUnload(handle);
+
+    EXPECT_EQ(first.GetArtifact()->GetWords().back(), 3U);
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { const NGraphics::Shader unavailable{m_resources, handle}; });
+
+    const auto operation = m_resources.BeginLoading(handle);
+    m_resources.PublishReady(
+            operation,
+            std::make_shared<NResources::ShaderArtifact>(
+                    NResources::EShaderStage::VERTEX,
+                    std::vector<std::uint32_t>{0x07230203U, 0x00010000U, 0U, 2U, 0U, 4U}));
+
+    const NGraphics::Shader second{m_resources, handle};
+    NGraphics::GraphicsPipelineDescriptor firstDescriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    NGraphics::GraphicsPipelineDescriptor secondDescriptor = firstDescriptor;
+    firstDescriptor.Shaders[0] = first;
+    secondDescriptor.Shaders[0] = second;
+
+    EXPECT_NE(first, second);
+    EXPECT_NE(NGraphics::HashGraphicsPipelineDescriptor(firstDescriptor),
+              NGraphics::HashGraphicsPipelineDescriptor(secondDescriptor));
+}
+
+TEST_F(GraphicsTest, RejectsUnknownGraphicsPipelineEnumValues) {
+    auto expectInvalid = [&](const NGraphics::GraphicsPipelineDescriptor& descriptor) {
+        ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                    [&] { NGraphics::ValidateGraphicsPipelineDescriptor(descriptor); });
+    };
+
+    NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.Topology = static_cast<NGraphics::EPrimitiveTopology>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.VertexLayout.Bindings[0].InputRate = static_cast<NGraphics::EVertexInputRate>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.RasterState.PolygonMode = static_cast<NGraphics::EPolygonMode>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.RasterState.CullMode = static_cast<NGraphics::ECullMode>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.RasterState.FrontFace = static_cast<NGraphics::EFrontFace>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.DepthState.CompareOperation = static_cast<NGraphics::ECompareOperation>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.ColorBlendAttachments[0].SourceColorFactor = static_cast<NGraphics::EBlendFactor>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.ColorBlendAttachments[0].ColorOperation = static_cast<NGraphics::EBlendOperation>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.Samples = static_cast<NGraphics::ESampleCount>(0x7fffffff);
+    expectInvalid(descriptor);
+
+    const auto invalidStageArtifact = PublishShaderArtifact(
+            m_resources,
+            static_cast<NResources::EShaderStage>(0x7fffffff),
+            "invalid-stage",
+            {0x07230203U, 0x00010000U, 0U, 2U, 0U, 5U});
+    descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    descriptor.Shaders[0] = NGraphics::Shader{m_resources, invalidStageArtifact};
+    expectInvalid(descriptor);
+}
+
 TEST_F(GraphicsTest, RejectsInvalidGraphicsPipelineDescriptors) {
-    NGraphics::GraphicsPipelineDescriptor missingFragment = MakeGraphicsPipelineDescriptor();
+    NGraphics::GraphicsPipelineDescriptor missingFragment = MakeGraphicsPipelineDescriptor(m_resources);
     missingFragment.Shaders.pop_back();
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
                 [&] { NGraphics::ValidateGraphicsPipelineDescriptor(missingFragment); });
 
-    NGraphics::GraphicsPipelineDescriptor invalidVertexLayout = MakeGraphicsPipelineDescriptor();
+    NGraphics::GraphicsPipelineDescriptor invalidVertexLayout = MakeGraphicsPipelineDescriptor(m_resources);
     invalidVertexLayout.VertexLayout.Attributes[1].OffsetBytes = 16;
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
                 [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidVertexLayout); });
 
-    NGraphics::GraphicsPipelineDescriptor invalidBlendState = MakeGraphicsPipelineDescriptor();
+    NGraphics::GraphicsPipelineDescriptor invalidBlendState = MakeGraphicsPipelineDescriptor(m_resources);
     invalidBlendState.ColorBlendAttachments.clear();
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
                 [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidBlendState); });
 
-    NGraphics::GraphicsPipelineDescriptor invalidDepthState = MakeGraphicsPipelineDescriptor();
+    NGraphics::GraphicsPipelineDescriptor invalidDepthState = MakeGraphicsPipelineDescriptor(m_resources);
     invalidDepthState.DepthState.TestEnabled = true;
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
                 [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidDepthState); });
 
-    NGraphics::GraphicsPipelineDescriptor invalidShader = MakeGraphicsPipelineDescriptor();
-    invalidShader.Shaders[0] =
-            NGraphics::Shader{NGraphics::EShaderStage::VERTEX, NGraphics::ShaderArtifact{.Words = {1U, 2U, 3U}}};
+    NGraphics::GraphicsPipelineDescriptor invalidShader = MakeGraphicsPipelineDescriptor(m_resources);
+    const auto invalidArtifact = PublishShaderArtifact(m_resources,
+                                                       NResources::EShaderStage::VERTEX,
+                                                       "invalid",
+                                                       {1U, 2U, 3U});
+    invalidShader.Shaders[0] = NGraphics::Shader{m_resources, invalidArtifact};
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
                 [&] { NGraphics::ValidateGraphicsPipelineDescriptor(invalidShader); });
@@ -474,7 +587,7 @@ TEST_F(GraphicsTest, RejectsInvalidGraphicsPipelineDescriptors) {
 
 TEST_F(GraphicsTest, CreatesGraphicsPipelineAndPreservesDescriptor) {
     NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor();
+    const NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor(m_resources);
 
     const NGraphics::GraphicsPipelineHandle pipeline = graphics.CreateGraphicsPipeline(descriptor);
 
@@ -487,7 +600,7 @@ TEST_F(GraphicsTest, CreatesGraphicsPipelineAndPreservesDescriptor) {
 TEST_F(GraphicsTest, DestroysGraphicsPipelineAfterCompletionPoint) {
     NGraphics::Graphics graphics = CreateGraphics();
     const NGraphics::GraphicsPipelineHandle pipeline =
-            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources));
     const NGraphics::CompletionPoint completion = graphics.SubmitFrame({
             .FrameIndex = 11,
             .RequiresPresentation = false,
@@ -504,7 +617,7 @@ TEST_F(GraphicsTest, DestroysGraphicsPipelineAfterCompletionPoint) {
 TEST_F(GraphicsTest, RejectsForeignAndStaleGraphicsPipelineHandles) {
     NGraphics::Graphics graphics = CreateGraphics();
     const NGraphics::GraphicsPipelineHandle pipeline =
-            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources));
 
     FakeGraphicsState otherState;
     g_fakeGraphicsState = &otherState;
@@ -520,23 +633,23 @@ TEST_F(GraphicsTest, RejectsForeignAndStaleGraphicsPipelineHandles) {
 
 TEST_F(GraphicsTest, RollsBackBackendPipelineWhenPublicationFails) {
     NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::GraphicsPipelineHandle first = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+    const NGraphics::GraphicsPipelineHandle first = graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources));
 
     m_state.NextGraphicsPipeline = first.GetValue();
 
     ExpectError(NCommon::EError::INVALID_STATE,
-                [&] { (void)graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor()); });
+                [&] { (void)graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources)); });
 
     ASSERT_EQ(m_state.DestroyedGraphicsPipelines.size(), 1U);
     EXPECT_EQ(m_state.DestroyedGraphicsPipelines[0].first, first.GetValue());
     EXPECT_FALSE(m_state.DestroyedGraphicsPipelines[0].second.has_value());
-    EXPECT_EQ(graphics.GetGraphicsPipelineDescriptor(first), MakeGraphicsPipelineDescriptor());
+    EXPECT_EQ(graphics.GetGraphicsPipelineDescriptor(first), MakeGraphicsPipelineDescriptor(m_resources));
 }
 
 TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredGraphicsPipelineDestruction) {
     NGraphics::Graphics graphics = CreateGraphics();
     const NGraphics::GraphicsPipelineHandle pipeline =
-            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor());
+            graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources));
 
     FakeGraphicsState otherState;
     g_fakeGraphicsState = &otherState;

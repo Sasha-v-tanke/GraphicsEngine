@@ -49,21 +49,22 @@ int main() {
             .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
             .Lifetime = NGraphics::EBufferLifetime::Persistent,
     };
+    const auto makeShader = [&resources](NResources::EShaderStage stage, const char* key) {
+        const auto handle =
+                resources.Request<NResources::ShaderArtifact>(NResources::ResourceIdentity{"shader", key});
+        const auto operation = resources.BeginLoading(handle);
+        resources.PublishReady(
+                operation,
+                std::make_shared<NResources::ShaderArtifact>(
+                        stage,
+                        std::vector<std::uint32_t>{0x07230203U, 0x00010000U, 0U, 2U, 0U}));
+        return NGraphics::Shader{resources, handle};
+    };
     const NGraphics::GraphicsPipelineDescriptor pipeline{
             .Shaders =
                     {
-                            NGraphics::Shader{
-                                    NGraphics::EShaderStage::VERTEX,
-                                    NGraphics::ShaderArtifact{
-                                            .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
-                                    },
-                            },
-                            NGraphics::Shader{
-                                    NGraphics::EShaderStage::FRAGMENT,
-                                    NGraphics::ShaderArtifact{
-                                            .Words = {0x07230203U, 0x00010000U, 0U, 2U, 0U},
-                                    },
-                            },
+                            makeShader(NResources::EShaderStage::VERTEX, "package.vertex"),
+                            makeShader(NResources::EShaderStage::FRAGMENT, "package.fragment"),
                     },
             .ColorAttachmentFormats = {NGraphics::EPixelFormat::BGRA8_SRGB},
             .ColorBlendAttachments = {NGraphics::BlendAttachmentDescriptor{}},

@@ -2,12 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
-#include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
+#include <GraphicsEngine/resources/shader_artifact_loader.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -17,7 +17,6 @@ namespace {
 
 constexpr std::uint64_t HASH_OFFSET = 14695981039346656037ULL;
 constexpr std::uint64_t HASH_PRIME = 1099511628211ULL;
-constexpr std::uint32_t SPIR_V_MAGIC = 0x07230203U;
 
 constexpr ColorComponentFlags KNOWN_COLOR_COMPONENT_MASK =
         ColorComponent(EColorComponent::RED) | ColorComponent(EColorComponent::GREEN) |
@@ -45,7 +44,7 @@ void HashEnum(std::uint64_t& hash, Enum value) noexcept {
     HashIntegral(hash, static_cast<std::underlying_type_t<Enum>>(value));
 }
 
-void HashString(std::uint64_t& hash, const std::string& value) noexcept {
+void HashString(std::uint64_t& hash, std::string_view value) noexcept {
     HashIntegral(hash, value.size());
 
     for (const char character: value) {
@@ -55,12 +54,26 @@ void HashString(std::uint64_t& hash, const std::string& value) noexcept {
 }
 
 void HashShader(std::uint64_t& hash, const Shader& shader) noexcept {
-    HashEnum(hash, shader.GetStage());
-    HashEnum(hash, shader.GetArtifact().Format);
-    HashString(hash, shader.GetEntryPoint());
-    HashIntegral(hash, shader.GetArtifact().Words.size());
+    const NResources::ResourceIdentity& identity = shader.GetArtifactIdentity();
 
-    for (const std::uint32_t word: shader.GetArtifact().Words) {
+    HashIntegral(hash, shader.GetArtifactResource().GetSlotIndex());
+    HashIntegral(hash, shader.GetArtifactResource().GetGeneration());
+    HashString(hash, identity.GetResourceClass());
+    HashString(hash, identity.GetKey());
+    HashString(hash, shader.GetEntryPoint());
+
+    const std::shared_ptr<const NResources::ShaderArtifact>& artifact = shader.GetArtifact();
+
+    HashIntegral(hash, artifact != nullptr);
+
+    if (artifact == nullptr) {
+        return;
+    }
+
+    HashEnum(hash, artifact->GetStage());
+    HashIntegral(hash, artifact->GetWords().size());
+
+    for (const std::uint32_t word: artifact->GetWords()) {
         HashIntegral(hash, word);
     }
 }
@@ -82,6 +95,109 @@ void HashShader(std::uint64_t& hash, const Shader& shader) noexcept {
     }
 
     return 0;
+}
+
+void ValidateVertexInputRate(EVertexInputRate inputRate) {
+    switch (inputRate) {
+    case EVertexInputRate::VERTEX:
+    case EVertexInputRate::INSTANCE:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vertex input rate is invalid");
+}
+
+void ValidateTopology(EPrimitiveTopology topology) {
+    switch (topology) {
+    case EPrimitiveTopology::TRIANGLE_LIST:
+    case EPrimitiveTopology::TRIANGLE_STRIP:
+    case EPrimitiveTopology::LINE_LIST:
+    case EPrimitiveTopology::LINE_STRIP:
+    case EPrimitiveTopology::POINT_LIST:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline topology is invalid");
+}
+
+void ValidatePolygonMode(EPolygonMode polygonMode) {
+    switch (polygonMode) {
+    case EPolygonMode::FILL:
+    case EPolygonMode::LINE:
+    case EPolygonMode::POINT:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline polygon mode is invalid");
+}
+
+void ValidateCullMode(ECullMode cullMode) {
+    switch (cullMode) {
+    case ECullMode::NONE:
+    case ECullMode::FRONT:
+    case ECullMode::BACK:
+    case ECullMode::FRONT_AND_BACK:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline cull mode is invalid");
+}
+
+void ValidateFrontFace(EFrontFace frontFace) {
+    switch (frontFace) {
+    case EFrontFace::COUNTER_CLOCKWISE:
+    case EFrontFace::CLOCKWISE:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline front face is invalid");
+}
+
+void ValidateCompareOperation(ECompareOperation operation) {
+    switch (operation) {
+    case ECompareOperation::NEVER:
+    case ECompareOperation::LESS:
+    case ECompareOperation::EQUAL:
+    case ECompareOperation::LESS_OR_EQUAL:
+    case ECompareOperation::GREATER:
+    case ECompareOperation::NOT_EQUAL:
+    case ECompareOperation::GREATER_OR_EQUAL:
+    case ECompareOperation::ALWAYS:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline compare operation is invalid");
+}
+
+void ValidateBlendFactor(EBlendFactor factor) {
+    switch (factor) {
+    case EBlendFactor::ZERO:
+    case EBlendFactor::ONE:
+    case EBlendFactor::SOURCE_COLOR:
+    case EBlendFactor::ONE_MINUS_SOURCE_COLOR:
+    case EBlendFactor::DESTINATION_COLOR:
+    case EBlendFactor::ONE_MINUS_DESTINATION_COLOR:
+    case EBlendFactor::SOURCE_ALPHA:
+    case EBlendFactor::ONE_MINUS_SOURCE_ALPHA:
+    case EBlendFactor::DESTINATION_ALPHA:
+    case EBlendFactor::ONE_MINUS_DESTINATION_ALPHA:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline blend factor is invalid");
+}
+
+void ValidateBlendOperation(EBlendOperation operation) {
+    switch (operation) {
+    case EBlendOperation::ADD:
+    case EBlendOperation::SUBTRACT:
+    case EBlendOperation::REVERSE_SUBTRACT:
+    case EBlendOperation::MINIMUM:
+    case EBlendOperation::MAXIMUM:
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline blend operation is invalid");
 }
 
 [[nodiscard]] bool IsColorFormat(EPixelFormat format) noexcept {
@@ -106,17 +222,15 @@ void HashShader(std::uint64_t& hash, const Shader& shader) noexcept {
 }
 
 void ValidateShader(const Shader& shader) {
+    if (!shader.IsValid()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Shader resource snapshot is invalid");
+    }
+
     if (shader.GetEntryPoint().empty()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Shader entry point must not be empty");
     }
 
-    if (shader.GetArtifact().Format != EShaderArtifactFormat::SPIR_V) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Shader artifact format is not supported");
-    }
-
-    const std::vector<std::uint32_t>& words = shader.GetArtifact().Words;
-
-    if (words.size() < 5 || words.front() != SPIR_V_MAGIC) {
+    if (!NResources::IsValidSpirVArtifact(shader.GetArtifact()->GetWords())) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Shader artifact is not valid SPIR-V");
     }
 }
@@ -128,6 +242,8 @@ void ValidateVertexLayout(const VertexLayoutDescriptor& layout) {
         if (binding.StrideBytes == 0) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vertex binding stride must be greater than zero");
         }
+
+        ValidateVertexInputRate(binding.InputRate);
 
         if (!strides.emplace(binding.Binding, binding.StrideBytes).second) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vertex binding is duplicated");
@@ -172,6 +288,13 @@ void ValidateAttachments(const GraphicsPipelineDescriptor& descriptor) {
     }
 
     for (const BlendAttachmentDescriptor& blend: descriptor.ColorBlendAttachments) {
+        ValidateBlendFactor(blend.SourceColorFactor);
+        ValidateBlendFactor(blend.DestinationColorFactor);
+        ValidateBlendOperation(blend.ColorOperation);
+        ValidateBlendFactor(blend.SourceAlphaFactor);
+        ValidateBlendFactor(blend.DestinationAlphaFactor);
+        ValidateBlendOperation(blend.AlphaOperation);
+
         if ((blend.WriteMask & ~KNOWN_COLOR_COMPONENT_MASK) != 0) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Color write mask contains unknown flags");
         }
@@ -209,26 +332,28 @@ void ValidateGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descri
     for (const Shader& shader: descriptor.Shaders) {
         ValidateShader(shader);
 
-        switch (shader.GetStage()) {
-        case EShaderStage::VERTEX:
+        switch (shader.GetArtifact()->GetStage()) {
+        case NResources::EShaderStage::VERTEX:
             if (hasVertexShader) {
                 GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                                       "Graphics pipeline has duplicate vertex shader");
             }
 
             hasVertexShader = true;
-            break;
-        case EShaderStage::FRAGMENT:
+            continue;
+        case NResources::EShaderStage::FRAGMENT:
             if (hasFragmentShader) {
                 GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                                       "Graphics pipeline has duplicate fragment shader");
             }
 
             hasFragmentShader = true;
-            break;
-        case EShaderStage::COMPUTE:
+            continue;
+        case NResources::EShaderStage::COMPUTE:
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline cannot contain compute shader");
         }
+
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Shader stage is invalid");
     }
 
     if (!hasVertexShader || !hasFragmentShader) {
@@ -237,6 +362,11 @@ void ValidateGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descri
     }
 
     ValidateVertexLayout(descriptor.VertexLayout);
+    ValidateTopology(descriptor.Topology);
+    ValidatePolygonMode(descriptor.RasterState.PolygonMode);
+    ValidateCullMode(descriptor.RasterState.CullMode);
+    ValidateFrontFace(descriptor.RasterState.FrontFace);
+    ValidateCompareOperation(descriptor.DepthState.CompareOperation);
     ValidateAttachments(descriptor);
     ValidateSampleCount(descriptor.Samples);
 }
