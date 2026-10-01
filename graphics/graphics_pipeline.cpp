@@ -540,10 +540,12 @@ bool operator==(const VertexLayoutDescriptor& left, const VertexLayoutDescriptor
         return left.Bindings == right.Bindings && left.Attributes == right.Attributes;
     }
 
-    return std::ranges::all_of(left.Bindings, [&](const VertexBindingDescriptor& binding) {
-               const VertexBindingDescriptor* rightBinding = FindBinding(right.Bindings, binding.Binding);
-               return rightBinding != nullptr && binding == *rightBinding;
-           }) &&
+    return std::ranges::all_of(left.Bindings,
+                               [&](const VertexBindingDescriptor& binding) {
+                                   const VertexBindingDescriptor* rightBinding =
+                                           FindBinding(right.Bindings, binding.Binding);
+                                   return rightBinding != nullptr && binding == *rightBinding;
+                               }) &&
            std::ranges::all_of(left.Attributes, [&](const VertexAttributeDescriptor& attribute) {
                const VertexAttributeDescriptor* rightAttribute = FindAttribute(right.Attributes, attribute.Location);
                return rightAttribute != nullptr && attribute == *rightAttribute;
