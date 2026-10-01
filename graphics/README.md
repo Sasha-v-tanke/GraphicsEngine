@@ -14,7 +14,10 @@ SPIR-V artifact model. Resource unload therefore stops future acquisition withou
 that already retained its artifact snapshot.
 
 The descriptor contains resource-backed shaders, vertex input, topology, raster/depth/blend state, attachment formats,
-and sample count. Runtime shader compilation is outside the Graphics runtime contract.
+and sample count. Shader vector order does not affect pipeline identity; supported graphics stages are canonicalized by
+stage for equality and hashing. A vertex shader is required for the current primitive path. A fragment shader is
+required when color attachments are declared, while depth-only pipelines may omit it. Runtime shader compilation is
+outside the Graphics runtime contract.
 
 Pipeline compatibility is validated before backend creation. Invalid shader stages, backend-mapped enum values, vertex
 layouts, attachment formats, blend counts, depth configuration, and sample counts fail with a structured GraphicsEngine

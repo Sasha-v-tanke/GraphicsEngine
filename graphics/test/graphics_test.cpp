@@ -453,10 +453,28 @@ TEST_F(GraphicsTest, GraphicsPipelineDescriptorEqualityAndHashAreStable) {
     EXPECT_EQ(first, second);
     EXPECT_EQ(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
 
+    std::swap(second.Shaders[0], second.Shaders[1]);
+
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
+
     second.Topology = NGraphics::EPrimitiveTopology::LINE_LIST;
 
     EXPECT_NE(first, second);
     EXPECT_NE(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
+}
+
+TEST_F(GraphicsTest, AcceptsDepthOnlyGraphicsPipelineWithoutFragmentShader) {
+    NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+
+    descriptor.Shaders.pop_back();
+    descriptor.ColorAttachmentFormats.clear();
+    descriptor.ColorBlendAttachments.clear();
+    descriptor.DepthAttachmentFormat = NGraphics::EPixelFormat::D32_FLOAT;
+    descriptor.DepthState.TestEnabled = true;
+    descriptor.DepthState.WriteEnabled = true;
+
+    EXPECT_NO_THROW(NGraphics::ValidateGraphicsPipelineDescriptor(descriptor));
 }
 
 TEST_F(GraphicsTest, ShaderKeepsResourceIdentityAndArtifactSnapshot) {
@@ -546,11 +564,12 @@ TEST_F(GraphicsTest, RejectsUnknownGraphicsPipelineEnumValues) {
 }
 
 TEST_F(GraphicsTest, RejectsInvalidGraphicsPipelineDescriptors) {
-    NGraphics::GraphicsPipelineDescriptor missingFragment = MakeGraphicsPipelineDescriptor(m_resources);
-    missingFragment.Shaders.pop_back();
+    NGraphics::GraphicsPipelineDescriptor colorPipelineWithoutFragment =
+            MakeGraphicsPipelineDescriptor(m_resources);
+    colorPipelineWithoutFragment.Shaders.pop_back();
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                [&] { NGraphics::ValidateGraphicsPipelineDescriptor(missingFragment); });
+                [&] { NGraphics::ValidateGraphicsPipelineDescriptor(colorPipelineWithoutFragment); });
 
     NGraphics::GraphicsPipelineDescriptor invalidVertexLayout = MakeGraphicsPipelineDescriptor(m_resources);
     invalidVertexLayout.VertexLayout.Attributes[1].OffsetBytes = 16;

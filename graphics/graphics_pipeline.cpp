@@ -76,6 +76,80 @@ void HashShader(std::uint64_t& hash, const Shader& shader) noexcept {
     }
 }
 
+struct CanonicalShaderStages {
+    const Shader* Vertex = nullptr;
+    const Shader* Fragment = nullptr;
+    bool IsCanonical = true;
+};
+
+[[nodiscard]] CanonicalShaderStages GetCanonicalShaderStages(const std::vector<Shader>& shaders) noexcept {
+    CanonicalShaderStages stages;
+
+    for (const Shader& shader: shaders) {
+        const std::shared_ptr<const NResources::ShaderArtifact>& artifact = shader.GetArtifact();
+
+        if (artifact == nullptr) {
+            stages.IsCanonical = false;
+            return stages;
+        }
+
+        switch (artifact->GetStage()) {
+        case NResources::EShaderStage::VERTEX:
+            if (stages.Vertex != nullptr) {
+                stages.IsCanonical = false;
+                return stages;
+            }
+
+            stages.Vertex = &shader;
+            break;
+        case NResources::EShaderStage::FRAGMENT:
+            if (stages.Fragment != nullptr) {
+                stages.IsCanonical = false;
+                return stages;
+            }
+
+            stages.Fragment = &shader;
+            break;
+        case NResources::EShaderStage::COMPUTE:
+        default:
+            stages.IsCanonical = false;
+            return stages;
+        }
+    }
+
+    return stages;
+}
+
+[[nodiscard]] bool EqualOptionalShader(const Shader* left, const Shader* right) noexcept {
+    if (left == nullptr || right == nullptr) {
+        return left == right;
+    }
+
+    return *left == *right;
+}
+
+void HashOptionalShader(std::uint64_t& hash, const Shader* shader) noexcept {
+    HashIntegral(hash, shader != nullptr);
+
+    if (shader != nullptr) {
+        HashShader(hash, *shader);
+    }
+}
+
+[[nodiscard]] bool EqualShaderSequence(const std::vector<Shader>& left, const std::vector<Shader>& right) noexcept {
+    if (left.size() != right.size()) {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        if (left[index] != right[index]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 [[nodiscard]] std::uint32_t GetVertexFormatSize(EVertexFormat format) noexcept {
     switch (format) {
     case EVertexFormat::FLOAT32:
@@ -323,6 +397,27 @@ void ValidateSampleCount(ESampleCount samples) {
 
 } // namespace
 
+bool operator==(const GraphicsPipelineDescriptor& left, const GraphicsPipelineDescriptor& right) noexcept {
+    const CanonicalShaderStages leftStages = GetCanonicalShaderStages(left.Shaders);
+    const CanonicalShaderStages rightStages = GetCanonicalShaderStages(right.Shaders);
+
+    if (leftStages.IsCanonical != rightStages.IsCanonical) {
+        return false;
+    }
+
+    const bool shadersEqual =
+            leftStages.IsCanonical
+                    ? EqualOptionalShader(leftStages.Vertex, rightStages.Vertex) &&
+                              EqualOptionalShader(leftStages.Fragment, rightStages.Fragment)
+                    : EqualShaderSequence(left.Shaders, right.Shaders);
+
+    return shadersEqual && left.VertexLayout == right.VertexLayout && left.Topology == right.Topology &&
+           left.RasterState == right.RasterState && left.DepthState == right.DepthState &&
+           left.ColorAttachmentFormats == right.ColorAttachmentFormats &&
+           left.ColorBlendAttachments == right.ColorBlendAttachments &&
+           left.DepthAttachmentFormat == right.DepthAttachmentFormat && left.Samples == right.Samples;
+}
+
 void ValidateGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descriptor) {
     bool hasVertexShader = false;
     bool hasFragmentShader = false;
@@ -354,9 +449,13 @@ void ValidateGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descri
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Shader stage is invalid");
     }
 
-    if (!hasVertexShader || !hasFragmentShader) {
+    if (!hasVertexShader) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline requires a vertex shader");
+    }
+
+    if (!descriptor.ColorAttachmentFormats.empty() && !hasFragmentShader) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
-                              "Graphics pipeline requires one vertex and one fragment shader");
+                              "Graphics pipeline with color attachments requires a fragment shader");
     }
 
     ValidateVertexLayout(descriptor.VertexLayout);
@@ -371,11 +470,18 @@ void ValidateGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descri
 
 std::uint64_t HashGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descriptor) noexcept {
     std::uint64_t hash = HASH_OFFSET;
+    const CanonicalShaderStages stages = GetCanonicalShaderStages(descriptor.Shaders);
 
+    HashIntegral(hash, stages.IsCanonical);
     HashIntegral(hash, descriptor.Shaders.size());
 
-    for (const Shader& shader: descriptor.Shaders) {
-        HashShader(hash, shader);
+    if (stages.IsCanonical) {
+        HashOptionalShader(hash, stages.Vertex);
+        HashOptionalShader(hash, stages.Fragment);
+    } else {
+        for (const Shader& shader: descriptor.Shaders) {
+            HashShader(hash, shader);
+        }
     }
 
     HashIntegral(hash, descriptor.VertexLayout.Bindings.size());

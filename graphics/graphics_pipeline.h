@@ -195,7 +195,7 @@ struct GraphicsPipelineDescriptor {
     ESampleCount Samples = ESampleCount::X1;
 
     [[nodiscard]] friend bool operator==(const GraphicsPipelineDescriptor& left,
-                                         const GraphicsPipelineDescriptor& right) noexcept = default;
+                                         const GraphicsPipelineDescriptor& right) noexcept;
 };
 
 class GraphicsPipelineHandle {
