@@ -1,5 +1,6 @@
 #include "graphics_pipeline.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -539,23 +540,14 @@ bool operator==(const VertexLayoutDescriptor& left, const VertexLayoutDescriptor
         return left.Bindings == right.Bindings && left.Attributes == right.Attributes;
     }
 
-    for (const VertexBindingDescriptor& binding: left.Bindings) {
-        const VertexBindingDescriptor* rightBinding = FindBinding(right.Bindings, binding.Binding);
-
-        if (rightBinding == nullptr || binding != *rightBinding) {
-            return false;
-        }
-    }
-
-    for (const VertexAttributeDescriptor& attribute: left.Attributes) {
-        const VertexAttributeDescriptor* rightAttribute = FindAttribute(right.Attributes, attribute.Location);
-
-        if (rightAttribute == nullptr || attribute != *rightAttribute) {
-            return false;
-        }
-    }
-
-    return true;
+    return std::ranges::all_of(left.Bindings, [&](const VertexBindingDescriptor& binding) {
+               const VertexBindingDescriptor* rightBinding = FindBinding(right.Bindings, binding.Binding);
+               return rightBinding != nullptr && binding == *rightBinding;
+           }) &&
+           std::ranges::all_of(left.Attributes, [&](const VertexAttributeDescriptor& attribute) {
+               const VertexAttributeDescriptor* rightAttribute = FindAttribute(right.Attributes, attribute.Location);
+               return rightAttribute != nullptr && attribute == *rightAttribute;
+           });
 }
 
 bool operator==(const GraphicsPipelineDescriptor& left, const GraphicsPipelineDescriptor& right) noexcept {
