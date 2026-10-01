@@ -91,9 +91,8 @@ TEST(RenderWorld, RequiresDrawCheckpointBeforeExtraction) {
 
     const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
 
-    NTest::ExpectError(
-            NCommon::EError::INVALID_STATE,
-            [&] { static_cast<void>(NRenderer::NInternal::ExtractRenderWorld(world, resources, storage)); });
+    NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                       [&] { static_cast<void>(NRenderer::NInternal::ExtractRenderWorld(world, resources, storage)); });
 
     scheduler.SignalDraw(frame);
 
