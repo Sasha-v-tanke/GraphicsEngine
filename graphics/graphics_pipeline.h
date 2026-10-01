@@ -194,8 +194,7 @@ struct GraphicsPipelineDescriptor {
     EPixelFormat DepthAttachmentFormat = EPixelFormat::UNDEFINED;
     ESampleCount Samples = ESampleCount::X1;
 
-    friend bool operator==(const GraphicsPipelineDescriptor& left,
-                           const GraphicsPipelineDescriptor& right) noexcept;
+    friend bool operator==(const GraphicsPipelineDescriptor& left, const GraphicsPipelineDescriptor& right) noexcept;
 };
 
 class GraphicsPipelineHandle {
