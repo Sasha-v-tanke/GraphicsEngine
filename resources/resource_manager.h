@@ -14,6 +14,7 @@
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 #include <GraphicsEngine/resources/resource_handle.h>
 #include <GraphicsEngine/resources/resource_identity.h>
+#include <GraphicsEngine/resources/resource_lease.h>
 #include <GraphicsEngine/resources/resource_state.h>
 
 namespace NResources {
@@ -96,6 +97,26 @@ public:
     }
 
     template<typename T>
+    [[nodiscard]] std::optional<ResourceLease<T>> TryAcquire(ResourceHandle<T> handle) const {
+        if (!handle.IsValid()) {
+            return std::nullopt;
+        }
+
+        std::shared_lock lock{m_mutex};
+        const Entry& entry = ValidateUntyped(handle.m_ownerId, handle.m_slotIndex, handle.m_generation);
+
+        if (entry.State != EResourceState::READY || !entry.CpuResource) {
+            return std::nullopt;
+        }
+
+        return ResourceLease<T>{
+                handle,
+                entry.PublishedVersion,
+                std::static_pointer_cast<const T>(entry.CpuResource),
+        };
+    }
+
+    template<typename T>
     [[nodiscard]] std::optional<NCommon::ErrorInfo> GetFailure(ResourceHandle<T> handle) const {
         std::shared_lock lock{m_mutex};
         return GetFailure(Validate(handle, std::type_index{typeid(T)}));
@@ -118,6 +139,7 @@ private:
         std::uint64_t Generation = 0;
         std::uint64_t OperationGeneration = 0;
         std::uint64_t CancelledOperationGeneration = 0;
+        std::uint64_t PublishedVersion = 0;
         std::shared_ptr<const void> CpuResource;
         std::optional<NCommon::ErrorInfo> Failure;
     };

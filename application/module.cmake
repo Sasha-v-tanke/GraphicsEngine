@@ -16,6 +16,7 @@ PUBLIC_DEPENDS(
     Common
     Math
     Ecs
+    Renderer
 )
 
 PRIVATE_DEPENDS(

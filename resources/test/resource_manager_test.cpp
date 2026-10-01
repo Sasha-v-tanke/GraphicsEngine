@@ -136,6 +136,49 @@ TEST(ResourceManager, PublishesCpuResourceAfterLoading) {
     EXPECT_EQ(resources.GetCpuResource(shader)->Name, "basic");
 }
 
+TEST(ResourceManager, LeaseRetainsPublishedVersionAcrossReload) {
+    ResourceManager resources;
+
+    const auto shader = resources.Request<TestShaderArtifact>(ResourceIdentity{"shader", "versioned.vert.spv"});
+    const auto firstOperation = resources.BeginLoading(shader);
+    auto firstPayload = std::make_shared<TestShaderArtifact>(TestShaderArtifact{.Name = "first"});
+    std::weak_ptr<const TestShaderArtifact> firstPayloadLifetime = firstPayload;
+
+    resources.PublishReady(firstOperation, firstPayload);
+
+    std::optional<NResources::ResourceLease<TestShaderArtifact>> firstLease = resources.TryAcquire(shader);
+
+    ASSERT_TRUE(firstLease.has_value());
+    EXPECT_EQ(firstLease->GetResource(), shader);
+    EXPECT_EQ(firstLease->GetVersion(), 1);
+    EXPECT_EQ((*firstLease)->Name, "first");
+
+    firstPayload.reset();
+
+    resources.RequestUnload(shader);
+
+    EXPECT_FALSE(resources.TryAcquire(shader).has_value());
+    EXPECT_FALSE(firstPayloadLifetime.expired());
+
+    resources.CompleteUnload(shader);
+
+    const auto secondOperation = resources.BeginLoading(shader);
+
+    resources.PublishReady(secondOperation, std::make_shared<TestShaderArtifact>(TestShaderArtifact{.Name = "second"}));
+
+    std::optional<NResources::ResourceLease<TestShaderArtifact>> secondLease = resources.TryAcquire(shader);
+
+    ASSERT_TRUE(secondLease.has_value());
+    EXPECT_NE(firstLease->GetVersion(), secondLease->GetVersion());
+    EXPECT_EQ((*firstLease)->Name, "first");
+    EXPECT_EQ((*secondLease)->Name, "second");
+    EXPECT_FALSE(firstPayloadLifetime.expired());
+
+    firstLease.reset();
+
+    EXPECT_TRUE(firstPayloadLifetime.expired());
+}
+
 TEST(ResourceManager, SupportsConcurrentStateObservation) {
     ResourceManager resources;
 

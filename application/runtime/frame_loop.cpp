@@ -61,6 +61,10 @@ void FrameLoop::Stop() noexcept {
 
 void FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
+        if (!m_engine->CanAcceptUpdate()) {
+            return;
+        }
+
         callbacks.OnUpdate();
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
     }

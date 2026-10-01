@@ -3,6 +3,7 @@ MODULE(Resources)
 API(
     resource_handle.h
     resource_identity.h
+    resource_lease.h
     resource_manager.h
     resource_state.h
     shader_artifact.h

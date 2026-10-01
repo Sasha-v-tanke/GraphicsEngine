@@ -204,6 +204,73 @@ private:
     bool m_firstDrawFinished = false;
 };
 
+class BlockingExtractionFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ++m_updateCount;
+    }
+
+    void Extract(const NEngine::NRuntime::FrameContext&) override {
+        {
+            std::lock_guard lock{m_mutex};
+            m_extractionEntered = true;
+        }
+
+        m_condition.notify_all();
+
+        std::unique_lock lock{m_mutex};
+        m_condition.wait(lock, [this] { return m_finishExtraction; });
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+    }
+
+    [[nodiscard]] bool WaitExtractionEntered(std::chrono::milliseconds timeout) {
+        std::unique_lock lock{m_mutex};
+        return m_condition.wait_for(lock, timeout, [this] { return m_extractionEntered; });
+    }
+
+    void FinishExtraction() {
+        {
+            std::lock_guard lock{m_mutex};
+            m_finishExtraction = true;
+        }
+
+        m_condition.notify_all();
+    }
+
+    [[nodiscard]] int GetUpdateCount() const noexcept {
+        return m_updateCount;
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    int m_updateCount = 0;
+    bool m_extractionEntered = false;
+    bool m_finishExtraction = false;
+};
+
+class FinishExtractionGuard final {
+public:
+    explicit FinishExtractionGuard(BlockingExtractionFrameRuntime& runtime) noexcept
+        : m_runtime(&runtime) {
+    }
+
+    ~FinishExtractionGuard() {
+        if (m_runtime != nullptr) {
+            m_runtime->FinishExtraction();
+        }
+    }
+
+    void Release() noexcept {
+        m_runtime = nullptr;
+    }
+
+private:
+    BlockingExtractionFrameRuntime* m_runtime = nullptr;
+};
+
 class FinishUpdateGuard final {
 public:
     explicit FinishUpdateGuard(BlockingFrameRuntime& runtime) noexcept
@@ -413,6 +480,7 @@ TEST(Engine, WraparoundWaitsForNextMappedSlotRecycle) {
     runtimeRef.FinishFirstDraw();
     finishFirstDrawGuard.Release();
     EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
+    EXPECT_TRUE(runtimeRef.WaitDrawCountAtLeast(2, 2s));
 
     EXPECT_TRUE(engine->Update());
     EXPECT_TRUE(engine->Draw());
@@ -447,6 +515,47 @@ TEST(Engine, KeepsCompletedFrameActiveUntilDrawTaskReturns) {
 
     EXPECT_TRUE(engine->Update());
     EXPECT_TRUE(engine->Draw());
+
+    engine->Stop();
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(Engine, OpensNextUpdateOnlyAfterExtraction) {
+    auto runtime = std::make_unique<BlockingExtractionFrameRuntime>();
+    BlockingExtractionFrameRuntime& runtimeRef = *runtime;
+
+    std::unique_ptr<NEngine::Engine> engine = NEngine::NRuntime::EngineFactory::Create(
+            NEngine::EngineConfig{
+                    .MaxActiveFrames = 2,
+                    .WorkerCount = 2,
+            },
+            std::move(runtime));
+
+    engine->Start();
+
+    EXPECT_TRUE(engine->Update());
+    EXPECT_TRUE(engine->Draw());
+
+    FinishExtractionGuard finishExtractionGuard{runtimeRef};
+    ASSERT_TRUE(runtimeRef.WaitExtractionEntered(2s));
+    EXPECT_EQ(runtimeRef.GetUpdateCount(), 1);
+    EXPECT_FALSE(engine->Update());
+
+    runtimeRef.FinishExtraction();
+    finishExtractionGuard.Release();
+
+    bool admitted = false;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+
+    while (!admitted && std::chrono::steady_clock::now() < deadline) {
+        admitted = engine->Update();
+
+        if (!admitted) {
+            std::this_thread::yield();
+        }
+    }
+
+    EXPECT_TRUE(admitted);
 
     engine->Stop();
     EXPECT_FALSE(engine->GetLastError().has_value());
