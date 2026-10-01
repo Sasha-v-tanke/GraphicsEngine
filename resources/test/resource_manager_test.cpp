@@ -221,6 +221,40 @@ TEST(ShaderArtifactLoader, FailsInvalidArtifact) {
     std::filesystem::remove(path);
 }
 
+TEST(ShaderArtifactLoader, RejectsInvalidVersionEncoding) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-invalid-version-shader.spv");
+    WriteWords(path, {0x07230203, 0xFFFFFFFF, 0, 1, 0});
+
+    ResourceManager resources;
+
+    const auto shader = NResources::LoadShaderArtifact(resources,
+                                                       ResourceIdentity{"shader", "invalid-version"},
+                                                       path,
+                                                       EShaderStage::FRAGMENT);
+
+    EXPECT_EQ(resources.GetState(shader), EResourceState::FAILED);
+    EXPECT_FALSE(resources.GetCpuResource(shader));
+
+    std::filesystem::remove(path);
+}
+
+TEST(ShaderArtifactLoader, RejectsNonZeroSchema) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-non-zero-schema-shader.spv");
+    WriteWords(path, {0x07230203, 0x00010000, 0, 1, 1});
+
+    ResourceManager resources;
+
+    const auto shader = NResources::LoadShaderArtifact(resources,
+                                                       ResourceIdentity{"shader", "non-zero-schema"},
+                                                       path,
+                                                       EShaderStage::FRAGMENT);
+
+    EXPECT_EQ(resources.GetState(shader), EResourceState::FAILED);
+    EXPECT_FALSE(resources.GetCpuResource(shader));
+
+    std::filesystem::remove(path);
+}
+
 TEST(ShaderArtifactLoader, FailsMissingArtifact) {
     const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-missing-shader.spv");
     std::filesystem::remove(path);

@@ -13,6 +13,7 @@ namespace {
 
 constexpr std::uint32_t SPIR_V_MAGIC = 0x07230203;
 constexpr std::size_t SPIR_V_HEADER_WORDS = 5;
+constexpr std::uint32_t SPIR_V_VERSION_RESERVED_MASK = 0xFF00'00FF;
 
 [[nodiscard]] std::string
 MakeShaderErrorMessage(const ResourceIdentity& identity, const std::filesystem::path& path, const std::string& reason) {
@@ -56,7 +57,14 @@ void FailShaderLoad(ResourceManager& resources,
 } // namespace
 
 bool IsValidSpirVArtifact(const std::vector<std::uint32_t>& words) noexcept {
-    return words.size() >= SPIR_V_HEADER_WORDS && words[0] == SPIR_V_MAGIC && words[1] != 0 && words[3] != 0;
+    if (words.size() < SPIR_V_HEADER_WORDS || words[0] != SPIR_V_MAGIC || words[3] == 0 || words[4] != 0) {
+        return false;
+    }
+
+    const std::uint32_t version = words[1];
+    const std::uint32_t major = (version >> 16U) & 0xFFU;
+
+    return (version & SPIR_V_VERSION_RESERVED_MASK) == 0 && major != 0;
 }
 
 ResourceHandle<ShaderArtifact> LoadShaderArtifact(ResourceManager& resources,
