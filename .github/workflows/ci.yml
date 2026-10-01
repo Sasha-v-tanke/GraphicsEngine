@@ -143,6 +143,7 @@ jobs:
           brew install \
             glm \
             glfw \
+            molten-vk \
             vulkan-volk \
             googletest
 

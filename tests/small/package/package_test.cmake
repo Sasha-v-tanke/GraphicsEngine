@@ -203,6 +203,7 @@ set(
     "GraphicsEngine/ecs/entity.h"
     "GraphicsEngine/ecs/system_access.h"
     "GraphicsEngine/ecs/world.h"
+    "GraphicsEngine/graphics/buffer.h"
     "GraphicsEngine/graphics/completion_point.h"
     "GraphicsEngine/graphics/frame_submission.h"
     "GraphicsEngine/graphics/graphics.h"
