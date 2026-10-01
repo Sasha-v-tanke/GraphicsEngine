@@ -1,4 +1,5 @@
 #include "image_loader.h"
+#include "image_loader_internal.h"
 
 #include <algorithm>
 #include <fstream>
@@ -39,10 +40,6 @@ MakeImageErrorMessage(const ResourceIdentity& identity, const std::filesystem::p
     };
 }
 
-[[nodiscard]] bool CanPassImageByteSizeToStb(std::uintmax_t byteSize) noexcept {
-    return byteSize <= static_cast<std::uintmax_t>(std::numeric_limits<int>::max());
-}
-
 void FailImageLoad(ResourceManager& resources,
                    ResourceOperation<ImageData> operation,
                    const ResourceIdentity& identity,
@@ -71,7 +68,7 @@ LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::file
         return handle;
     }
 
-    if (!CanPassImageByteSizeToStb(fileSize)) {
+    if (fileSize > static_cast<std::uintmax_t>(std::numeric_limits<int>::max())) {
         FailImageLoad(resources, operation, failureIdentity, path, "image data exceeds stb_image size limit");
         return handle;
     }
@@ -80,6 +77,11 @@ LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::file
 
     if (bytes.empty()) {
         FailImageLoad(resources, operation, failureIdentity, path, "missing or unreadable image data");
+        return handle;
+    }
+
+    if (!NImageLoaderInternal::CanPassImageByteSizeToStb(bytes.size())) {
+        FailImageLoad(resources, operation, failureIdentity, path, "image data exceeds stb_image size limit");
         return handle;
     }
 

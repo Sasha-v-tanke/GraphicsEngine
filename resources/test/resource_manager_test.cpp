@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 #include <resources/image_loader.h>
+#include <resources/image_loader_internal.h>
 #include <resources/resource_manager.h>
 #include <resources/shader_artifact_loader.h>
 #include <tests/common/test_error.h>
@@ -582,6 +583,13 @@ TEST(ImageLoader, RejectsOversizedImageBeforeReading) {
     EXPECT_FALSE(resources.GetCpuResource(image));
 
     std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, RejectsOversizedReadBufferBeforeStbCast) {
+    EXPECT_TRUE(NResources::NImageLoaderInternal::CanPassImageByteSizeToStb(
+            static_cast<std::size_t>(std::numeric_limits<int>::max())));
+    EXPECT_FALSE(NResources::NImageLoaderInternal::CanPassImageByteSizeToStb(
+            static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1U));
 }
 
 } // namespace
