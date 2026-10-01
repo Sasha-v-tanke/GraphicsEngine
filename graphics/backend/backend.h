@@ -18,7 +18,7 @@ public:
     [[nodiscard]] virtual std::uint64_t SubmitFrame(const FrameSubmission& submission) = 0;
     [[nodiscard]] virtual bool IsCompleted(std::uint64_t completionValue) const = 0;
     [[nodiscard]] virtual std::uint64_t CreateBuffer(const BufferDescriptor& descriptor) = 0;
-    virtual void DestroyBuffer(std::uint64_t bufferValue, std::optional<std::uint64_t> completedAfter) = 0;
+    virtual void DestroyBuffer(std::uint64_t bufferValue, std::optional<std::uint64_t> completedAfter) noexcept = 0;
 };
 
 } // namespace NGraphics::NBackend

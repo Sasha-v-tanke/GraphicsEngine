@@ -31,10 +31,7 @@ public:
 
     ~BufferCreationGuard() noexcept {
         if (m_active) {
-            try {
-                m_backend.DestroyBuffer(m_value, std::nullopt);
-            } catch (...) {
-            }
+            m_backend.DestroyBuffer(m_value, std::nullopt);
         }
     }
 

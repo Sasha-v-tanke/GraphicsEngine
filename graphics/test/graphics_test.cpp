@@ -27,7 +27,6 @@ struct FakeGraphicsState {
     std::uint64_t NextBuffer = 1;
     std::uint64_t NextCompletion = 1;
     std::uint64_t CompletedValue = 0;
-    bool ThrowOnDestroyBuffer = false;
 };
 
 thread_local FakeGraphicsState* g_fakeGraphicsState = nullptr;
@@ -61,11 +60,7 @@ public:
         return m_state.NextBuffer++;
     }
 
-    void DestroyBuffer(std::uint64_t bufferValue, std::optional<std::uint64_t> completedAfter) override {
-        if (m_state.ThrowOnDestroyBuffer) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected buffer destroy failure");
-        }
-
+    void DestroyBuffer(std::uint64_t bufferValue, std::optional<std::uint64_t> completedAfter) noexcept override {
         m_state.DestroyedBuffers.emplace_back(bufferValue, completedAfter);
     }
 
@@ -311,27 +306,6 @@ TEST_F(GraphicsTest, RollsBackBackendBufferWhenPublicationFails) {
     EXPECT_EQ(m_state.DestroyedBuffers[0].first, first.GetValue());
     EXPECT_FALSE(m_state.DestroyedBuffers[0].second.has_value());
     EXPECT_EQ(graphics.GetBufferDescriptor(first).SizeBytes, 32U);
-}
-
-TEST_F(GraphicsTest, KeepsBufferTrackedWhenBackendDestroyFails) {
-    NGraphics::Graphics graphics = CreateGraphics();
-
-    const NGraphics::BufferHandle buffer = graphics.CreateBuffer({
-            .SizeBytes = 128,
-            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Storage),
-            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
-    });
-
-    m_state.ThrowOnDestroyBuffer = true;
-
-    ExpectError(NCommon::EError::INVALID_STATE, [&] { graphics.DestroyBuffer(buffer); });
-    EXPECT_EQ(graphics.GetBufferDescriptor(buffer).SizeBytes, 128U);
-
-    m_state.ThrowOnDestroyBuffer = false;
-    graphics.DestroyBuffer(buffer);
-
-    ASSERT_EQ(m_state.DestroyedBuffers.size(), 1U);
-    EXPECT_EQ(m_state.DestroyedBuffers[0].first, buffer.GetValue());
 }
 
 TEST_F(GraphicsTest, ReturnsBufferDescriptorByValue) {
