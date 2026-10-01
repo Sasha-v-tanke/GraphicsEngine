@@ -56,8 +56,6 @@ void HashString(std::uint64_t& hash, std::string_view value) noexcept {
 void HashShader(std::uint64_t& hash, const Shader& shader) noexcept {
     const NResources::ResourceIdentity& identity = shader.GetArtifactIdentity();
 
-    HashIntegral(hash, shader.GetArtifactResource().GetSlotIndex());
-    HashIntegral(hash, shader.GetArtifactResource().GetGeneration());
     HashString(hash, identity.GetResourceClass());
     HashString(hash, identity.GetKey());
     HashString(hash, shader.GetEntryPoint());

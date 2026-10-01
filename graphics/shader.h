@@ -45,9 +45,7 @@ public:
     }
 
     [[nodiscard]] friend bool operator==(const Shader& left, const Shader& right) noexcept {
-        if (left.m_artifactResource != right.m_artifactResource ||
-            left.m_artifactIdentity != right.m_artifactIdentity ||
-            left.m_entryPoint != right.m_entryPoint) {
+        if (left.m_artifactIdentity != right.m_artifactIdentity || left.m_entryPoint != right.m_entryPoint) {
             return false;
         }
 

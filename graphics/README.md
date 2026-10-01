@@ -20,9 +20,10 @@ Pipeline compatibility is validated before backend creation. Invalid shader stag
 layouts, attachment formats, blend counts, depth configuration, and sample counts fail with a structured GraphicsEngine
 error.
 
-The descriptor hash includes shader resource identity, resource-handle generation, entry point, and the retained artifact
-contents together with all fixed-function pipeline state. Republishing different cooked shader contents therefore
-produces a different pipeline key even when the logical resource handle remains the same.
+The descriptor hash includes canonical shader resource identity, entry point, and the retained artifact contents
+together with all fixed-function pipeline state. It does not depend on runtime resource slots. Republishing different
+cooked shader contents therefore produces a different pipeline key even when the logical resource handle remains the
+same.
 
 ## Backend boundary
 
