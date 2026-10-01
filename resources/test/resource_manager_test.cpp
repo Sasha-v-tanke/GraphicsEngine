@@ -1,3 +1,4 @@
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -6,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -61,6 +63,42 @@ TEST(ResourceManager, CoalescesDuplicateIdentity) {
     EXPECT_EQ(first, second);
 }
 
+TEST(ResourceManager, CoalescesNormalizedPathAliases) {
+    ResourceManager resources;
+
+    const auto first = resources.Request<TestShaderArtifact>(
+            ResourceIdentity::FromPath("shader", std::filesystem::path{"shaders"} / "basic.vert.spv"));
+    const auto second = resources.Request<TestShaderArtifact>(
+            ResourceIdentity::FromPath("shader",
+                                       std::filesystem::path{"shaders"} / "." / "variants" / ".." / "basic.vert.spv"));
+
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(resources.GetIdentity(first).GetKey(), std::string_view{"shaders/basic.vert.spv"});
+}
+
+TEST(ResourceManager, CoalescesConcurrentDuplicateRequests) {
+    constexpr std::size_t REQUEST_COUNT = 8;
+
+    ResourceManager resources;
+    std::array<NResources::ResourceHandle<TestShaderArtifact>, REQUEST_COUNT> handles;
+    std::array<std::thread, REQUEST_COUNT> threads;
+
+    for (std::size_t index = 0; index < REQUEST_COUNT; ++index) {
+        threads[index] = std::thread{[&, index] {
+            handles[index] =
+                    resources.Request<TestShaderArtifact>(ResourceIdentity{"shader", "concurrent-basic.vert.spv"});
+        }};
+    }
+
+    for (std::thread& thread: threads) {
+        thread.join();
+    }
+
+    for (std::size_t index = 1; index < REQUEST_COUNT; ++index) {
+        EXPECT_EQ(handles[0], handles[index]);
+    }
+}
+
 TEST(ResourceManager, ReturnsIdentityByStableValue) {
     ResourceManager resources;
 
@@ -96,6 +134,31 @@ TEST(ResourceManager, PublishesCpuResourceAfterLoading) {
     ASSERT_EQ(resources.GetState(shader), EResourceState::READY);
     ASSERT_TRUE(resources.GetCpuResource(shader));
     EXPECT_EQ(resources.GetCpuResource(shader)->Name, "basic");
+}
+
+TEST(ResourceManager, SupportsConcurrentStateObservation) {
+    ResourceManager resources;
+
+    const auto shader = resources.Request<TestShaderArtifact>(ResourceIdentity{"shader", "observed.vert.spv"});
+
+    std::thread observer{[&] {
+        for (int iteration = 0; iteration < 256; ++iteration) {
+            static_cast<void>(resources.GetState(shader));
+            static_cast<void>(resources.GetIdentity(shader));
+            static_cast<void>(resources.GetCpuResource(shader));
+        }
+    }};
+
+    for (int iteration = 0; iteration < 256; ++iteration) {
+        const auto operation = resources.BeginLoading(shader);
+        resources.PublishReady(operation, std::make_shared<TestShaderArtifact>());
+        resources.RequestUnload(shader);
+        resources.CompleteUnload(shader);
+    }
+
+    observer.join();
+
+    EXPECT_EQ(resources.GetState(shader), EResourceState::UNLOADED);
 }
 
 TEST(ResourceManager, ValidatesLegalTransitions) {
@@ -141,6 +204,8 @@ TEST(ResourceManager, RetryInvalidatesStaleOperation) {
     const auto retryOperation = resources.BeginLoading(shader);
 
     EXPECT_NE(firstOperation.GetGeneration(), retryOperation.GetGeneration());
+    EXPECT_FALSE(resources.IsCancellationRequested(firstOperation));
+    EXPECT_FALSE(resources.IsCancellationRequested(retryOperation));
 
     ExpectError(NCommon::EError::INVALID_STATE,
                 [&] { resources.PublishReady(firstOperation, std::make_shared<TestShaderArtifact>()); });
@@ -151,13 +216,18 @@ TEST(ResourceManager, RetryInvalidatesStaleOperation) {
     EXPECT_FALSE(resources.GetFailure(shader).has_value());
 }
 
-TEST(ResourceManager, UnloadInvalidatesInFlightOperation) {
+TEST(ResourceManager, UnloadRequestsCancellationForInFlightOperation) {
     ResourceManager resources;
 
     const auto shader = resources.Request<TestShaderArtifact>(ResourceIdentity{"shader", "basic.vert.spv"});
     const auto operation = resources.BeginLoading(shader);
 
+    EXPECT_FALSE(resources.IsCancellationRequested(operation));
+
     resources.RequestUnload(shader);
+
+    EXPECT_EQ(resources.GetState(shader), EResourceState::UNLOADING);
+    EXPECT_TRUE(resources.IsCancellationRequested(operation));
 
     ExpectError(NCommon::EError::INVALID_STATE,
                 [&] { resources.PublishReady(operation, std::make_shared<TestShaderArtifact>()); });
@@ -165,6 +235,11 @@ TEST(ResourceManager, UnloadInvalidatesInFlightOperation) {
     resources.CompleteUnload(shader);
 
     EXPECT_EQ(resources.GetState(shader), EResourceState::UNLOADED);
+    EXPECT_TRUE(resources.IsCancellationRequested(operation));
+
+    const auto nextOperation = resources.BeginLoading(shader);
+
+    EXPECT_FALSE(resources.IsCancellationRequested(nextOperation));
 }
 
 TEST(ResourceManager, RejectsStaleHandleAfterForget) {
