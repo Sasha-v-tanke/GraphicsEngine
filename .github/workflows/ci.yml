@@ -149,7 +149,7 @@ jobs:
 
       - name: Configure Vulkan runtime
         run: |
-          echo "VK_ICD_FILENAMES=$(brew --prefix molten-vk)/share/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
 
       - name: Run heavy tests
         run: ./tests/test_heavy.sh
