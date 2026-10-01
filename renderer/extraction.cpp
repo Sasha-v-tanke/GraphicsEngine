@@ -39,15 +39,14 @@ public:
                                                   const RenderView* views,
                                                   std::size_t viewCount,
                                                   const RenderObject* objects,
-                                                  std::size_t objectCount) noexcept {
+                                                  std::size_t objectCount) {
         void* storage = memory.allocate(sizeof(RenderWorld), alignof(RenderWorld));
 
         return *::new (storage) RenderWorld{frame, views, viewCount, objects, objectCount};
     }
 };
 
-const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
-                                      const NEngine::NController::FrameStorage& storage) {
+const RenderWorld& ExtractRenderWorld(const NEcs::World& world, const NEngine::NController::FrameStorage& storage) {
     static_assert(std::is_trivially_destructible_v<RenderView>);
     static_assert(std::is_trivially_destructible_v<RenderObject>);
     static_assert(std::is_trivially_destructible_v<RenderWorld>);
@@ -95,18 +94,17 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
 
     const NEngine::NController::FrameHandle frame = storage.GetFrame();
 
-    return RenderWorldBuilder::Build(
-            memory,
-            RenderFrameIdentity{
-                    .ApplicationFrameIndex = frame.GetApplicationFrameIndex(),
-                    .SimulationIndex = frame.GetSimulationIndex(),
-                    .FrameSlotIndex = frame.GetFrameSlotIndex(),
-                    .Generation = frame.GetGeneration(),
-            },
-            views,
-            viewCount,
-            objects,
-            objectCount);
+    return RenderWorldBuilder::Build(memory,
+                                     RenderFrameIdentity{
+                                             .ApplicationFrameIndex = frame.GetApplicationFrameIndex(),
+                                             .SimulationIndex = frame.GetSimulationIndex(),
+                                             .FrameSlotIndex = frame.GetFrameSlotIndex(),
+                                             .Generation = frame.GetGeneration(),
+                                     },
+                                     views,
+                                     viewCount,
+                                     objects,
+                                     objectCount);
 }
 
 } // namespace NRenderer::NInternal
