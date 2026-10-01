@@ -1,5 +1,6 @@
+#include <cstdint>
 #include <memory>
-#include <string>
+#include <vector>
 
 #include <GraphicsEngine/application/application_config.h>
 #include <GraphicsEngine/ecs/world.h>
@@ -8,12 +9,9 @@
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/resources/resource_manager.h>
+#include <GraphicsEngine/resources/shader_artifact_loader.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
-
-struct ShaderArtifact {
-    std::string Name;
-};
 
 int main() {
     NWindow::WindowRuntime runtime;
@@ -54,15 +52,21 @@ int main() {
         return 1;
     }
 
-    const auto shader = resources.Request<ShaderArtifact>(NResources::ResourceIdentity{"shader", "package.spv"});
+    const auto shader =
+            resources.Request<NResources::ShaderArtifact>(NResources::ResourceIdentity{"shader", "package.spv"});
     const auto operation = resources.BeginLoading(shader);
+    const bool validSpirV = NResources::IsValidSpirVArtifact({0x07230203, 0x00010000, 0, 1, 0});
 
-    resources.PublishReady(operation, std::make_shared<ShaderArtifact>(ShaderArtifact{.Name = "package"}));
+    resources.PublishReady(
+            operation,
+            std::make_shared<NResources::ShaderArtifact>(NResources::EShaderStage::VERTEX,
+                                                         std::vector<std::uint32_t>{0x07230203, 0x00010000, 0, 1, 0}));
 
-    const std::shared_ptr<const ShaderArtifact> artifact = resources.GetCpuResource(shader);
+    const std::shared_ptr<const NResources::ShaderArtifact> artifact = resources.GetCpuResource(shader);
 
     return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F &&
-                           world.IsAlive(entity) && artifact && artifact->Name == "package"
+                           world.IsAlive(entity) && artifact && validSpirV &&
+                           artifact->GetStage() == NResources::EShaderStage::VERTEX
                  ? 0
                  : 1;
 }

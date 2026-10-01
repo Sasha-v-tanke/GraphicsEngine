@@ -223,6 +223,8 @@ set(
     "GraphicsEngine/resources/resource_identity.h"
     "GraphicsEngine/resources/resource_manager.h"
     "GraphicsEngine/resources/resource_state.h"
+    "GraphicsEngine/resources/shader_artifact.h"
+    "GraphicsEngine/resources/shader_artifact_loader.h"
     "GraphicsEngine/window/window.h"
     "GraphicsEngine/window/window_config.h"
     "GraphicsEngine/window/window_runtime.h"
