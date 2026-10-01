@@ -89,9 +89,9 @@ EvaluateVulkanPhysicalDevice(const VulkanPhysicalDeviceCapabilities& capabilitie
 MakeVulkanPhysicalDeviceSelectionPlan(const std::vector<VulkanPhysicalDeviceCapabilities>& candidates,
                                       const VulkanPhysicalDeviceRequirements& requirements = {});
 
-[[nodiscard]] VulkanPhysicalDeviceSelection SelectVulkanPhysicalDevice(
-        const VulkanInstance& instance,
-        VkSurfaceKHR surface,
-        const VulkanPhysicalDeviceRequirements& requirements = {});
+[[nodiscard]] VulkanPhysicalDeviceSelection
+SelectVulkanPhysicalDevice(const VulkanInstance& instance,
+                           VkSurfaceKHR surface,
+                           const VulkanPhysicalDeviceRequirements& requirements = {});
 
 } // namespace NVulkan

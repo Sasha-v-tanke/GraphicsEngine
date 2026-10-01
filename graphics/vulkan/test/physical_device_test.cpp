@@ -12,9 +12,8 @@
 
 namespace {
 
-NVulkan::VulkanPhysicalDeviceCapabilities MakeSuitableDevice(std::string name,
-                                                             NVulkan::EVulkanPhysicalDeviceType type,
-                                                             std::uint8_t uuidByte) {
+NVulkan::VulkanPhysicalDeviceCapabilities
+MakeSuitableDevice(std::string name, NVulkan::EVulkanPhysicalDeviceType type, std::uint8_t uuidByte) {
     NVulkan::VulkanPhysicalDeviceCapabilities capabilities{
             .Name = std::move(name),
             .ApiVersion = VK_API_VERSION_1_3,
@@ -48,9 +47,8 @@ NVulkan::VulkanPhysicalDeviceCapabilities MakeSuitableDevice(std::string name,
 }
 
 bool HasReason(const NVulkan::VulkanPhysicalDeviceEvaluation& evaluation, std::string_view value) {
-    return std::ranges::any_of(evaluation.RejectionReasons, [value](const std::string& reason) {
-        return reason.find(value) != std::string::npos;
-    });
+    return std::ranges::any_of(evaluation.RejectionReasons,
+                               [value](const std::string& reason) { return reason.find(value) != std::string::npos; });
 }
 
 TEST(VulkanPhysicalDeviceEvaluation, ReportsAllMissingRequirements) {
@@ -115,8 +113,7 @@ TEST(VulkanPhysicalDeviceSelection, SelectsHighestScoringSuitableDevice) {
     discrete.MaxImageDimension2D = 4096;
 
     const std::vector<NVulkan::VulkanPhysicalDeviceCapabilities> candidates = {integrated, discrete};
-    const NVulkan::VulkanPhysicalDeviceSelectionPlan plan =
-            NVulkan::MakeVulkanPhysicalDeviceSelectionPlan(candidates);
+    const NVulkan::VulkanPhysicalDeviceSelectionPlan plan = NVulkan::MakeVulkanPhysicalDeviceSelectionPlan(candidates);
 
     EXPECT_EQ(plan.CandidateIndex, 1U);
     EXPECT_GT(plan.Score, 0U);

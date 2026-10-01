@@ -148,6 +148,7 @@ EVulkanPhysicalDeviceType ConvertDeviceType(VkPhysicalDeviceType type) {
     case VK_PHYSICAL_DEVICE_TYPE_CPU:
         return EVulkanPhysicalDeviceType::CPU;
     case VK_PHYSICAL_DEVICE_TYPE_OTHER:
+    case VK_PHYSICAL_DEVICE_TYPE_MAX_ENUM:
         return EVulkanPhysicalDeviceType::OTHER;
     }
 
