@@ -156,30 +156,42 @@ EVulkanPhysicalDeviceType ConvertDeviceType(VkPhysicalDeviceType type) {
 }
 
 std::vector<std::string> EnumerateDeviceExtensions(VkPhysicalDevice device) {
-    std::uint32_t count = 0;
-    VkResult result = vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to enumerate Vulkan device extensions: {}",
-                              GetVkResultName(result));
+    while (true) {
+        std::uint32_t count = 0;
+        VkResult result = vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to enumerate Vulkan device extensions: {}",
+                                  GetVkResultName(result));
+        }
+
+        if (count == 0) {
+            return {};
+        }
+
+        std::vector<VkExtensionProperties> properties(count);
+        result = vkEnumerateDeviceExtensionProperties(device, nullptr, &count, properties.data());
+        if (result == VK_INCOMPLETE) {
+            continue;
+        }
+
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to read Vulkan device extensions: {}",
+                                  GetVkResultName(result));
+        }
+
+        properties.resize(count);
+
+        std::vector<std::string> extensions;
+        extensions.reserve(properties.size());
+
+        for (const VkExtensionProperties& property: properties) {
+            extensions.emplace_back(property.extensionName);
+        }
+
+        return extensions;
     }
-
-    std::vector<VkExtensionProperties> properties(count);
-    result = vkEnumerateDeviceExtensionProperties(device, nullptr, &count, properties.data());
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan device extensions: {}",
-                              GetVkResultName(result));
-    }
-
-    std::vector<std::string> extensions;
-    extensions.reserve(count);
-
-    for (const VkExtensionProperties& property: properties) {
-        extensions.emplace_back(property.extensionName);
-    }
-
-    return extensions;
 }
 
 VulkanPhysicalDeviceFeatures ReadDeviceFeatures(VkPhysicalDevice device) {
@@ -279,27 +291,34 @@ VulkanPhysicalDeviceCapabilities ReadDeviceCapabilities(VkPhysicalDevice device,
 }
 
 std::vector<VkPhysicalDevice> EnumeratePhysicalDevices(VkInstance instance) {
-    std::uint32_t count = 0;
-    VkResult result = vkEnumeratePhysicalDevices(instance, &count, nullptr);
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to enumerate Vulkan physical devices: {}",
-                              GetVkResultName(result));
-    }
+    while (true) {
+        std::uint32_t count = 0;
+        VkResult result = vkEnumeratePhysicalDevices(instance, &count, nullptr);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to enumerate Vulkan physical devices: {}",
+                                  GetVkResultName(result));
+        }
 
-    if (count == 0) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "No Vulkan physical devices are available");
-    }
+        if (count == 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "No Vulkan physical devices are available");
+        }
 
-    std::vector<VkPhysicalDevice> devices(count);
-    result = vkEnumeratePhysicalDevices(instance, &count, devices.data());
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan physical devices: {}",
-                              GetVkResultName(result));
-    }
+        std::vector<VkPhysicalDevice> devices(count);
+        result = vkEnumeratePhysicalDevices(instance, &count, devices.data());
+        if (result == VK_INCOMPLETE) {
+            continue;
+        }
 
-    return devices;
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to read Vulkan physical devices: {}",
+                                  GetVkResultName(result));
+        }
+
+        devices.resize(count);
+        return devices;
+    }
 }
 
 } // namespace
