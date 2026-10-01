@@ -178,8 +178,8 @@ void HashOptionalShader(std::uint64_t& hash, const Shader* shader) noexcept {
     return HasUniqueBindings(layout.Bindings) && HasUniqueAttributeLocations(layout.Attributes);
 }
 
-[[nodiscard]] const VertexBindingDescriptor*
-FindBinding(const std::vector<VertexBindingDescriptor>& bindings, std::uint32_t binding) noexcept {
+[[nodiscard]] const VertexBindingDescriptor* FindBinding(const std::vector<VertexBindingDescriptor>& bindings,
+                                                         std::uint32_t binding) noexcept {
     for (const VertexBindingDescriptor& candidate: bindings) {
         if (candidate.Binding == binding) {
             return &candidate;
@@ -189,8 +189,8 @@ FindBinding(const std::vector<VertexBindingDescriptor>& bindings, std::uint32_t 
     return nullptr;
 }
 
-[[nodiscard]] const VertexAttributeDescriptor*
-FindAttribute(const std::vector<VertexAttributeDescriptor>& attributes, std::uint32_t location) noexcept {
+[[nodiscard]] const VertexAttributeDescriptor* FindAttribute(const std::vector<VertexAttributeDescriptor>& attributes,
+                                                             std::uint32_t location) noexcept {
     for (const VertexAttributeDescriptor& candidate: attributes) {
         if (candidate.Location == location) {
             return &candidate;
@@ -213,8 +213,8 @@ void HashVertexAttribute(std::uint64_t& hash, const VertexAttributeDescriptor& a
     HashIntegral(hash, attribute.OffsetBytes);
 }
 
-[[nodiscard]] const VertexBindingDescriptor*
-FindBindingByRank(const std::vector<VertexBindingDescriptor>& bindings, std::size_t rank) noexcept {
+[[nodiscard]] const VertexBindingDescriptor* FindBindingByRank(const std::vector<VertexBindingDescriptor>& bindings,
+                                                               std::size_t rank) noexcept {
     for (const VertexBindingDescriptor& candidate: bindings) {
         std::size_t lowerCount = 0;
 
