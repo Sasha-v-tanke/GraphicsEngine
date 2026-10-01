@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <resources/image_loader.h>
 #include <resources/resource_manager.h>
 #include <resources/shader_artifact_loader.h>
 #include <tests/common/test_error.h>
@@ -25,8 +26,10 @@ struct TextureArtifact {
     std::string Name;
 };
 
+using NResources::EImagePixelFormat;
 using NResources::EResourceState;
 using NResources::EShaderStage;
+using NResources::ImageData;
 using NResources::ResourceIdentity;
 using NResources::ResourceManager;
 using NResources::ShaderArtifact;
@@ -41,6 +44,12 @@ void WriteWords(const std::filesystem::path& path, const std::vector<std::uint32
 
     file.write(reinterpret_cast<const char*>(words.data()),
                static_cast<std::streamsize>(words.size() * sizeof(std::uint32_t)));
+}
+
+void WriteBytes(const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes) {
+    std::ofstream file{path, std::ios::binary | std::ios::trunc};
+
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
 TEST(ResourceManager, CreatesTypedHandleForLogicalIdentity) {
@@ -346,6 +355,87 @@ TEST(ShaderArtifactLoader, FailsMissingArtifact) {
     ASSERT_TRUE(failure.has_value());
     EXPECT_NE(failure->Message.find("missing or unreadable SPIR-V binary"), std::string::npos);
     EXPECT_FALSE(resources.GetCpuResource(shader));
+}
+
+TEST(ImageLoader, LoadsValidRgbImageAsRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-valid-image.ppm");
+    const std::vector<std::uint8_t> bytes = {
+            'P',
+            '6',
+            '\n',
+            '2',
+            '\n',
+            '1',
+            '\n',
+            '2',
+            '5',
+            '5',
+            '\n',
+            255U,
+            0U,
+            0U,
+            0U,
+            255U,
+            0U,
+    };
+    WriteBytes(path, bytes);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "valid"}, path);
+    const std::shared_ptr<const ImageData> data = resources.GetCpuResource(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::READY);
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetWidth(), 2U);
+    EXPECT_EQ(data->GetHeight(), 1U);
+    EXPECT_EQ(data->GetFormat(), EImagePixelFormat::RGBA8);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      255U,
+                      0U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+              }));
+
+    std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, FailsCorruptImageData) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-corrupt-image.bin");
+    WriteBytes(path, {'n', 'o', 't', 'i', 'm', 'a', 'g', 'e'});
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "corrupt"}, path);
+    const std::optional<NCommon::ErrorInfo> failure = resources.GetFailure(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::FAILED);
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->Code, NCommon::make_error_code(NCommon::EError::IO_ERROR));
+    EXPECT_NE(failure->Message.find("invalid or corrupt image data"), std::string::npos);
+    EXPECT_FALSE(resources.GetCpuResource(image));
+
+    std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, FailsMissingImageData) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-missing-image.ppm");
+    std::filesystem::remove(path);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "missing"}, path);
+    const std::optional<NCommon::ErrorInfo> failure = resources.GetFailure(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::FAILED);
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_NE(failure->Message.find("missing or unreadable image data"), std::string::npos);
+    EXPECT_FALSE(resources.GetCpuResource(image));
 }
 
 } // namespace

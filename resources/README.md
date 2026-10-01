@@ -29,3 +29,14 @@ binary container enough for runtime ingestion: non-empty word-aligned data, SPIR
 
 Runtime shader compilation, reflection, and backend-native shader module creation are separate responsibilities. A failed
 shader load publishes `FAILED` with resource identity and file path context in `ErrorInfo`.
+
+## Images
+
+Image resources load CPU pixel data through stb_image into `ImageData`.
+
+The runtime format policy for this loader is fixed `RGBA8`: source channels are converted to four 8-bit channels and
+alpha is synthesized when the source has no alpha channel. The loader does not flip images vertically; coordinate-space
+or authoring-specific flip policy belongs to asset cooking or higher-level import configuration.
+
+The image loader does not create GPU images, image views, samplers, or renderer objects. Failed image loads publish
+`FAILED` with resource identity and file path context in `ErrorInfo`.
