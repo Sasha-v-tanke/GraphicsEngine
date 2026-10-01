@@ -96,9 +96,8 @@ TEST(RenderWorld, RequiresDrawCheckpointBeforeExtraction) {
 
     scheduler.SignalDraw(frame);
 
-    NTest::ExpectError(
-            NCommon::EError::INVALID_STATE,
-            [&] { static_cast<void>(NRenderer::NInternal::ExtractRenderWorld(world, resources, storage)); });
+    NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                       [&] { static_cast<void>(NRenderer::NInternal::ExtractRenderWorld(world, resources, storage)); });
 
     scheduler.BeginFinalize(frame);
 
