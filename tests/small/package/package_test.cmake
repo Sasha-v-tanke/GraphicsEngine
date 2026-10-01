@@ -221,6 +221,7 @@ set(
     "GraphicsEngine/math/vector.h"
     "GraphicsEngine/resources/resource_handle.h"
     "GraphicsEngine/resources/resource_identity.h"
+    "GraphicsEngine/resources/resource_lease.h"
     "GraphicsEngine/resources/resource_manager.h"
     "GraphicsEngine/resources/resource_state.h"
     "GraphicsEngine/resources/shader_artifact.h"

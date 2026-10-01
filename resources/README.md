@@ -8,6 +8,8 @@ stable state model that later loaders and graphics backends will extend without 
 ## Contract
 
 - `ResourceHandle<T>` is a typed, non-owning identifier. It does not own CPU data and is not a GPU object.
+- `ResourceLease<T>` is a versioned retained CPU representation acquired only from READY state. Logical unload
+  stops new acquisitions, while existing leases keep their published version alive until their owner releases it.
 - `ResourceIdentity` is the deterministic cache key for a logical resource request.
 - Path-backed identities use `ResourceIdentity::FromPath`, which performs lexical normalization and stores generic
   separators without resolving the filesystem.
