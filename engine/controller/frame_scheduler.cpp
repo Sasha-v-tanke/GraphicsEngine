@@ -16,11 +16,15 @@ EFrameState FrameStorage::GetState() const {
 }
 
 std::pmr::memory_resource& FrameStorage::GetMemoryResource() const {
+    return GetScheduler().GetMemoryResource(m_frame);
+}
+
+FrameScheduler& FrameStorage::GetScheduler() const {
     if (m_scheduler == nullptr) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame storage");
     }
 
-    return m_scheduler->GetMemoryResource(m_frame);
+    return *m_scheduler;
 }
 
 void FrameExecutionSlot::Configure(std::uint64_t ownerId, std::size_t slotIndex) noexcept {

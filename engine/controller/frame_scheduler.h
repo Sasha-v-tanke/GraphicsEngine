@@ -8,6 +8,9 @@
 #include <memory_resource>
 #include <mutex>
 #include <optional>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <engine/engine_config.h>
 #include <lib/common/wrapper/non_transferable.h>
@@ -99,6 +102,12 @@ public:
 
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() const;
 
+    template<typename T, typename... TArgs>
+    [[nodiscard]] T& Emplace(TArgs&&... args) const;
+
+private:
+    [[nodiscard]] FrameScheduler& GetScheduler() const;
+
 private:
     FrameStorage(FrameScheduler& scheduler, FrameHandle frame) noexcept
         : m_scheduler(&scheduler)
@@ -150,6 +159,12 @@ public:
 
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
 
+    template<typename T, typename... TArgs>
+    [[nodiscard]] T& Emplace(FrameHandle frame, TArgs&&... args) {
+        Validate(frame);
+        return m_arena.Emplace<T>(std::forward<TArgs>(args)...);
+    }
+
     [[nodiscard]] Clock::time_point GetSimulationStartedAt(FrameHandle frame) const;
 
 private:
@@ -166,12 +181,51 @@ private:
             return m_resource;
         }
 
-        void Reset() {
+        template<typename T, typename... TArgs>
+        [[nodiscard]] T& Emplace(TArgs&&... args) {
+            static_assert(std::is_nothrow_destructible_v<T>);
+
+            void* storage = m_resource.allocate(sizeof(T), alignof(T));
+            T* object = nullptr;
+
+            try {
+                object = std::construct_at(static_cast<T*>(storage), std::forward<TArgs>(args)...);
+
+                if constexpr (!std::is_trivially_destructible_v<T>) {
+                    m_destructors.push_back({
+                            .Object = object,
+                            .Destroy = [](void* value) noexcept { std::destroy_at(static_cast<T*>(value)); },
+                    });
+                }
+            } catch (...) {
+                if (object != nullptr) {
+                    std::destroy_at(object);
+                }
+
+                m_resource.deallocate(storage, sizeof(T), alignof(T));
+                throw;
+            }
+
+            return *object;
+        }
+
+        void Reset() noexcept {
+            for (auto it = m_destructors.rbegin(); it != m_destructors.rend(); ++it) {
+                it->Destroy(it->Object);
+            }
+
+            m_destructors.clear();
             m_resource.release();
         }
 
     private:
+        struct DestructorRecord {
+            void* Object = nullptr;
+            void (*Destroy)(void*) noexcept = nullptr;
+        };
+
         std::pmr::synchronized_pool_resource m_resource;
+        std::vector<DestructorRecord> m_destructors;
     };
 
     void Validate(FrameHandle frame) const;
@@ -243,6 +297,12 @@ private:
 
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource(FrameHandle frame);
 
+    template<typename T, typename... TArgs>
+    [[nodiscard]] T& Emplace(FrameHandle frame, TArgs&&... args) {
+        std::lock_guard lock{m_mutex};
+        return GetSlotLocked(frame).Emplace<T>(frame, std::forward<TArgs>(args)...);
+    }
+
 private:
     mutable std::mutex m_mutex;
 
@@ -260,3 +320,8 @@ private:
 };
 
 } // namespace NEngine::NController
+
+template<typename T, typename... TArgs>
+T& NEngine::NController::FrameStorage::Emplace(TArgs&&... args) const {
+    return GetScheduler().Emplace<T>(m_frame, std::forward<TArgs>(args)...);
+}
