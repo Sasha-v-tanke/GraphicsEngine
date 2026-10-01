@@ -73,6 +73,7 @@ ResourceManager::InternalHandle ResourceManager::Request(ResourceIdentity identi
     entry.Identity = std::move(identity);
     entry.Type = type;
     entry.State = EResourceState::UNLOADED;
+    entry.CancelledOperationGeneration = 0;
     entry.CpuResource.reset();
     entry.Failure.reset();
 
@@ -99,6 +100,7 @@ std::uint64_t ResourceManager::BeginLoading(Entry& entry) {
     }
 
     ++entry.OperationGeneration;
+    entry.CancelledOperationGeneration = 0;
     entry.State = EResourceState::LOADING;
     entry.CpuResource.reset();
     entry.Failure.reset();
@@ -151,6 +153,12 @@ void ResourceManager::RequestUnload(Entry& entry) {
                               entry.Identity.GetKey());
     }
 
+    if (entry.State == EResourceState::LOADING) {
+        entry.CancelledOperationGeneration = entry.OperationGeneration;
+    } else {
+        entry.CancelledOperationGeneration = 0;
+    }
+
     ++entry.OperationGeneration;
     entry.CpuResource.reset();
     entry.Failure.reset();
@@ -185,6 +193,7 @@ void ResourceManager::Forget(Entry& entry) {
     entry.Occupied = false;
     entry.Identity = {};
     entry.Type = std::type_index{typeid(void)};
+    entry.CancelledOperationGeneration = 0;
     entry.CpuResource.reset();
     entry.Failure.reset();
 
