@@ -2,6 +2,7 @@
 #include <string>
 
 #include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/math/transform.h>
@@ -39,8 +40,14 @@ int main() {
                     .MaxFramesInFlight = 1,
             });
     const NMath::Vec4 origin = NMath::ComposeTransform({}) * NMath::Vec4{.W = 1.0F};
+    const NGraphics::BufferDescriptor buffer{
+            .SizeBytes = 256,
+            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform),
+            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+            .Lifetime = NGraphics::EBufferLifetime::Persistent,
+    };
 
-    if (!error || !supportsRequiredGraphics) {
+    if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256) {
         return 1;
     }
 

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 
+#include <graphics/buffer.h>
 #include <graphics/completion_point.h>
 #include <graphics/frame_submission.h>
 #include <graphics/graphics_capabilities.h>
@@ -31,14 +33,28 @@ public:
     [[nodiscard]] CompletionPoint SubmitFrame(const FrameSubmission& submission);
     [[nodiscard]] bool IsCompleted(CompletionPoint completion) const;
 
+    [[nodiscard]] BufferHandle CreateBuffer(const BufferDescriptor& descriptor);
+    void DestroyBuffer(BufferHandle buffer, CompletionPoint completedAfter = {});
+    [[nodiscard]] BufferDescriptor GetBufferDescriptor(BufferHandle buffer) const;
+
 private:
     explicit Graphics(std::unique_ptr<NBackend::IGraphicsBackend> backend,
                       const RequiredGraphicsCapabilities& requiredCapabilities = {});
 
     [[nodiscard]] static std::uint64_t AcquireOwnerId();
 
+    struct BufferRecord {
+        BufferDescriptor Descriptor;
+        std::uint64_t Generation = 0;
+    };
+
+    [[nodiscard]] const BufferRecord& ResolveBuffer(BufferHandle buffer) const;
+    void ValidateCompletionOwner(CompletionPoint completion) const;
+
     std::unique_ptr<NBackend::IGraphicsBackend> m_backend;
     std::uint64_t m_ownerId = 0;
+    std::uint64_t m_nextBufferGeneration = 1;
+    std::unordered_map<std::uint64_t, BufferRecord> m_buffers;
 
     friend Graphics NBackend::CreateGraphicsForBackend(std::unique_ptr<NBackend::IGraphicsBackend> backend,
                                                        const RequiredGraphicsCapabilities& requiredCapabilities);
