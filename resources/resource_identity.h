@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,6 +15,10 @@ public:
     ResourceIdentity(std::string resourceClass, std::string key)
         : m_resourceClass(std::move(resourceClass))
         , m_key(std::move(key)) {
+    }
+
+    [[nodiscard]] static ResourceIdentity FromPath(std::string resourceClass, const std::filesystem::path& path) {
+        return ResourceIdentity{std::move(resourceClass), path.lexically_normal().generic_string()};
     }
 
     [[nodiscard]] std::string_view GetResourceClass() const noexcept {
