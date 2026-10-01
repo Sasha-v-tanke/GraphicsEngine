@@ -5,7 +5,6 @@
 #include <GraphicsEngine/renderer/render_world.h>
 #include <GraphicsEngine/resources/resource_identity.h>
 #include <GraphicsEngine/resources/resource_manager.h>
-
 #include <engine/controller/frame_scheduler.h>
 #include <gtest/gtest.h>
 #include <renderer/extraction.h>
@@ -13,11 +12,9 @@
 
 namespace NResources {
 
-class Material final {
-};
+class Material final {};
 
-class MeshData final {
-};
+class MeshData final {};
 
 } // namespace NResources
 
@@ -84,7 +81,8 @@ TEST(RenderWorld, RequiresDrawCheckpointBeforeExtraction) {
 
 TEST(RenderWorld, IsolatesWorldAndResourceMutationsAfterExtraction) {
     ResourceManager resources;
-    const NResources::ResourceHandle<MeshData> firstMesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "first"});
+    const NResources::ResourceHandle<MeshData> firstMesh =
+            resources.Request<MeshData>(ResourceIdentity{"mesh", "first"});
     const NResources::ResourceHandle<MeshData> secondMesh =
             resources.Request<MeshData>(ResourceIdentity{"mesh", "second"});
     const NResources::ResourceHandle<Material> material =
@@ -93,38 +91,37 @@ TEST(RenderWorld, IsolatesWorldAndResourceMutationsAfterExtraction) {
     NEcs::World world;
 
     const NEcs::Entity camera = world.CreateEntity();
-    world.AddComponent<TransformComponent>(
-            camera,
-            TransformComponent{
-                    .Value = NMath::Transform{
-                            .Translation = {.X = 0.0F, .Y = 2.0F, .Z = 5.0F},
-                    },
-            });
-    world.AddComponent<CameraComponent>(
-            camera,
-            CameraComponent{
-                    .Projection = NMath::PerspectiveProjection{
-                            .VerticalFovRadians = 1.0F,
-                            .AspectRatio = 1.5F,
-                            .NearPlane = 0.1F,
-                            .FarPlane = 500.0F,
-                    },
-            });
+    world.AddComponent<TransformComponent>(camera,
+                                           TransformComponent{
+                                                   .Value =
+                                                           NMath::Transform{
+                                                                   .Translation = {.X = 0.0F, .Y = 2.0F, .Z = 5.0F},
+                                                           },
+                                           });
+    world.AddComponent<CameraComponent>(camera,
+                                        CameraComponent{
+                                                .Projection =
+                                                        NMath::PerspectiveProjection{
+                                                                .VerticalFovRadians = 1.0F,
+                                                                .AspectRatio = 1.5F,
+                                                                .NearPlane = 0.1F,
+                                                                .FarPlane = 500.0F,
+                                                        },
+                                        });
 
     const NEcs::Entity object = world.CreateEntity();
-    world.AddComponent<TransformComponent>(
-            object,
-            TransformComponent{
-                    .Value = NMath::Transform{
-                            .Translation = {.X = 1.0F, .Y = 2.0F, .Z = 3.0F},
-                    },
-            });
-    world.AddComponent<RenderableComponent>(
-            object,
-            RenderableComponent{
-                    .Mesh = firstMesh,
-                    .Material = material,
-            });
+    world.AddComponent<TransformComponent>(object,
+                                           TransformComponent{
+                                                   .Value =
+                                                           NMath::Transform{
+                                                                   .Translation = {.X = 1.0F, .Y = 2.0F, .Z = 3.0F},
+                                                           },
+                                           });
+    world.AddComponent<RenderableComponent>(object,
+                                            RenderableComponent{
+                                                    .Mesh = firstMesh,
+                                                    .Material = material,
+                                            });
 
     FrameScheduler scheduler{EngineConfig{
             .MaxActiveFrames = 1,

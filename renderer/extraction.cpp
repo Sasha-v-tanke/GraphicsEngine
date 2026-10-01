@@ -1,5 +1,4 @@
 #include "extraction.h"
-
 #include "render_components.h"
 
 #include <cstddef>

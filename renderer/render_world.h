@@ -43,8 +43,8 @@ struct RenderFrameIdentity {
     std::size_t FrameSlotIndex = 0;
     std::uint64_t Generation = 0;
 
-    [[nodiscard]] friend constexpr bool operator==(RenderFrameIdentity left, RenderFrameIdentity right) noexcept =
-            default;
+    [[nodiscard]] friend constexpr bool operator==(RenderFrameIdentity left,
+                                                   RenderFrameIdentity right) noexcept = default;
 };
 
 struct RenderView {

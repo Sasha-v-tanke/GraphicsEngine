@@ -2,7 +2,6 @@
 
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/renderer/render_world.h>
-
 #include <engine/controller/frame_scheduler.h>
 
 namespace NRenderer::NInternal {
