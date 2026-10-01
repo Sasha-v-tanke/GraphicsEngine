@@ -55,6 +55,12 @@ Engine не использует отдельную heap FIFO очередь fra
 subsystems и переходит в `STOPPED`.
 Такой порядок нужен, чтобы frame-local данные и будущие renderer/resource owners не переживали свои runtime owners.
 
+## Render extraction gate
+
+The application Draw checkpoint schedules frame finalization, but the next Engine Update is admitted only after
+`IFrameRuntime::Extract()` returns for the current frame. This keeps mutable simulation and extraction serialized while
+still allowing Update N+1 to overlap the remaining Draw work for N.
+
 ## FrameScheduler
 
 `FrameScheduler` управляет bounded lifetime одновременно активных кадров Engine.

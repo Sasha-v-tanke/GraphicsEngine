@@ -62,6 +62,7 @@ include(ecs/module.cmake)
 include(window/module.cmake)
 include(graphics/module.cmake)
 include(engine/module.cmake)
+include(renderer/module.cmake)
 include(application/module.cmake)
 
 PACKAGE_ROOT(Application)

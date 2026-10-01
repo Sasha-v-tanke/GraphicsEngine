@@ -170,6 +170,7 @@ public:
             m_frameRecords.reset();
             taskSystem.reset();
             m_state = EEngineState::STOPPED;
+            m_updateAdmissionOpen = true;
             m_stopInProgress = false;
             m_completedStopGeneration = m_activeStopGeneration;
             m_stopCondition.notify_all();
