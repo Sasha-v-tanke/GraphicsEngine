@@ -56,7 +56,7 @@ std::size_t World::GetAliveEntityCount() const noexcept {
 
 void World::RegisterSystem(SystemAccessList access, SystemCallback callback) {
     if (!callback) {
-        throw std::invalid_argument("ECS system callback must be callable");
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system callback must be callable");
     }
 
     Systems_.push_back({
@@ -66,7 +66,8 @@ void World::RegisterSystem(SystemAccessList access, SystemCallback callback) {
 }
 
 const std::vector<SystemAccess>& World::GetSystemAccess(std::size_t index) const {
-    return Systems_.at(index).Access;
+    ValidateSystemIndex(index);
+    return Systems_[index].Access;
 }
 
 std::size_t World::GetSystemCount() const noexcept {
@@ -81,7 +82,13 @@ void World::RunSystems() {
 
 void World::ValidateAlive(Entity entity) const {
     if (!IsAlive(entity)) {
-        throw std::out_of_range("ECS entity is not alive");
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS entity is not alive");
+    }
+}
+
+void World::ValidateSystemIndex(std::size_t index) const {
+    if (index >= Systems_.size()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system index is out of range");
     }
 }
 

@@ -7,12 +7,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <stdexcept>
 #include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <GraphicsEngine/lib/common/error/error.h>
+#include <GraphicsEngine/lib/common/error/exception.h>
 
 namespace NEcs {
 
@@ -30,7 +32,7 @@ public:
     T& AddComponent(Entity entity, TArgs&&... args) {
         ValidateAlive(entity);
         auto& storage = GetOrCreateStorage<T>();
-        return storage.Emplace(entity.Index, T(std::forward<TArgs>(args)...));
+        return storage.Emplace(entity.Index, std::forward<TArgs>(args)...);
     }
 
     template<typename T>
@@ -49,7 +51,7 @@ public:
         auto* storage = FindStorage<T>();
 
         if (storage == nullptr || !storage->Contains(entity.Index)) {
-            throw std::out_of_range("ECS component does not exist");
+            GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "ECS component does not exist");
         }
 
         return storage->Get(entity.Index);
@@ -61,7 +63,7 @@ public:
         const auto* storage = FindStorage<T>();
 
         if (storage == nullptr || !storage->Contains(entity.Index)) {
-            throw std::out_of_range("ECS component does not exist");
+            GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "ECS component does not exist");
         }
 
         return storage->Get(entity.Index);
@@ -79,13 +81,20 @@ public:
 
     template<typename... TComponents, typename TCallback>
     void Query(TCallback&& callback) {
-        for (std::uint32_t index = 0; index < Entities_.size(); ++index) {
-            const Entity entity{
-                    .Index = index,
-                    .Generation = Entities_[index].Generation,
-            };
+        std::vector<Entity> entities;
+        entities.reserve(Entities_.size());
 
-            if (!Entities_[index].Alive || (!HasComponent<TComponents>(entity) || ...)) {
+        for (std::uint32_t index = 0; index < Entities_.size(); ++index) {
+            if (Entities_[index].Alive) {
+                entities.push_back({
+                        .Index = index,
+                        .Generation = Entities_[index].Generation,
+                });
+            }
+        }
+
+        for (Entity entity: entities) {
+            if ((!HasComponent<TComponents>(entity) || ...)) {
                 continue;
             }
 
@@ -115,9 +124,12 @@ private:
     template<typename T>
     class ComponentStorage final: public IComponentStorage {
     public:
-        T& Emplace(std::uint32_t entityIndex, T value) {
-            Values_[entityIndex] = std::move(value);
-            return Values_.at(entityIndex);
+        template<typename... TArgs>
+        T& Emplace(std::uint32_t entityIndex, TArgs&&... args) {
+            Values_.erase(entityIndex);
+            auto [iterator, inserted] = Values_.try_emplace(entityIndex, std::forward<TArgs>(args)...);
+            static_cast<void>(inserted);
+            return iterator->second;
         }
 
         [[nodiscard]] bool Contains(std::uint32_t entityIndex) const {
@@ -179,6 +191,7 @@ private:
     }
 
     void ValidateAlive(Entity entity) const;
+    void ValidateSystemIndex(std::size_t index) const;
 
     std::vector<EntityState> Entities_;
     std::vector<std::uint32_t> FreeEntityIndices_;

@@ -10,6 +10,10 @@ SOURCES(
     world.cpp
 )
 
+PUBLIC_DEPENDS(
+    Common
+)
+
 RECURSE(
     test
 )

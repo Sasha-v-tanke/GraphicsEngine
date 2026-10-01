@@ -1,8 +1,8 @@
-#include <stdexcept>
 #include <vector>
 
 #include <GraphicsEngine/ecs/world.h>
 #include <gtest/gtest.h>
+#include <tests/common/test_error.h>
 
 namespace {
 
@@ -14,6 +14,20 @@ struct Position {
 struct Velocity {
     int X = 0;
     int Y = 0;
+};
+
+struct ConstructOnly {
+    explicit ConstructOnly(int value)
+        : Value(value) {
+    }
+
+    ConstructOnly(const ConstructOnly&) = delete;
+    ConstructOnly(ConstructOnly&&) noexcept = default;
+
+    ConstructOnly& operator=(const ConstructOnly&) = delete;
+    ConstructOnly& operator=(ConstructOnly&&) = delete;
+
+    int Value = 0;
 };
 
 } // namespace
@@ -43,8 +57,9 @@ TEST(EcsWorld, RejectsStaleEntityComponentMutation) {
 
     EXPECT_FALSE(world.HasComponent<Position>(entity));
     EXPECT_FALSE(world.RemoveComponent<Position>(entity));
-    EXPECT_THROW(world.AddComponent<Position>(entity, 3, 4), std::out_of_range);
-    EXPECT_THROW(static_cast<void>(world.GetComponent<Position>(entity)), std::out_of_range);
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { world.AddComponent<Position>(entity, 3, 4); });
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                       [&] { static_cast<void>(world.GetComponent<Position>(entity)); });
 }
 
 TEST(EcsWorld, AddsGetsReplacesAndRemovesComponents) {
@@ -61,6 +76,18 @@ TEST(EcsWorld, AddsGetsReplacesAndRemovesComponents) {
     EXPECT_TRUE(world.RemoveComponent<Position>(entity));
     EXPECT_FALSE(world.HasComponent<Position>(entity));
     EXPECT_FALSE(world.RemoveComponent<Position>(entity));
+}
+
+TEST(EcsWorld, SupportsConstructOnlyComponents) {
+    NEcs::World world;
+    const NEcs::Entity entity = world.CreateEntity();
+
+    auto& first = world.AddComponent<ConstructOnly>(entity, 10);
+    EXPECT_EQ(first.Value, 10);
+
+    auto& replacement = world.AddComponent<ConstructOnly>(entity, 20);
+    EXPECT_EQ(replacement.Value, 20);
+    EXPECT_EQ(world.GetComponent<ConstructOnly>(entity).Value, 20);
 }
 
 TEST(EcsWorld, QueriesEntitiesWithAllRequestedComponents) {
@@ -86,6 +113,52 @@ TEST(EcsWorld, QueriesEntitiesWithAllRequestedComponents) {
     EXPECT_EQ(world.GetComponent<Position>(moving).X, 11);
     EXPECT_EQ(world.GetComponent<Position>(moving).Y, 22);
     EXPECT_EQ(world.GetComponent<Position>(staticEntity).X, 100);
+}
+
+TEST(EcsWorld, QueryUsesStableEntityScope) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.AddComponent<Position>(first, 1, 2);
+
+    std::vector<NEcs::Entity> visited;
+
+    world.Query<Position>([&](NEcs::Entity entity, Position&) {
+        visited.push_back(entity);
+
+        const NEcs::Entity created = world.CreateEntity();
+        world.AddComponent<Position>(created, 3, 4);
+    });
+
+    ASSERT_EQ(visited.size(), 1);
+    EXPECT_EQ(visited.front(), first);
+    EXPECT_EQ(world.GetAliveEntityCount(), 2);
+}
+
+TEST(EcsWorld, QuerySkipsEntitiesReusedAfterSnapshot) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.AddComponent<Position>(first, 1, 2);
+
+    const NEcs::Entity second = world.CreateEntity();
+    world.AddComponent<Position>(second, 3, 4);
+
+    std::vector<NEcs::Entity> visited;
+
+    world.Query<Position>([&](NEcs::Entity entity, Position&) {
+        visited.push_back(entity);
+
+        if (entity == first) {
+            world.DestroyEntity(second);
+            const NEcs::Entity reused = world.CreateEntity();
+            ASSERT_EQ(reused.Index, second.Index);
+            world.AddComponent<Position>(reused, 5, 6);
+        }
+    });
+
+    ASSERT_EQ(visited.size(), 1);
+    EXPECT_EQ(visited.front(), first);
 }
 
 TEST(EcsWorld, RemovesComponentsWhenEntityIsDestroyed) {
@@ -120,4 +193,18 @@ TEST(EcsWorld, RegistersSequentialSystemsWithAccessDeclarations) {
     world.RunSystems();
 
     EXPECT_EQ(world.GetComponent<Position>(entity).X, 6);
+}
+
+TEST(EcsWorld, RejectsInvalidSystemRegistrationAndAccess) {
+    NEcs::World world;
+
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { world.RegisterSystem({}, {}); });
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { static_cast<void>(world.GetSystemAccess(0)); });
+}
+
+TEST(EcsWorld, ReportsMissingComponentThroughProjectError) {
+    NEcs::World world;
+    const NEcs::Entity entity = world.CreateEntity();
+
+    NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { static_cast<void>(world.GetComponent<Position>(entity)); });
 }
