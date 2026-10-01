@@ -69,9 +69,8 @@ TEST(ResourceManager, CoalescesNormalizedPathAliases) {
     const auto first = resources.Request<TestShaderArtifact>(
             ResourceIdentity::FromPath("shader", std::filesystem::path{"shaders"} / "basic.vert.spv"));
     const auto second = resources.Request<TestShaderArtifact>(
-            ResourceIdentity::FromPath(
-                    "shader",
-                    std::filesystem::path{"shaders"} / "." / "variants" / ".." / "basic.vert.spv"));
+            ResourceIdentity::FromPath("shader",
+                                       std::filesystem::path{"shaders"} / "." / "variants" / ".." / "basic.vert.spv"));
 
     EXPECT_EQ(first, second);
     EXPECT_EQ(resources.GetIdentity(first).GetKey(), std::string_view{"shaders/basic.vert.spv"});
@@ -91,7 +90,7 @@ TEST(ResourceManager, CoalescesConcurrentDuplicateRequests) {
         }};
     }
 
-    for (std::thread& thread : threads) {
+    for (std::thread& thread: threads) {
         thread.join();
     }
 
