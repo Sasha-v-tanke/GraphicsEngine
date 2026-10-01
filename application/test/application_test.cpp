@@ -376,6 +376,7 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     frameLoop.Start();
     frameLoop.Step(callbacks);
     FinishFirstDrawGuard finishFirstDrawGuard{*blockingEngineFactory.Runtime};
+    ASSERT_TRUE(blockingEngineFactory.Runtime->WaitDrawCountAtLeast(1, 1s));
     frameLoop.Step(callbacks);
     frameLoop.Step(callbacks);
 

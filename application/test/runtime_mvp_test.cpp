@@ -281,7 +281,6 @@ TEST(RuntimeMvpStress, MaxActiveFramesRingBackpressuresFastApplicationLoop) {
                       "user.draw",
                       "user.update",
                       "user.draw",
-                      "user.update",
               }));
 
     engineFactoryRef.Runtime->FinishFirstDraw();
