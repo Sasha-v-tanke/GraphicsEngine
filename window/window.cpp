@@ -54,6 +54,10 @@ public:
         m_engine->ProcessEvents();
     }
 
+    [[nodiscard]] NEngine::IWindowEngine& GetEngine() const noexcept {
+        return *m_engine;
+    }
+
 private:
     void HandleResize(WindowSize size) override {
         m_window.OnResize(size);
@@ -126,6 +130,10 @@ void Window::OnFramebufferResize(WindowSize) {
 }
 
 void Window::OnClose() {
+}
+
+NEngine::IWindowEngine& NInternal::GetWindowEngine(Window& window) {
+    return window.m_impl->GetEngine();
 }
 
 } // namespace NWindow
