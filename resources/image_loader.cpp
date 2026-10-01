@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <stb_image.h>
 #include <string>
@@ -38,6 +39,10 @@ MakeImageErrorMessage(const ResourceIdentity& identity, const std::filesystem::p
     };
 }
 
+[[nodiscard]] bool CanPassImageByteSizeToStb(std::uintmax_t byteSize) noexcept {
+    return byteSize <= static_cast<std::uintmax_t>(std::numeric_limits<int>::max());
+}
+
 void FailImageLoad(ResourceManager& resources,
                    ResourceOperation<ImageData> operation,
                    const ResourceIdentity& identity,
@@ -57,6 +62,20 @@ LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::file
     const ResourceIdentity failureIdentity = identity;
     const ResourceHandle<ImageData> handle = resources.Request<ImageData>(std::move(identity));
     const ResourceOperation<ImageData> operation = resources.BeginLoading(handle);
+
+    std::error_code fileSizeError;
+    const std::uintmax_t fileSize = std::filesystem::file_size(path, fileSizeError);
+
+    if (fileSizeError) {
+        FailImageLoad(resources, operation, failureIdentity, path, "missing or unreadable image data");
+        return handle;
+    }
+
+    if (!CanPassImageByteSizeToStb(fileSize)) {
+        FailImageLoad(resources, operation, failureIdentity, path, "image data exceeds stb_image size limit");
+        return handle;
+    }
+
     const std::vector<stbi_uc> bytes = ReadImageBytes(path);
 
     if (bytes.empty()) {
@@ -67,14 +86,10 @@ LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::file
     int width = 0;
     int height = 0;
     int sourceChannels = 0;
+    const int stbInputSize = static_cast<int>(bytes.size());
     stbi_set_flip_vertically_on_load_thread(0);
     std::unique_ptr<stbi_uc, StbImageDeleter> pixels{
-            stbi_load_from_memory(bytes.data(),
-                                  static_cast<int>(bytes.size()),
-                                  &width,
-                                  &height,
-                                  &sourceChannels,
-                                  RGBA_CHANNELS),
+            stbi_load_from_memory(bytes.data(), stbInputSize, &width, &height, &sourceChannels, RGBA_CHANNELS),
     };
 
     if (!pixels || width <= 0 || height <= 0 || sourceChannels <= 0) {

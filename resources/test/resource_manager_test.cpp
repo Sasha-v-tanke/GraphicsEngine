@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -562,6 +563,25 @@ TEST(ImageLoader, FailsMissingImageData) {
     ASSERT_TRUE(failure.has_value());
     EXPECT_NE(failure->Message.find("missing or unreadable image data"), std::string::npos);
     EXPECT_FALSE(resources.GetCpuResource(image));
+}
+
+TEST(ImageLoader, RejectsOversizedImageBeforeReading) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-oversized-image.bin");
+    WriteBytes(path, {});
+    std::filesystem::resize_file(path, static_cast<std::uintmax_t>(std::numeric_limits<int>::max()) + 1U);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "oversized"}, path);
+    const std::optional<NCommon::ErrorInfo> failure = resources.GetFailure(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::FAILED);
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->Code, NCommon::make_error_code(NCommon::EError::IO_ERROR));
+    EXPECT_NE(failure->Message.find("image data exceeds stb_image size limit"), std::string::npos);
+    EXPECT_FALSE(resources.GetCpuResource(image));
+
+    std::filesystem::remove(path);
 }
 
 } // namespace
