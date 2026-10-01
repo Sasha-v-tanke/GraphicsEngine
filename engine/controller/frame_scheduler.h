@@ -214,11 +214,12 @@ private:
         }
 
         void Reset() noexcept {
-            for (auto it = m_destructors.rbegin(); it != m_destructors.rend(); ++it) {
-                it->Destroy(it->Object);
+            while (!m_destructors.empty()) {
+                const DestructorRecord destructor = m_destructors.back();
+                m_destructors.pop_back();
+                destructor.Destroy(destructor.Object);
             }
 
-            m_destructors.clear();
             m_resource.release();
         }
 
