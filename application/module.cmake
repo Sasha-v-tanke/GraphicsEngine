@@ -15,6 +15,7 @@ PUBLIC_DEPENDS(
     Graphics
     Common
     Math
+    Ecs
 )
 
 PRIVATE_DEPENDS(
