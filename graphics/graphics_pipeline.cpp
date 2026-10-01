@@ -26,7 +26,8 @@ constexpr ColorComponentFlags KNOWN_COLOR_COMPONENT_MASK =
 template<typename T>
 void HashIntegral(std::uint64_t& hash, T value) noexcept {
     if constexpr (std::is_same_v<std::remove_cv_t<T>, bool>) {
-        HashIntegral(hash, static_cast<std::uint8_t>(value));
+        hash ^= static_cast<std::uint8_t>(value);
+        hash *= HASH_PRIME;
     } else {
         using UnsignedType = std::make_unsigned_t<T>;
         UnsignedType bits = static_cast<UnsignedType>(value);
