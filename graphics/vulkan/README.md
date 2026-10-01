@@ -22,8 +22,21 @@ on Vulkan headers through this module.
 The object is transactional: constructor failure publishes no partial instance,
 and already-created Vulkan objects are destroyed before the exception escapes.
 
-This module does not create a physical device, logical device, surface,
-swapchain, GPU resources, queues or command buffers.
+This module does not create a physical device, logical device, swapchain, GPU
+resources, queues or command buffers.
+
+## GLFW Surface Integration
+
+`glfw_surface.h` is the only boundary that combines Vulkan native types with
+GLFW window access. Public `Window` keeps no native-handle getter.
+
+The integration:
+
+- reports GLFW-required Vulkan instance extensions before instance creation;
+- creates and destroys one `VkSurfaceKHR` through `VulkanSurface`;
+- reaches the GLFW window through an internal Window engine contract only;
+- requires the `Window`, `VulkanInstance` and GLFW runtime to outlive the
+  surface object.
 
 ## Dispatch
 
