@@ -3,6 +3,7 @@
 #include <vector>
 
 #include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/lib/common/error/error.h>
@@ -26,6 +27,8 @@ int main() {
     };
 
     const std::error_code error = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
+    NEcs::World world;
+    const NEcs::Entity entity = world.CreateEntity();
     const bool supportsRequiredGraphics = NGraphics::SatisfiesRequirements(
             {
                     .Presentation = true,
@@ -61,8 +64,9 @@ int main() {
 
     const std::shared_ptr<const NResources::ShaderArtifact> artifact = resources.GetCpuResource(shader);
 
-    return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F && artifact &&
-                           validSpirV && artifact->GetStage() == NResources::EShaderStage::VERTEX
+    return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F &&
+                           world.IsAlive(entity) && artifact && validSpirV &&
+                           artifact->GetStage() == NResources::EShaderStage::VERTEX
                  ? 0
                  : 1;
 }

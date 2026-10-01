@@ -9,6 +9,16 @@
 
 namespace NWindow {
 
+class Window;
+
+namespace NEngine {
+class IWindowEngine;
+}
+
+namespace NInternal {
+[[nodiscard]] NEngine::IWindowEngine& GetWindowEngine(Window& window);
+}
+
 // Framework-independent window facade. The object has thread affinity to the thread that constructs it.
 class Window: public NCommon::NonTransferable {
 public:
@@ -45,6 +55,8 @@ protected:
     virtual void OnClose();
 
 private:
+    friend NEngine::IWindowEngine& NInternal::GetWindowEngine(Window& window);
+
     class Impl;
 
 private:
