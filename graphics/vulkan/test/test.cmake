@@ -2,6 +2,7 @@ TEST_MODULE(VulkanBackend)
 
 SOURCES(
     instance_test.cpp
+    physical_device_test.cpp
 )
 
 if (GRAPHICS_ENGINE_BUILD_GLFW)

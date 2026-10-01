@@ -1,6 +1,6 @@
 # Vulkan Backend
 
-`VulkanBackend` owns Vulkan loader and instance bootstrap for GraphicsEngine.
+`VulkanBackend` owns Vulkan loader, instance bootstrap and physical-device selection for GraphicsEngine.
 
 This layer is backend-internal. It may use Vulkan native types, but higher-level
 Window, Application, Engine and future Graphics public contracts must not depend
@@ -22,8 +22,8 @@ on Vulkan headers through this module.
 The object is transactional: constructor failure publishes no partial instance,
 and already-created Vulkan objects are destroyed before the exception escapes.
 
-This module does not create a physical device, logical device, swapchain, GPU
-resources, queues or command buffers.
+`VulkanInstance` does not create a physical device, logical device, swapchain,
+GPU resources, queues or command buffers.
 
 ## GLFW Surface Integration
 
@@ -38,8 +38,33 @@ The integration:
 - requires the `Window`, `VulkanInstance` and GLFW runtime to outlive the
   surface object.
 
+## Physical Device Selection
+
+Physical-device selection first snapshots Vulkan properties into
+`VulkanPhysicalDeviceCapabilities`, then evaluates that CPU-testable value type.
+The runtime path only maps the selected snapshot back to its `VkPhysicalDevice`.
+It does not create `VkDevice`.
+
+The default Vulkan backend requires:
+
+- Vulkan 1.3 or newer;
+- `VK_KHR_swapchain`;
+- timeline semaphore, Synchronization2 and Dynamic Rendering features;
+- at least one graphics-capable queue and one presentation-capable queue;
+- valid surface support with at least one swapchain format and present mode.
+
+Suitable devices are scored deterministically. Device type is the primary
+preference, a shared graphics/present queue family receives a smaller bonus, and
+`maxImageDimension2D` is a final capability contribution. Equal scores are
+resolved by stable device UUID, vendor/device IDs and name, so enumeration order
+does not decide the winner.
+
+Rejected candidates retain explicit reasons for every missing required
+capability. If no candidate is suitable, initialization fails with diagnostics
+for all candidates.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
 instance creation, `volkLoadInstanceOnly()` loads instance-level dispatch.
-Device-level dispatch belongs to a later logical-device layer.
+Device-level dispatch belongs to the logical-device layer.

@@ -2,10 +2,12 @@ MODULE(VulkanBackend)
 
 API(
     instance.h
+    physical_device.h
 )
 
 SOURCES(
     instance.cpp
+    physical_device.cpp
 )
 
 PUBLIC_DEPENDS(
