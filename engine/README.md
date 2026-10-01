@@ -55,6 +55,12 @@ Engine не использует отдельную heap FIFO очередь fra
 subsystems и переходит в `STOPPED`.
 Такой порядок нужен, чтобы frame-local данные и будущие renderer/resource owners не переживали свои runtime owners.
 
+## Render extraction gate
+
+The application Draw checkpoint schedules frame finalization, but the next Engine Update is admitted only after
+`IFrameRuntime::Extract()` returns for the current frame. This keeps mutable simulation and extraction serialized while
+still allowing Update N+1 to overlap the remaining Draw work for N.
+
 ## FrameScheduler
 
 `FrameScheduler` управляет bounded lifetime одновременно активных кадров Engine.
@@ -195,8 +201,9 @@ Arena существует столько же, сколько физическ�
 После RecycleFrame () любые такие references и allocations считаются недействительными, даже если объект
 memory_resource физически остаётся тем же.
 Перед RecycleFrame () должны быть завершены все users frame-local data.
-Lifetime нетривиальных C++ объектов должен быть завершён их владельцем до recycle. FrameArena::Reset () освобождает
-storage, но не заменяет вызов destructors объектов.
+Нетривиальные frame-owned C++ объекты создаются через `FrameStorage::Emplace<T>()`. Их destructors
+регистрируются в slot и вызываются в reverse order при recycle или abort до `FrameArena::Reset()`. Raw allocations
+из memory resource по-прежнему не получают автоматический object lifetime management.
 После завершения всех owners/users scheduler выполняет reset arena и только затем переводит slot в FREE.
 
 ## Thread safety

@@ -208,3 +208,22 @@ TEST(EcsWorld, ReportsMissingComponentThroughProjectError) {
 
     NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { static_cast<void>(world.GetComponent<Position>(entity)); });
 }
+
+TEST(EcsWorld, ConstQueryProvidesReadOnlyComponents) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.CreateEntity();
+    world.AddComponent<Position>(entity, 7, 9);
+
+    const NEcs::World& readOnlyWorld = world;
+    int visited = 0;
+
+    readOnlyWorld.Query<Position>([&](NEcs::Entity visitedEntity, const Position& position) {
+        ++visited;
+        EXPECT_EQ(visitedEntity, entity);
+        EXPECT_EQ(position.X, 7);
+        EXPECT_EQ(position.Y, 9);
+    });
+
+    EXPECT_EQ(visited, 1);
+}

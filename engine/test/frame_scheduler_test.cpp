@@ -16,6 +16,18 @@ using NEngine::NController::FrameHandle;
 using NEngine::NController::FrameScheduler;
 using NTest::ExpectError;
 
+struct FrameOwnedProbe {
+    explicit FrameOwnedProbe(int& destroyed) noexcept
+        : Destroyed(&destroyed) {
+    }
+
+    ~FrameOwnedProbe() noexcept {
+        ++*Destroyed;
+    }
+
+    int* Destroyed = nullptr;
+};
+
 void CompleteFrame(FrameScheduler& scheduler, FrameHandle frame) {
     scheduler.ArmFrame(frame);
     scheduler.BeginUpdate(frame);
@@ -308,6 +320,44 @@ TEST(FrameScheduler, ReusesSlotOwnedMemoryResourceAcrossGenerations) {
     EXPECT_EQ(firstResource, secondResource);
 
     ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(firstStorage.GetMemoryResource()); });
+}
+
+TEST(FrameScheduler, DestroysFrameOwnedObjectsOnRecycle) {
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    const FrameHandle frame = *scheduler.TryAcquireFrame();
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
+    int destroyed = 0;
+
+    static_cast<void>(storage.Emplace<FrameOwnedProbe>(destroyed));
+
+    CompleteFrame(scheduler, frame);
+
+    EXPECT_EQ(destroyed, 0);
+
+    scheduler.RecycleFrame(frame);
+
+    EXPECT_EQ(destroyed, 1);
+    ExpectError(NCommon::EError::INVALID_STATE,
+                [&] { static_cast<void>(storage.Emplace<FrameOwnedProbe>(destroyed)); });
+}
+
+TEST(FrameScheduler, DestroysFrameOwnedObjectsOnAbort) {
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    const FrameHandle frame = *scheduler.TryAcquireFrame();
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
+    int destroyed = 0;
+
+    static_cast<void>(storage.Emplace<FrameOwnedProbe>(destroyed));
+
+    scheduler.AbortFrame(frame);
+
+    EXPECT_EQ(destroyed, 1);
 }
 
 TEST(FrameScheduler, FollowsRequiredStateLifecycle) {

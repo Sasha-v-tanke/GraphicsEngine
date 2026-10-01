@@ -74,6 +74,7 @@ ResourceManager::InternalHandle ResourceManager::Request(ResourceIdentity identi
     entry.Type = type;
     entry.State = EResourceState::UNLOADED;
     entry.CancelledOperationGeneration = 0;
+    entry.PublishedVersion = 0;
     entry.CpuResource.reset();
     entry.Failure.reset();
 
@@ -121,6 +122,13 @@ void ResourceManager::PublishReady(Entry& entry,
                               entry.Identity.GetKey());
     }
 
+    if (entry.PublishedVersion == std::numeric_limits<std::uint64_t>::max()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Resource '{}' version space is exhausted",
+                              entry.Identity.GetKey());
+    }
+
+    ++entry.PublishedVersion;
     entry.CpuResource = std::move(resource);
     entry.Failure.reset();
     entry.State = EResourceState::READY;
@@ -194,6 +202,7 @@ void ResourceManager::Forget(Entry& entry) {
     entry.Identity = {};
     entry.Type = std::type_index{typeid(void)};
     entry.CancelledOperationGeneration = 0;
+    entry.PublishedVersion = 0;
     entry.CpuResource.reset();
     entry.Failure.reset();
 

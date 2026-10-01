@@ -110,6 +110,7 @@ public:
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
             m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
             m_nextDrawFrameIndex = 0;
+            m_updateAdmissionOpen = true;
             ++m_lifecycleGeneration;
             m_lifecycleGenerationSnapshot.store(m_lifecycleGeneration, std::memory_order_release);
             m_state = EEngineState::RUNNING;
@@ -169,6 +170,7 @@ public:
             m_frameRecords.reset();
             taskSystem.reset();
             m_state = EEngineState::STOPPED;
+            m_updateAdmissionOpen = true;
             m_stopInProgress = false;
             m_completedStopGeneration = m_activeStopGeneration;
             m_stopCondition.notify_all();
@@ -180,6 +182,10 @@ public:
         std::lock_guard lock{m_mutex};
         RequireRunningLocked("update");
         ReapTerminalFrameRecordsLocked(*m_taskSystem);
+
+        if (!m_updateAdmissionOpen) {
+            return false;
+        }
 
         std::optional<NController::FrameHandle> acquiredFrame = m_frameScheduler->TryAcquireFrame();
 
@@ -224,20 +230,37 @@ public:
         const NCommon::TaskHandle updateTask = record.UpdateTask;
 
         try {
+            m_updateAdmissionOpen = false;
+            m_frameScheduler->SignalDraw(frame);
+
             const NCommon::TaskHandle dependencies[] = {updateTask};
 
             record.DrawTask =
                     m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunDraw(frame); }, dependencies);
             record.HasDrawTask = true;
-            m_frameScheduler->SignalDraw(frame);
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
+            m_state = EEngineState::STOPPING;
+            m_updateAdmissionOpen = true;
+
+            try {
+                m_frameScheduler->AbortFrame(frame);
+            } catch (...) {
+            }
+
             throw;
         }
 
         ++m_nextDrawFrameIndex;
 
         return true;
+    }
+
+    [[nodiscard]] bool CanAcceptUpdate() const {
+        std::lock_guard lock{m_mutex};
+        RequireRunningLocked("accept update");
+
+        return m_updateAdmissionOpen;
     }
 
     [[nodiscard]] EEngineState GetState() const noexcept {
@@ -290,6 +313,7 @@ private:
         }
 
         m_state = EEngineState::STOPPED;
+        m_updateAdmissionOpen = true;
         m_stopInProgress = false;
         m_activeStopGeneration = m_lifecycleGeneration;
         m_completedStopGeneration = m_lifecycleGeneration;
@@ -343,6 +367,13 @@ private:
             frameScheduler->BeginFinalize(frame);
 
             const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame)};
+            frameRuntime->Extract(context);
+
+            {
+                std::lock_guard lock{m_mutex};
+                m_updateAdmissionOpen = true;
+            }
+
             frameRuntime->Draw(context);
 
             frameScheduler->CompleteFrame(frame);
@@ -469,6 +500,7 @@ private:
     std::unique_ptr<NController::FrameScheduler> m_frameScheduler;
     std::unique_ptr<FrameRuntimeRecord[]> m_frameRecords;
     std::uint64_t m_nextDrawFrameIndex = 0;
+    bool m_updateAdmissionOpen = true;
 };
 
 Engine::Engine(EngineConfig config)
@@ -495,6 +527,10 @@ bool Engine::Update() {
 
 bool Engine::Draw() {
     return m_impl->Draw();
+}
+
+bool Engine::CanAcceptUpdate() const {
+    return m_impl->CanAcceptUpdate();
 }
 
 EEngineState Engine::GetState() const noexcept {
