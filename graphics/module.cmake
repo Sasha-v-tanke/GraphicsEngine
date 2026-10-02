@@ -7,14 +7,19 @@ API(
     graphics.h
     graphics_capabilities.h
     graphics_config.h
+    graphics_pipeline.h
+    shader.h
 )
 
 SOURCES(
     graphics.cpp
+    graphics_pipeline.cpp
+    shader.cpp
 )
 
 PUBLIC_DEPENDS(
     Common
+    Resources
 )
 
 RECURSE(
