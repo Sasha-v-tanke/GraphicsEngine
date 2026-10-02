@@ -5,6 +5,7 @@
 #include <utility>
 
 #include <GraphicsEngine/resources/resource_handle.h>
+#include <GraphicsEngine/resources/resource_use_record.h>
 
 namespace NResources {
 
@@ -43,6 +44,13 @@ public:
 
     [[nodiscard]] const T* operator->() const noexcept {
         return m_payload.get();
+    }
+
+    [[nodiscard]] ResourceUseRecord GetUseRecord() const noexcept {
+        return ResourceUseRecord{
+                m_version,
+                m_payload,
+        };
     }
 
 private:

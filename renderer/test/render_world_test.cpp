@@ -286,7 +286,11 @@ TEST(RenderWorld, RetainsResourceVersionAcrossMultipleFrameSlots) {
 
     ASSERT_EQ(firstWorld.GetObjects().size(), 1);
     ASSERT_EQ(secondWorld.GetObjects().size(), 1);
+    ASSERT_EQ(firstWorld.GetResourceUseRecords().size(), 2U);
+    ASSERT_EQ(secondWorld.GetResourceUseRecords().size(), 2U);
     EXPECT_EQ(firstWorld.GetObjects().front().Mesh.GetVersion(), secondWorld.GetObjects().front().Mesh.GetVersion());
+    EXPECT_EQ(firstWorld.GetResourceUseRecords().front().GetVersion(),
+              secondWorld.GetResourceUseRecords().front().GetVersion());
 
     meshPayload.reset();
     resources.RequestUnload(mesh);
@@ -336,6 +340,40 @@ TEST(RenderWorld, SkipsNewConsumersAfterResourceUnload) {
     const RenderWorld& renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, storage);
 
     EXPECT_TRUE(renderWorld.GetObjects().empty());
+    EXPECT_TRUE(renderWorld.GetResourceUseRecords().empty());
+}
+
+TEST(RenderWorld, RejectsStalePublicResourceHandleDuringExtraction) {
+    ResourceManager resources;
+    const NResources::ResourceHandle<MeshData> staleMesh =
+            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "stale"}, 1);
+    const NResources::ResourceHandle<Material> material =
+            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "stale"}, 1);
+
+    resources.RequestUnload(staleMesh);
+    resources.CompleteUnload(staleMesh);
+    resources.Forget(staleMesh);
+
+    static_cast<void>(resources.Request<MeshData>(ResourceIdentity{"mesh", "stale"}));
+
+    NEcs::World world;
+    const NEcs::Entity object = world.CreateEntity();
+
+    world.AddComponent<TransformComponent>(object);
+    world.AddComponent<RenderableComponent>(object,
+                                            RenderableComponent{
+                                                    .Mesh = staleMesh,
+                                                    .Material = material,
+                                            });
+
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+    const FrameHandle frame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                       [&] { static_cast<void>(NRenderer::NInternal::ExtractRenderWorld(world, resources, storage)); });
 }
 
 TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
