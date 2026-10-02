@@ -1,6 +1,7 @@
 TEST_MODULE(VulkanBackend)
 
 SOURCES(
+    device_test.cpp
     instance_test.cpp
     physical_device_test.cpp
 )
