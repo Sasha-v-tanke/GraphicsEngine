@@ -8,6 +8,7 @@ API(
     resource_lease.h
     resource_manager.h
     resource_state.h
+    resource_use_record.h
     shader_artifact.h
     shader_artifact_loader.h
 )

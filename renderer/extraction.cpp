@@ -25,13 +25,21 @@ namespace {
 
 class RenderWorldBuilder final {
 public:
-    [[nodiscard]] static const RenderWorld& Build(std::pmr::memory_resource& memory,
-                                                  RenderFrameIdentity frame,
-                                                  const std::pmr::vector<RenderView>& views,
-                                                  const std::pmr::vector<RenderObject>& objects) {
+    [[nodiscard]] static const RenderWorld&
+    Build(std::pmr::memory_resource& memory,
+          RenderFrameIdentity frame,
+          const std::pmr::vector<RenderView>& views,
+          const std::pmr::vector<RenderObject>& objects,
+          const std::pmr::vector<NResources::ResourceUseRecord>& resourceUseRecords) {
         void* storage = memory.allocate(sizeof(RenderWorld), alignof(RenderWorld));
 
-        return *::new (storage) RenderWorld{frame, views.data(), views.size(), objects.data(), objects.size()};
+        return *::new (storage) RenderWorld{frame,
+                                            views.data(),
+                                            views.size(),
+                                            objects.data(),
+                                            objects.size(),
+                                            resourceUseRecords.data(),
+                                            resourceUseRecords.size()};
     }
 };
 
@@ -55,9 +63,11 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
     std::pmr::memory_resource& memory = storage.GetMemoryResource();
     auto& views = storage.Emplace<std::pmr::vector<RenderView>>(&memory);
     auto& objects = storage.Emplace<std::pmr::vector<RenderObject>>(&memory);
+    auto& resourceUseRecords = storage.Emplace<std::pmr::vector<NResources::ResourceUseRecord>>(&memory);
 
     views.reserve(viewCount);
     objects.reserve(objectCount);
+    resourceUseRecords.reserve(objectCount * 2U);
 
     world.Query<TransformComponent, CameraComponent>(
             [&](NEcs::Entity entity, const TransformComponent& transform, const CameraComponent& camera) {
@@ -83,6 +93,10 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
                         .Mesh = std::move(*mesh),
                         .Material = std::move(*material),
                 });
+
+                const RenderObject& object = objects.back();
+                resourceUseRecords.push_back(object.Mesh.GetUseRecord());
+                resourceUseRecords.push_back(object.Material.GetUseRecord());
             });
 
     const NEngine::NController::FrameHandle frame = storage.GetFrame();
@@ -95,7 +109,8 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
                                              .Generation = frame.GetGeneration(),
                                      },
                                      views,
-                                     objects);
+                                     objects,
+                                     resourceUseRecords);
 }
 
 } // namespace NRenderer::NInternal

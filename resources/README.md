@@ -12,6 +12,8 @@ stable state model that later loaders and graphics backends will extend without 
   stops new acquisitions, while existing leases keep their published version alive until their owner releases it.
 - `ResourceManager::TryAcquire()` is non-blocking: it returns no lease for a non-READY resource and never switches an
   existing lease to a later publication.
+- `ResourceUseRecord` is the type-erased handoff form used by frame snapshots and graphics submissions to keep a
+  retained resource version alive across CPU/GPU lifetime boundaries.
 - `ResourceIdentity` is the deterministic cache key for a logical resource request.
 - Path-backed identities use `ResourceIdentity::FromPath`, which performs lexical normalization and stores generic
   separators without resolving the filesystem.
