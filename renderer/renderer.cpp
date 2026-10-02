@@ -97,7 +97,7 @@ const RenderPlan& Renderer::Prepare(const RenderWorld& world, std::pmr::memory_r
         }
     }
 
-    std::ranges::stable_sort(visibleItems, LessRenderItem);
+    std::ranges::sort(visibleItems, LessRenderItem);
 
     DrawCommandData* commands = nullptr;
 

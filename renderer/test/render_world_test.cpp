@@ -252,6 +252,132 @@ TEST(RenderWorld, RetainsResourceVersionUntilFrameRecycle) {
     EXPECT_TRUE(firstMeshLifetime.expired());
 }
 
+TEST(RenderWorld, RetainsResourceVersionAcrossMultipleFrameSlots) {
+    ResourceManager resources;
+    const NResources::ResourceHandle<MeshData> mesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "shared"});
+    const NResources::ResourceOperation<MeshData> meshOperation = resources.BeginLoading(mesh);
+    auto meshPayload = std::make_shared<MeshData>(1);
+    std::weak_ptr<const MeshData> meshLifetime = meshPayload;
+
+    resources.PublishReady(meshOperation, meshPayload);
+
+    const NResources::ResourceHandle<Material> material =
+            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "shared"}, 1);
+
+    NEcs::World world;
+    const NEcs::Entity object = world.CreateEntity();
+
+    world.AddComponent<TransformComponent>(object);
+    world.AddComponent<RenderableComponent>(object,
+                                            RenderableComponent{
+                                                    .Mesh = mesh,
+                                                    .Material = material,
+                                            });
+
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 2,
+    }};
+
+    const FrameHandle firstFrame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage firstStorage = scheduler.GetFrameStorage(firstFrame);
+    const RenderWorld& firstWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, firstStorage);
+
+    const FrameHandle secondFrame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage secondStorage = scheduler.GetFrameStorage(secondFrame);
+    const RenderWorld& secondWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, secondStorage);
+
+    ASSERT_EQ(firstWorld.GetObjects().size(), 1);
+    ASSERT_EQ(secondWorld.GetObjects().size(), 1);
+    ASSERT_EQ(firstWorld.GetResourceUseRecords().size(), 2U);
+    ASSERT_EQ(secondWorld.GetResourceUseRecords().size(), 2U);
+    EXPECT_EQ(firstWorld.GetObjects().front().Mesh.GetVersion(), secondWorld.GetObjects().front().Mesh.GetVersion());
+    EXPECT_EQ(firstWorld.GetResourceUseRecords().front().GetVersion(),
+              secondWorld.GetResourceUseRecords().front().GetVersion());
+
+    meshPayload.reset();
+    resources.RequestUnload(mesh);
+    resources.CompleteUnload(mesh);
+
+    EXPECT_FALSE(meshLifetime.expired());
+
+    scheduler.CompleteFrame(firstFrame);
+    scheduler.RecycleFrame(firstFrame);
+
+    EXPECT_FALSE(meshLifetime.expired());
+
+    scheduler.CompleteFrame(secondFrame);
+    scheduler.RecycleFrame(secondFrame);
+
+    EXPECT_TRUE(meshLifetime.expired());
+}
+
+TEST(RenderWorld, SkipsNewConsumersAfterResourceUnload) {
+    ResourceManager resources;
+    const NResources::ResourceHandle<MeshData> mesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "unloaded"});
+    const NResources::ResourceOperation<MeshData> meshOperation = resources.BeginLoading(mesh);
+
+    resources.PublishReady(meshOperation, std::make_shared<MeshData>(1));
+
+    const NResources::ResourceHandle<Material> material =
+            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "unloaded"}, 1);
+
+    NEcs::World world;
+    const NEcs::Entity object = world.CreateEntity();
+
+    world.AddComponent<TransformComponent>(object);
+    world.AddComponent<RenderableComponent>(object,
+                                            RenderableComponent{
+                                                    .Mesh = mesh,
+                                                    .Material = material,
+                                            });
+
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    resources.RequestUnload(mesh);
+
+    const FrameHandle frame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
+    const RenderWorld& renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, storage);
+
+    EXPECT_TRUE(renderWorld.GetObjects().empty());
+    EXPECT_TRUE(renderWorld.GetResourceUseRecords().empty());
+}
+
+TEST(RenderWorld, RejectsStalePublicResourceHandleDuringExtraction) {
+    ResourceManager resources;
+    const NResources::ResourceHandle<MeshData> staleMesh =
+            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "stale"}, 1);
+    const NResources::ResourceHandle<Material> material =
+            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "stale"}, 1);
+
+    resources.RequestUnload(staleMesh);
+    resources.CompleteUnload(staleMesh);
+    resources.Forget(staleMesh);
+
+    static_cast<void>(resources.Request<MeshData>(ResourceIdentity{"mesh", "stale"}));
+
+    NEcs::World world;
+    const NEcs::Entity object = world.CreateEntity();
+
+    world.AddComponent<TransformComponent>(object);
+    world.AddComponent<RenderableComponent>(object,
+                                            RenderableComponent{
+                                                    .Mesh = staleMesh,
+                                                    .Material = material,
+                                            });
+
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+    const FrameHandle frame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                       [&] { static_cast<void>(NRenderer::NInternal::ExtractRenderWorld(world, resources, storage)); });
+}
+
 TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
     ResourceManager resources;
     const NResources::ResourceHandle<MeshData> mesh =
@@ -366,6 +492,9 @@ TEST(Renderer, BuildsDrawCommandsForEveryViewObjectPair) {
     const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
     const RenderWorld& renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, storage);
 
+    ASSERT_EQ(renderWorld.GetObjects().size(), 1);
+    const NRenderer::RenderObject& renderObject = renderWorld.GetObjects().front();
+
     const NRenderer::RenderPlan& plan = Renderer::Prepare(renderWorld, storage.GetMemoryResource());
 
     ASSERT_EQ(plan.GetDrawCommands().size(), 2);
@@ -376,9 +505,9 @@ TEST(Renderer, BuildsDrawCommandsForEveryViewObjectPair) {
         EXPECT_EQ(command.ObjectId.Index, object.Index);
         EXPECT_FLOAT_EQ(command.WorldTransform.Translation.X, 1.0F);
         EXPECT_EQ(command.Mesh, mesh);
-        EXPECT_NE(command.MeshVersion, 0);
+        EXPECT_EQ(command.MeshVersion, renderObject.Mesh.GetVersion());
         EXPECT_EQ(command.Material, material);
-        EXPECT_NE(command.MaterialVersion, 0);
+        EXPECT_EQ(command.MaterialVersion, renderObject.Material.GetVersion());
     }
 }
 
@@ -434,6 +563,51 @@ TEST(Renderer, SortsDrawCommandsDeterministically) {
     EXPECT_EQ(firstPlan.GetDrawCommands()[1].ObjectId.Generation, secondObject.Generation);
     EXPECT_EQ(secondPlan.GetDrawCommands()[0].ObjectId, firstPlan.GetDrawCommands()[0].ObjectId);
     EXPECT_EQ(secondPlan.GetDrawCommands()[1].ObjectId, firstPlan.GetDrawCommands()[1].ObjectId);
+}
+
+TEST(Renderer, UsesObjectIdAsFinalSortTieBreak) {
+    ResourceManager resources;
+    const NResources::ResourceHandle<MeshData> mesh =
+            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "tie"}, 1);
+    const NResources::ResourceHandle<Material> material =
+            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "tie"}, 2);
+
+    NEcs::World world;
+
+    const NEcs::Entity camera = world.CreateEntity();
+    world.AddComponent<TransformComponent>(camera);
+    world.AddComponent<CameraComponent>(camera);
+
+    const NEcs::Entity firstObject = world.CreateEntity();
+    world.AddComponent<TransformComponent>(firstObject);
+    world.AddComponent<RenderableComponent>(firstObject,
+                                            RenderableComponent{
+                                                    .Mesh = mesh,
+                                                    .Material = material,
+                                            });
+
+    const NEcs::Entity secondObject = world.CreateEntity();
+    world.AddComponent<TransformComponent>(secondObject);
+    world.AddComponent<RenderableComponent>(secondObject,
+                                            RenderableComponent{
+                                                    .Mesh = mesh,
+                                                    .Material = material,
+                                            });
+
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+    const FrameHandle frame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
+    const RenderWorld& renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, storage);
+
+    const NRenderer::RenderPlan& plan = Renderer::Prepare(renderWorld, storage.GetMemoryResource());
+
+    ASSERT_EQ(plan.GetDrawCommands().size(), 2);
+    EXPECT_EQ(plan.GetDrawCommands()[0].ObjectId.Index, firstObject.Index);
+    EXPECT_EQ(plan.GetDrawCommands()[0].ObjectId.Generation, firstObject.Generation);
+    EXPECT_EQ(plan.GetDrawCommands()[1].ObjectId.Index, secondObject.Index);
+    EXPECT_EQ(plan.GetDrawCommands()[1].ObjectId.Generation, secondObject.Generation);
 }
 
 } // namespace

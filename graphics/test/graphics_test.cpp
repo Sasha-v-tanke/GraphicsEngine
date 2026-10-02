@@ -7,6 +7,7 @@
 #include <graphics/graphics.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <resources/resource_manager.h>
 #include <tests/common/test_error.h>
 
 namespace {
@@ -117,16 +118,29 @@ TEST_F(GraphicsTest, RejectsBackendThatDoesNotSatisfyRequiredCapabilities) {
 
 TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
     NGraphics::Graphics graphics = CreateGraphics();
+    NResources::ResourceManager resources;
+    const auto resource = resources.Request<int>(NResources::ResourceIdentity{"test", "retained"});
+    const auto operation = resources.BeginLoading(resource);
+
+    resources.PublishReady(operation, std::make_shared<int>(7));
+
+    std::optional<NResources::ResourceLease<int>> lease = resources.TryAcquire(resource);
+
+    ASSERT_TRUE(lease.has_value());
 
     const auto completion = graphics.SubmitFrame({
             .FrameIndex = 42,
             .RequiresPresentation = true,
+            .ResourceUseRecords = {lease->GetUseRecord()},
     });
 
     ASSERT_TRUE(completion.IsValid());
     ASSERT_EQ(m_state.Submissions.size(), 1U);
     EXPECT_EQ(m_state.Submissions[0].FrameIndex, 42U);
     EXPECT_TRUE(m_state.Submissions[0].RequiresPresentation);
+    ASSERT_EQ(m_state.Submissions[0].ResourceUseRecords.size(), 1U);
+    EXPECT_TRUE(m_state.Submissions[0].ResourceUseRecords[0].IsValid());
+    EXPECT_EQ(m_state.Submissions[0].ResourceUseRecords[0].GetVersion(), lease->GetVersion());
     EXPECT_FALSE(graphics.IsCompleted(completion));
 
     m_state.CompletedValue = completion.GetValue();
@@ -146,6 +160,7 @@ TEST_F(GraphicsTest, RejectsPresentationSubmissionWhenBackendHasNoPresentationPa
         (void)graphics.SubmitFrame({
                 .FrameIndex = 1,
                 .RequiresPresentation = true,
+                .ResourceUseRecords = {},
         });
     });
 }
@@ -167,6 +182,7 @@ TEST_F(GraphicsTest, RejectsCompletionPointFromAnotherGraphics) {
     const auto completion = first.SubmitFrame({
             .FrameIndex = 1,
             .RequiresPresentation = true,
+            .ResourceUseRecords = {},
     });
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)second.IsCompleted(completion); });
@@ -250,6 +266,7 @@ TEST_F(GraphicsTest, DestroysBufferAfterCompletionPoint) {
     const NGraphics::CompletionPoint completion = graphics.SubmitFrame({
             .FrameIndex = 7,
             .RequiresPresentation = false,
+            .ResourceUseRecords = {},
     });
 
     graphics.DestroyBuffer(buffer, completion);
@@ -337,6 +354,7 @@ TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredBufferDestruction) {
     const NGraphics::CompletionPoint otherCompletion = other.SubmitFrame({
             .FrameIndex = 1,
             .RequiresPresentation = false,
+            .ResourceUseRecords = {},
     });
 
     const NGraphics::BufferHandle buffer = graphics.CreateBuffer({

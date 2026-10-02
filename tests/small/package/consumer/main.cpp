@@ -14,6 +14,7 @@
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>
 #include <GraphicsEngine/resources/resource_manager.h>
+#include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>

@@ -226,6 +226,7 @@ set(
     "GraphicsEngine/resources/resource_lease.h"
     "GraphicsEngine/resources/resource_manager.h"
     "GraphicsEngine/resources/resource_state.h"
+    "GraphicsEngine/resources/resource_use_record.h"
     "GraphicsEngine/resources/shader_artifact.h"
     "GraphicsEngine/resources/shader_artifact_loader.h"
     "GraphicsEngine/renderer/renderer.h"
