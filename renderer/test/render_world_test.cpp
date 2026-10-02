@@ -250,6 +250,94 @@ TEST(RenderWorld, RetainsResourceVersionUntilFrameRecycle) {
     EXPECT_TRUE(firstMeshLifetime.expired());
 }
 
+TEST(RenderWorld, RetainsResourceVersionAcrossMultipleFrameSlots) {
+    ResourceManager resources;
+    const NResources::ResourceHandle<MeshData> mesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "shared"});
+    const NResources::ResourceOperation<MeshData> meshOperation = resources.BeginLoading(mesh);
+    auto meshPayload = std::make_shared<MeshData>(1);
+    std::weak_ptr<const MeshData> meshLifetime = meshPayload;
+
+    resources.PublishReady(meshOperation, meshPayload);
+
+    const NResources::ResourceHandle<Material> material =
+            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "shared"}, 1);
+
+    NEcs::World world;
+    const NEcs::Entity object = world.CreateEntity();
+
+    world.AddComponent<TransformComponent>(object);
+    world.AddComponent<RenderableComponent>(object,
+                                            RenderableComponent{
+                                                    .Mesh = mesh,
+                                                    .Material = material,
+                                            });
+
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 2,
+    }};
+
+    const FrameHandle firstFrame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage firstStorage = scheduler.GetFrameStorage(firstFrame);
+    const RenderWorld& firstWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, firstStorage);
+
+    const FrameHandle secondFrame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage secondStorage = scheduler.GetFrameStorage(secondFrame);
+    const RenderWorld& secondWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, secondStorage);
+
+    ASSERT_EQ(firstWorld.GetObjects().size(), 1);
+    ASSERT_EQ(secondWorld.GetObjects().size(), 1);
+    EXPECT_EQ(firstWorld.GetObjects().front().Mesh.GetVersion(), secondWorld.GetObjects().front().Mesh.GetVersion());
+
+    meshPayload.reset();
+    resources.RequestUnload(mesh);
+    resources.CompleteUnload(mesh);
+
+    EXPECT_FALSE(meshLifetime.expired());
+
+    scheduler.CompleteFrame(firstFrame);
+    scheduler.RecycleFrame(firstFrame);
+
+    EXPECT_FALSE(meshLifetime.expired());
+
+    scheduler.CompleteFrame(secondFrame);
+    scheduler.RecycleFrame(secondFrame);
+
+    EXPECT_TRUE(meshLifetime.expired());
+}
+
+TEST(RenderWorld, SkipsNewConsumersAfterResourceUnload) {
+    ResourceManager resources;
+    const NResources::ResourceHandle<MeshData> mesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "unloaded"});
+    const NResources::ResourceOperation<MeshData> meshOperation = resources.BeginLoading(mesh);
+
+    resources.PublishReady(meshOperation, std::make_shared<MeshData>(1));
+
+    const NResources::ResourceHandle<Material> material =
+            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "unloaded"}, 1);
+
+    NEcs::World world;
+    const NEcs::Entity object = world.CreateEntity();
+
+    world.AddComponent<TransformComponent>(object);
+    world.AddComponent<RenderableComponent>(object,
+                                            RenderableComponent{
+                                                    .Mesh = mesh,
+                                                    .Material = material,
+                                            });
+
+    FrameScheduler scheduler{EngineConfig{
+            .MaxActiveFrames = 1,
+    }};
+
+    resources.RequestUnload(mesh);
+
+    const FrameHandle frame = BeginExtractionFrame(scheduler);
+    const NEngine::NController::FrameStorage storage = scheduler.GetFrameStorage(frame);
+    const RenderWorld& renderWorld = NRenderer::NInternal::ExtractRenderWorld(world, resources, storage);
+
+    EXPECT_TRUE(renderWorld.GetObjects().empty());
+}
+
 TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
     ResourceManager resources;
     const NResources::ResourceHandle<MeshData> mesh =
