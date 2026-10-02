@@ -5,10 +5,10 @@
 #include <limits>
 #include <span>
 
+#include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/math/camera.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/resources/resource_lease.h>
-#include <GraphicsEngine/resources/resource_use_record.h>
 
 namespace NResources {
 
@@ -75,7 +75,7 @@ public:
         return m_objects;
     }
 
-    [[nodiscard]] std::span<const NResources::ResourceUseRecord> GetResourceUseRecords() const noexcept {
+    [[nodiscard]] std::span<const NCommon::ResourceUseRecord> GetResourceUseRecords() const noexcept {
         return m_resourceUseRecords;
     }
 
@@ -85,7 +85,7 @@ private:
                 std::size_t viewCount,
                 const RenderObject* objects,
                 std::size_t objectCount,
-                const NResources::ResourceUseRecord* resourceUseRecords,
+                const NCommon::ResourceUseRecord* resourceUseRecords,
                 std::size_t resourceUseRecordCount) noexcept
         : m_frame(frame)
         , m_views(views, viewCount)
@@ -97,7 +97,7 @@ private:
     RenderFrameIdentity m_frame;
     std::span<const RenderView> m_views;
     std::span<const RenderObject> m_objects;
-    std::span<const NResources::ResourceUseRecord> m_resourceUseRecords;
+    std::span<const NCommon::ResourceUseRecord> m_resourceUseRecords;
 
     friend class NInternal::RenderWorldBuilder;
 };
