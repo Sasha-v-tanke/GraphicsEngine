@@ -229,6 +229,7 @@ set(
     "GraphicsEngine/resources/resource_use_record.h"
     "GraphicsEngine/resources/shader_artifact.h"
     "GraphicsEngine/resources/shader_artifact_loader.h"
+    "GraphicsEngine/renderer/renderer.h"
     "GraphicsEngine/renderer/render_components.h"
     "GraphicsEngine/renderer/render_world.h"
     "GraphicsEngine/window/window.h"
