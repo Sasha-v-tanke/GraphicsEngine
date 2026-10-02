@@ -8,6 +8,7 @@ SOURCES(
 
 PRIVATE_DEPENDS(
     Graphics
+    Resources
 )
 
 TEST_LABELS(

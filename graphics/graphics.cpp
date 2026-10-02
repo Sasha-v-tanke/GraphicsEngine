@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #include <graphics/backend/backend.h>
 #include <graphics/backend/factory.h>
@@ -70,12 +71,12 @@ const GraphicsCapabilities& Graphics::GetCapabilities() const noexcept {
     return m_backend->GetCapabilities();
 }
 
-CompletionPoint Graphics::SubmitFrame(const FrameSubmission& submission) {
+CompletionPoint Graphics::SubmitFrame(FrameSubmission submission) {
     if (submission.RequiresPresentation && !m_backend->GetCapabilities().Presentation) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Graphics backend does not support presentation");
     }
 
-    const std::uint64_t value = m_backend->SubmitFrame(submission);
+    const std::uint64_t value = m_backend->SubmitFrame(std::move(submission));
 
     if (value == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned invalid completion value");

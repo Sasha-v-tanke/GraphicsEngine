@@ -15,7 +15,6 @@ SOURCES(
 
 PUBLIC_DEPENDS(
     Common
-    Resources
 )
 
 RECURSE(
