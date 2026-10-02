@@ -11,6 +11,7 @@
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/math/transform.h>
+#include <GraphicsEngine/renderer/renderer.h>
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>
 #include <GraphicsEngine/resources/resource_manager.h>

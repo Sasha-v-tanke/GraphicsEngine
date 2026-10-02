@@ -35,3 +35,19 @@ boundary.
 common records and moves them into the graphics backend submission boundary, so backend-side GPU lifetime retains the
 same logical resource versions until the submission completion point retires. Extraction itself still does not expose
 native backend objects, and Graphics does not depend on Resources.
+
+## Renderer preparation
+
+`Renderer` consumes only `RenderWorld`. It does not read mutable `World`, does not know Vulkan, and does not emit command
+buffers.
+
+The first renderer path builds backend-independent `DrawCommandData`:
+
+```text
+RenderWorld -> visibility -> RenderItems -> sort -> DrawCommandData
+```
+
+Visibility is intentionally conservative for MVP-3: every render object is visible to every extracted view. The output is
+deterministic for the same `RenderWorld`; commands are ordered by view, material, mesh and object identity. Intermediate
+data and the resulting render plan are allocated from the caller-provided frame memory resource, normally the current
+`FrameExecutionSlot` arena.
