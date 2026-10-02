@@ -32,6 +32,8 @@ extern char** environ;
 
 namespace {
 
+constexpr std::string_view PortabilitySubsetExtension = "VK_KHR_portability_subset";
+
 NVulkan::VulkanPhysicalDeviceSelection MakeSelection() {
     NVulkan::VulkanPhysicalDeviceSelection selection{
             .Handle = reinterpret_cast<VkPhysicalDevice>(1),
@@ -166,6 +168,19 @@ TEST(VulkanDevicePlan, UsesSeparateQueueFamiliesWhenGraphicsAndPresentDiffer) {
     ASSERT_EQ(plan.QueueFamilies.size(), 2U);
     EXPECT_EQ(plan.QueueFamilies[0].FamilyIndex, 2U);
     EXPECT_EQ(plan.QueueFamilies[1].FamilyIndex, 5U);
+}
+
+TEST(VulkanDevicePlan, EnablesPortabilitySubsetWhenAdvertised) {
+    NVulkan::VulkanPhysicalDeviceSelection selection = MakeSelection();
+    selection.Capabilities.Extensions.emplace_back(PortabilitySubsetExtension);
+
+    const NVulkan::VulkanDevicePlan plan = NVulkan::MakeVulkanDevicePlan(selection);
+
+    EXPECT_EQ(plan.Extensions,
+              (std::vector<std::string>{
+                      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                      std::string{PortabilitySubsetExtension},
+              }));
 }
 
 TEST(VulkanDevicePlan, MapsGraphicsCapabilities) {

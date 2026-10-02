@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <ranges>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -19,6 +20,7 @@ namespace {
 
 constexpr float QueuePriority = 1.0F;
 constexpr std::uint32_t VulkanMaxFramesInFlight = 2;
+constexpr std::string_view PortabilitySubsetExtension = "VK_KHR_portability_subset";
 
 std::string_view GetVkResultName(VkResult result) {
     switch (result) {
@@ -47,6 +49,10 @@ bool ContainsQueueFamily(const std::vector<VulkanDeviceQueuePlan>& queueFamilies
     return std::ranges::any_of(queueFamilies, [familyIndex](const VulkanDeviceQueuePlan& queueFamily) {
         return queueFamily.FamilyIndex == familyIndex;
     });
+}
+
+bool ContainsExtension(const std::vector<std::string>& extensions, std::string_view extension) {
+    return std::ranges::find(extensions, extension) != extensions.end();
 }
 
 void AppendQueueFamily(std::vector<VulkanDeviceQueuePlan>& queueFamilies, std::uint32_t familyIndex) {
@@ -97,6 +103,18 @@ NGraphics::GraphicsCapabilities MakeGraphicsCapabilities(const VulkanPhysicalDev
     };
 }
 
+std::vector<std::string> MakeDeviceExtensions(const VulkanPhysicalDeviceCapabilities& capabilities) {
+    std::vector<std::string> extensions{
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    };
+
+    if (ContainsExtension(capabilities.Extensions, PortabilitySubsetExtension)) {
+        extensions.emplace_back(PortabilitySubsetExtension);
+    }
+
+    return extensions;
+}
+
 } // namespace
 
 VulkanLockedQueue::VulkanLockedQueue(std::unique_lock<std::mutex> lock,
@@ -126,7 +144,7 @@ VulkanDevicePlan MakeVulkanDevicePlan(const VulkanPhysicalDeviceSelection& physi
 
     return {
             .QueueFamilies = std::move(queueFamilies),
-            .Extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME},
+            .Extensions = MakeDeviceExtensions(physicalDevice.Capabilities),
             .Features = physicalDevice.Capabilities.Features,
             .GraphicsCapabilities = MakeGraphicsCapabilities(physicalDevice.Capabilities),
     };
