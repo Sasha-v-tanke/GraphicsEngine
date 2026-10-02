@@ -212,6 +212,7 @@ set(
     "GraphicsEngine/lib/common/error/assert.h"
     "GraphicsEngine/lib/common/error/error.h"
     "GraphicsEngine/lib/common/error/exception.h"
+    "GraphicsEngine/lib/common/resource_use_record.h"
     "GraphicsEngine/lib/common/wrapper/non_copyable.h"
     "GraphicsEngine/lib/common/wrapper/non_transferable.h"
     "GraphicsEngine/math/camera.h"
