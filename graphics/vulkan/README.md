@@ -1,6 +1,7 @@
 # Vulkan Backend
 
-`VulkanBackend` owns Vulkan loader, instance bootstrap and physical-device selection for GraphicsEngine.
+`VulkanBackend` owns Vulkan loader, instance bootstrap, physical-device selection and logical-device
+bootstrap for GraphicsEngine.
 
 This layer is backend-internal. It may use Vulkan native types, but higher-level
 Window, Application, Engine and future Graphics public contracts must not depend
@@ -63,8 +64,32 @@ Rejected candidates retain explicit reasons for every missing required
 capability. If no candidate is suitable, initialization fails with diagnostics
 for all candidates.
 
+## Logical Device
+
+`VulkanDevice` creates and owns one `VkDevice` for a selected physical device.
+It enables only the queue families required by graphics and presentation; when
+both roles use the same family, only one queue create request is emitted.
+
+The logical-device layer enables the required Vulkan 1.2/1.3 features from the
+selected physical-device snapshot:
+
+- timeline semaphore;
+- Synchronization2;
+- Dynamic Rendering.
+
+After successful device creation, device-level Volk dispatch is loaded through
+`volkLoadDevice()`. The graphics and present queue handles are retrieved once
+and exposed only as `VulkanLockedQueue`, so backend code holds the queue mutex
+while using the raw `VkQueue`. Shared graphics/present queues therefore have one
+host-synchronization boundary.
+
+`VulkanDevice` publishes immutable `GraphicsCapabilities` from the selected
+device snapshot. The current public capability surface maps Vulkan presentation
+support, timeline semaphore support and the backend frame-in-flight policy.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
 instance creation, `volkLoadInstanceOnly()` loads instance-level dispatch.
-Device-level dispatch belongs to the logical-device layer.
+After successful logical-device creation, `volkLoadDevice()` loads device-level
+dispatch.

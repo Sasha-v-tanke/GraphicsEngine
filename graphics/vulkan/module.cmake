@@ -1,11 +1,13 @@
 MODULE(VulkanBackend)
 
 API(
+    device.h
     instance.h
     physical_device.h
 )
 
 SOURCES(
+    device.cpp
     instance.cpp
     physical_device.cpp
 )
