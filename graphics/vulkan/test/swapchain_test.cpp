@@ -213,6 +213,18 @@ TEST(VulkanSwapchainConfig, SuspendsZeroSizeFramebuffer) {
     EXPECT_TRUE(config.Suspended);
 }
 
+TEST(VulkanSwapchainConfig, SuspendsZeroSizeFramebufferWithFixedSurfaceExtent) {
+    NVulkan::VulkanSwapchainSupport support = MakeSupport();
+    support.Capabilities.currentExtent = {.width = 800, .height = 600};
+
+    const NVulkan::VulkanSwapchainConfig config =
+            NVulkan::MakeVulkanSwapchainConfig(support, NWindow::WindowSize{.Width = 0, .Height = 64}, 2, 2);
+
+    EXPECT_TRUE(config.Suspended);
+    EXPECT_EQ(config.Extent.width, 0U);
+    EXPECT_EQ(config.Extent.height, 64U);
+}
+
 TEST(VulkanSwapchainConfig, FallsBackToFifoPresentMode) {
     NVulkan::VulkanSwapchainSupport support = MakeSupport();
     support.PresentModes = {VK_PRESENT_MODE_FIFO_KHR};

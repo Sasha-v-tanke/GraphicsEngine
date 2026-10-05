@@ -54,21 +54,25 @@ std::string_view GetVkResultName(VkResult result) {
     return extent.width == 0 || extent.height == 0;
 }
 
+[[nodiscard]] bool IsZeroFramebuffer(NWindow::WindowSize framebufferSize) noexcept {
+    return framebufferSize.Width <= 0 || framebufferSize.Height <= 0;
+}
+
 [[nodiscard]] VkExtent2D ClampExtent(const VkSurfaceCapabilitiesKHR& capabilities,
                                      NWindow::WindowSize framebufferSize) noexcept {
+    if (IsZeroFramebuffer(framebufferSize)) {
+        return {
+                .width = framebufferSize.Width <= 0 ? 0U : static_cast<std::uint32_t>(framebufferSize.Width),
+                .height = framebufferSize.Height <= 0 ? 0U : static_cast<std::uint32_t>(framebufferSize.Height),
+        };
+    }
+
     if (!HasDynamicExtent(capabilities)) {
         return capabilities.currentExtent;
     }
 
-    const std::uint32_t width = framebufferSize.Width <= 0 ? 0U : static_cast<std::uint32_t>(framebufferSize.Width);
-    const std::uint32_t height = framebufferSize.Height <= 0 ? 0U : static_cast<std::uint32_t>(framebufferSize.Height);
-
-    if (width == 0 || height == 0) {
-        return {
-                .width = width,
-                .height = height,
-        };
-    }
+    const std::uint32_t width = static_cast<std::uint32_t>(framebufferSize.Width);
+    const std::uint32_t height = static_cast<std::uint32_t>(framebufferSize.Height);
 
     return {
             .width = std::clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
@@ -203,7 +207,7 @@ VulkanSwapchainConfig MakeVulkanSwapchainConfig(const VulkanSwapchainSupport& su
             .SharingMode = queueFamilyIndices.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
             .QueueFamilyIndices = queueFamilyIndices,
             .PreTransform = support.Capabilities.currentTransform,
-            .Suspended = IsZeroExtent(extent),
+            .Suspended = IsZeroFramebuffer(framebufferSize) || IsZeroExtent(extent),
     };
 }
 
