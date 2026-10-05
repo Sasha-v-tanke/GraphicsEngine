@@ -22,8 +22,10 @@ extern char** environ;
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/instance.h>
 #include <graphics/vulkan/physical_device.h>
+#include <graphics/vulkan/resource_conversion.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <tests/common/test_error.h>
 #include <window/window.h>
 #include <window/window_config.h>
 #include <window/window_runtime.h>
@@ -198,6 +200,30 @@ TEST(VulkanDevicePlan, RejectsNullPhysicalDevice) {
     selection.Handle = VK_NULL_HANDLE;
 
     EXPECT_THROW((void)NVulkan::MakeVulkanDevicePlan(selection), NCommon::Exception);
+}
+
+TEST(VulkanResourceConversion, MapsImageDescriptorsToVulkanEnums) {
+    EXPECT_EQ(NVulkan::ToVulkanFormat(NGraphics::EImageFormat::RGBA8_UNORM), VK_FORMAT_R8G8B8A8_UNORM);
+    EXPECT_EQ(NVulkan::ToVulkanFormat(NGraphics::EImageFormat::D32_FLOAT), VK_FORMAT_D32_SFLOAT);
+    EXPECT_EQ(
+            NVulkan::ToVulkanImageUsage(NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled),
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    EXPECT_EQ(NVulkan::ToVulkanImageAspect(NGraphics::ImageAspect(NGraphics::EImageAspect::Color)),
+              VK_IMAGE_ASPECT_COLOR_BIT);
+    EXPECT_EQ(NVulkan::ToVulkanFilter(NGraphics::ESamplerFilter::Linear), VK_FILTER_LINEAR);
+    EXPECT_EQ(NVulkan::ToVulkanAddressMode(NGraphics::ESamplerAddressMode::ClampToEdge),
+              VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+}
+
+TEST(VulkanResourceConversion, RejectsUnsupportedImageAndSamplerValues) {
+    NTest::ExpectError(NCommon::EError::UNSUPPORTED,
+                       [] { (void)NVulkan::ToVulkanFormat(static_cast<NGraphics::EImageFormat>(255)); });
+    NTest::ExpectError(NCommon::EError::UNSUPPORTED, [] { (void)NVulkan::ToVulkanImageUsage(0x80000000U); });
+    NTest::ExpectError(NCommon::EError::UNSUPPORTED, [] { (void)NVulkan::ToVulkanImageAspect(0x40000000U); });
+    NTest::ExpectError(NCommon::EError::UNSUPPORTED,
+                       [] { (void)NVulkan::ToVulkanFilter(static_cast<NGraphics::ESamplerFilter>(255)); });
+    NTest::ExpectError(NCommon::EError::UNSUPPORTED,
+                       [] { (void)NVulkan::ToVulkanAddressMode(static_cast<NGraphics::ESamplerAddressMode>(255)); });
 }
 
 TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilities) {
