@@ -87,6 +87,31 @@ host-synchronization boundary.
 device snapshot. The current public capability surface maps Vulkan presentation
 support, timeline semaphore support and the backend frame-in-flight policy.
 
+## Swapchain Presentation
+
+`VulkanSwapchain` owns the single presentation chain for one surface. Swapchain
+selection is split into a CPU-testable config step and the runtime Vulkan object
+creation step.
+
+The selection policy is deterministic:
+
+- prefer `VK_FORMAT_B8G8R8A8_SRGB` with `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`,
+  otherwise use the first surface format;
+- prefer `VK_PRESENT_MODE_MAILBOX_KHR`, otherwise fall back to FIFO when
+  available;
+- use the surface fixed extent when provided, otherwise clamp the framebuffer
+  size to surface bounds;
+- request one more image than the surface minimum, clamped to the surface
+  maximum when it is finite;
+- use exclusive image sharing for a shared graphics/present family and
+  concurrent sharing when the families differ.
+
+A zero framebuffer extent is a suspended presentation state. In that state no
+`VkSwapchainKHR` is created and acquire/present calls are rejected with the
+project error model instead of treating minimization as a fatal backend failure.
+`SwapchainImageIndex` values come from `vkAcquireNextImageKHR` and are unrelated
+to Engine `FrameExecutionSlot` indices.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
