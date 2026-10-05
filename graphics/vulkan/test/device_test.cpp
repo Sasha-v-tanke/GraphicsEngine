@@ -259,6 +259,37 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
             EXPECT_NE(presentQueue.GetHandle(), VK_NULL_HANDLE);
             EXPECT_EQ(presentQueue.GetFamilyIndex(), physicalDevice.PresentQueueFamilyIndex);
         }
+
+        const NGraphics::ImageDescriptor imageDescriptor{
+                .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+                .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        };
+        const VkImage image = device.CreateImage(imageDescriptor);
+        ASSERT_NE(image, VK_NULL_HANDLE);
+
+        const VkImageView imageView =
+                device.CreateImageView(image,
+                                       {
+                                               .Image = {},
+                                               .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                                               .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+                                       });
+        EXPECT_NE(imageView, VK_NULL_HANDLE);
+
+        const VkSampler sampler = device.CreateSampler({
+                .MinFilter = NGraphics::ESamplerFilter::Linear,
+                .MagFilter = NGraphics::ESamplerFilter::Linear,
+                .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
+                .AddressModeV = NGraphics::ESamplerAddressMode::ClampToEdge,
+                .AddressModeW = NGraphics::ESamplerAddressMode::ClampToEdge,
+        });
+        EXPECT_NE(sampler, VK_NULL_HANDLE);
+
+        device.DestroySampler(sampler);
+        device.DestroyImageView(imageView);
+        device.DestroyImage(image);
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {
             GTEST_SKIP() << exception.GetMessage();
