@@ -10,7 +10,6 @@
 #include <GraphicsEngine/graphics/vulkan/device.h>
 #include <GraphicsEngine/graphics/vulkan/physical_device.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
-#include <GraphicsEngine/window/window_size.h>
 
 namespace NVulkan {
 
@@ -29,11 +28,12 @@ struct VulkanSwapchainConfig {
     VkSharingMode SharingMode = VK_SHARING_MODE_EXCLUSIVE;
     std::vector<std::uint32_t> QueueFamilyIndices;
     VkSurfaceTransformFlagBitsKHR PreTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    VkCompositeAlphaFlagBitsKHR CompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     bool Suspended = false;
 };
 
 [[nodiscard]] VulkanSwapchainConfig MakeVulkanSwapchainConfig(const VulkanSwapchainSupport& support,
-                                                              NWindow::WindowSize framebufferSize,
+                                                              VkExtent2D framebufferExtent,
                                                               std::uint32_t graphicsQueueFamilyIndex,
                                                               std::uint32_t presentQueueFamilyIndex);
 
@@ -44,7 +44,7 @@ public:
     VulkanSwapchain(const VulkanPhysicalDeviceSelection& physicalDevice,
                     const VulkanDevice& device,
                     VkSurfaceKHR surface,
-                    NWindow::WindowSize framebufferSize);
+                    VkExtent2D framebufferExtent);
 
     ~VulkanSwapchain();
 

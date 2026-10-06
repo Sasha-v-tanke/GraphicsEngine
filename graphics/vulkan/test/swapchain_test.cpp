@@ -83,6 +83,22 @@ NWindow::WindowConfig MakeWindowConfig() {
     return windowConfig;
 }
 
+VkExtent2D MakeExtent(std::uint32_t width, std::uint32_t height) noexcept {
+    return {
+            .width = width,
+            .height = height,
+    };
+}
+
+VkExtent2D GetFramebufferExtent(const NWindow::Window& window) noexcept {
+    const NWindow::WindowSize size = window.GetFramebufferSize();
+
+    return {
+            .width = size.Width <= 0 ? 0U : static_cast<std::uint32_t>(size.Width),
+            .height = size.Height <= 0 ? 0U : static_cast<std::uint32_t>(size.Height),
+    };
+}
+
 VkFence CreateFence(VkDevice device) {
     const VkFenceCreateInfo createInfo{
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -95,6 +111,91 @@ VkFence CreateFence(VkDevice device) {
     }
 
     return fence;
+}
+
+VkCommandPool CreateCommandPool(VkDevice device, std::uint32_t queueFamilyIndex) {
+    const VkCommandPoolCreateInfo createInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .queueFamilyIndex = queueFamilyIndex,
+    };
+
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    const VkResult result = vkCreateCommandPool(device, &createInfo, nullptr, &commandPool);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error{"Failed to create Vulkan command pool"};
+    }
+
+    return commandPool;
+}
+
+VkCommandBuffer AllocateCommandBuffer(VkDevice device, VkCommandPool commandPool) {
+    const VkCommandBufferAllocateInfo allocateInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+    };
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    const VkResult result = vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error{"Failed to allocate Vulkan command buffer"};
+    }
+
+    return commandBuffer;
+}
+
+void TransitionSwapchainImageToPresent(VkDevice device,
+                                       VkCommandPool commandPool,
+                                       NVulkan::VulkanLockedQueue graphicsQueue,
+                                       VkImage image) {
+    const VkCommandBuffer commandBuffer = AllocateCommandBuffer(device, commandPool);
+    const VkCommandBufferBeginInfo beginInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+
+    ASSERT_EQ(vkBeginCommandBuffer(commandBuffer, &beginInfo), VK_SUCCESS);
+
+    const VkImageMemoryBarrier2 barrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .dstAccessMask = VK_ACCESS_2_NONE,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange =
+                    {
+                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .baseMipLevel = 0,
+                            .levelCount = 1,
+                            .baseArrayLayer = 0,
+                            .layerCount = 1,
+                    },
+    };
+    const VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &barrier,
+    };
+
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    ASSERT_EQ(vkEndCommandBuffer(commandBuffer), VK_SUCCESS);
+
+    const VkSubmitInfo submitInfo{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &commandBuffer,
+    };
+
+    ASSERT_EQ(vkQueueSubmit(graphicsQueue.GetHandle(), 1, &submitInfo, VK_NULL_HANDLE), VK_SUCCESS);
+    ASSERT_EQ(vkQueueWaitIdle(graphicsQueue.GetHandle()), VK_SUCCESS);
 }
 
 std::string GetExecutablePath() {
@@ -174,7 +275,7 @@ void RunSpawnedSmoke(std::string_view filter) {
 
 TEST(VulkanSwapchainConfig, ChoosesPreferredFormatPresentModeAndClampedExtent) {
     const NVulkan::VulkanSwapchainConfig config =
-            NVulkan::MakeVulkanSwapchainConfig(MakeSupport(), NWindow::WindowSize{.Width = 4096, .Height = 8}, 2, 2);
+            NVulkan::MakeVulkanSwapchainConfig(MakeSupport(), MakeExtent(4096, 8), 2, 2);
 
     EXPECT_EQ(config.ImageFormat, VK_FORMAT_B8G8R8A8_SRGB);
     EXPECT_EQ(config.ColorSpace, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
@@ -189,7 +290,7 @@ TEST(VulkanSwapchainConfig, ChoosesPreferredFormatPresentModeAndClampedExtent) {
 
 TEST(VulkanSwapchainConfig, UsesConcurrentSharingForSeparateGraphicsAndPresentFamilies) {
     const NVulkan::VulkanSwapchainConfig config =
-            NVulkan::MakeVulkanSwapchainConfig(MakeSupport(), NWindow::WindowSize{.Width = 64, .Height = 64}, 2, 5);
+            NVulkan::MakeVulkanSwapchainConfig(MakeSupport(), MakeExtent(64, 64), 2, 5);
 
     EXPECT_EQ(config.SharingMode, VK_SHARING_MODE_CONCURRENT);
     EXPECT_EQ(config.QueueFamilyIndices, (std::vector<std::uint32_t>{2, 5}));
@@ -199,8 +300,7 @@ TEST(VulkanSwapchainConfig, UsesCurrentExtentWhenSurfaceIsFixed) {
     NVulkan::VulkanSwapchainSupport support = MakeSupport();
     support.Capabilities.currentExtent = {.width = 800, .height = 600};
 
-    const NVulkan::VulkanSwapchainConfig config =
-            NVulkan::MakeVulkanSwapchainConfig(support, NWindow::WindowSize{.Width = 64, .Height = 64}, 2, 2);
+    const NVulkan::VulkanSwapchainConfig config = NVulkan::MakeVulkanSwapchainConfig(support, MakeExtent(64, 64), 2, 2);
 
     EXPECT_EQ(config.Extent.width, 800U);
     EXPECT_EQ(config.Extent.height, 600U);
@@ -208,7 +308,7 @@ TEST(VulkanSwapchainConfig, UsesCurrentExtentWhenSurfaceIsFixed) {
 
 TEST(VulkanSwapchainConfig, SuspendsZeroSizeFramebuffer) {
     const NVulkan::VulkanSwapchainConfig config =
-            NVulkan::MakeVulkanSwapchainConfig(MakeSupport(), NWindow::WindowSize{.Width = 0, .Height = 64}, 2, 2);
+            NVulkan::MakeVulkanSwapchainConfig(MakeSupport(), MakeExtent(0, 64), 2, 2);
 
     EXPECT_TRUE(config.Suspended);
 }
@@ -217,8 +317,7 @@ TEST(VulkanSwapchainConfig, SuspendsZeroSizeFramebufferWithFixedSurfaceExtent) {
     NVulkan::VulkanSwapchainSupport support = MakeSupport();
     support.Capabilities.currentExtent = {.width = 800, .height = 600};
 
-    const NVulkan::VulkanSwapchainConfig config =
-            NVulkan::MakeVulkanSwapchainConfig(support, NWindow::WindowSize{.Width = 0, .Height = 64}, 2, 2);
+    const NVulkan::VulkanSwapchainConfig config = NVulkan::MakeVulkanSwapchainConfig(support, MakeExtent(0, 64), 2, 2);
 
     EXPECT_TRUE(config.Suspended);
     EXPECT_EQ(config.Extent.width, 0U);
@@ -229,10 +328,18 @@ TEST(VulkanSwapchainConfig, FallsBackToFifoPresentMode) {
     NVulkan::VulkanSwapchainSupport support = MakeSupport();
     support.PresentModes = {VK_PRESENT_MODE_FIFO_KHR};
 
-    const NVulkan::VulkanSwapchainConfig config =
-            NVulkan::MakeVulkanSwapchainConfig(support, NWindow::WindowSize{.Width = 64, .Height = 64}, 2, 2);
+    const NVulkan::VulkanSwapchainConfig config = NVulkan::MakeVulkanSwapchainConfig(support, MakeExtent(64, 64), 2, 2);
 
     EXPECT_EQ(config.PresentMode, VK_PRESENT_MODE_FIFO_KHR);
+}
+
+TEST(VulkanSwapchainConfig, SelectsSupportedCompositeAlpha) {
+    NVulkan::VulkanSwapchainSupport support = MakeSupport();
+    support.Capabilities.supportedCompositeAlpha = VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
+
+    const NVulkan::VulkanSwapchainConfig config = NVulkan::MakeVulkanSwapchainConfig(support, MakeExtent(64, 64), 2, 2);
+
+    EXPECT_EQ(config.CompositeAlpha, VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR);
 }
 
 TEST(VulkanSwapchainChild, DISABLED_CreatesAcquiresAndPresents) {
@@ -255,7 +362,7 @@ TEST(VulkanSwapchainChild, DISABLED_CreatesAcquiresAndPresents) {
                 physicalDevice,
                 device,
                 surface.GetHandle(),
-                window.GetFramebufferSize(),
+                GetFramebufferExtent(window),
         };
 
         if (swapchain.IsSuspended()) {
@@ -269,6 +376,8 @@ TEST(VulkanSwapchainChild, DISABLED_CreatesAcquiresAndPresents) {
         EXPECT_NE(swapchain.GetExtent().width, 0U);
         EXPECT_NE(swapchain.GetExtent().height, 0U);
 
+        EXPECT_THROW((void)swapchain.AcquireNextImage(0, VK_NULL_HANDLE, VK_NULL_HANDLE), NCommon::Exception);
+
         const VkFence acquireFence = CreateFence(device.GetHandle());
         const std::optional<std::uint32_t> imageIndex =
                 swapchain.AcquireNextImage(std::numeric_limits<std::uint64_t>::max(), VK_NULL_HANDLE, acquireFence);
@@ -281,7 +390,14 @@ TEST(VulkanSwapchainChild, DISABLED_CreatesAcquiresAndPresents) {
                                   std::numeric_limits<std::uint64_t>::max()),
                   VK_SUCCESS);
 
+        const VkCommandPool commandPool =
+                CreateCommandPool(device.GetHandle(), physicalDevice.GraphicsQueueFamilyIndex);
+        TransitionSwapchainImageToPresent(device.GetHandle(),
+                                          commandPool,
+                                          device.LockGraphicsQueue(),
+                                          swapchain.GetImages()[*imageIndex]);
         swapchain.Present(device.LockPresentQueue(), *imageIndex, {});
+        vkDestroyCommandPool(device.GetHandle(), commandPool, nullptr);
         vkDestroyFence(device.GetHandle(), acquireFence, nullptr);
 
         const NVulkan::VulkanLockedQueue presentQueue = device.LockPresentQueue();

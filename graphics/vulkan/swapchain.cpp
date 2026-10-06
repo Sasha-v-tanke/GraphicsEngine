@@ -54,29 +54,27 @@ std::string_view GetVkResultName(VkResult result) {
     return extent.width == 0 || extent.height == 0;
 }
 
-[[nodiscard]] bool IsZeroFramebuffer(NWindow::WindowSize framebufferSize) noexcept {
-    return framebufferSize.Width <= 0 || framebufferSize.Height <= 0;
+[[nodiscard]] bool IsZeroFramebuffer(VkExtent2D framebufferExtent) noexcept {
+    return framebufferExtent.width == 0 || framebufferExtent.height == 0;
 }
 
 [[nodiscard]] VkExtent2D ClampExtent(const VkSurfaceCapabilitiesKHR& capabilities,
-                                     NWindow::WindowSize framebufferSize) noexcept {
-    if (IsZeroFramebuffer(framebufferSize)) {
-        return {
-                .width = framebufferSize.Width <= 0 ? 0U : static_cast<std::uint32_t>(framebufferSize.Width),
-                .height = framebufferSize.Height <= 0 ? 0U : static_cast<std::uint32_t>(framebufferSize.Height),
-        };
+                                     VkExtent2D framebufferExtent) noexcept {
+    if (IsZeroFramebuffer(framebufferExtent)) {
+        return framebufferExtent;
     }
 
     if (!HasDynamicExtent(capabilities)) {
         return capabilities.currentExtent;
     }
 
-    const std::uint32_t width = static_cast<std::uint32_t>(framebufferSize.Width);
-    const std::uint32_t height = static_cast<std::uint32_t>(framebufferSize.Height);
-
     return {
-            .width = std::clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
-            .height = std::clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height),
+            .width = std::clamp(framebufferExtent.width,
+                                capabilities.minImageExtent.width,
+                                capabilities.maxImageExtent.width),
+            .height = std::clamp(framebufferExtent.height,
+                                 capabilities.minImageExtent.height,
+                                 capabilities.maxImageExtent.height),
     };
 }
 
@@ -128,6 +126,22 @@ std::string_view GetVkResultName(VkResult result) {
     }
 
     return {graphicsQueueFamilyIndex, presentQueueFamilyIndex};
+}
+
+[[nodiscard]] VkCompositeAlphaFlagBitsKHR ChooseCompositeAlpha(VkCompositeAlphaFlagsKHR supported) noexcept {
+    if ((supported & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0) {
+        return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    }
+
+    if ((supported & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) != 0) {
+        return VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
+    }
+
+    if ((supported & VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR) != 0) {
+        return VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
+    }
+
+    return VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
 }
 
 [[nodiscard]] VkImageView CreateImageView(VkDevice device, VkImage image, VkFormat format) {
@@ -190,11 +204,11 @@ std::string_view GetVkResultName(VkResult result) {
 } // namespace
 
 VulkanSwapchainConfig MakeVulkanSwapchainConfig(const VulkanSwapchainSupport& support,
-                                                NWindow::WindowSize framebufferSize,
+                                                VkExtent2D framebufferExtent,
                                                 std::uint32_t graphicsQueueFamilyIndex,
                                                 std::uint32_t presentQueueFamilyIndex) {
     const VkSurfaceFormatKHR format = ChooseSurfaceFormat(support.Formats);
-    const VkExtent2D extent = ClampExtent(support.Capabilities, framebufferSize);
+    const VkExtent2D extent = ClampExtent(support.Capabilities, framebufferExtent);
     const std::vector<std::uint32_t> queueFamilyIndices =
             MakeQueueFamilyIndices(graphicsQueueFamilyIndex, presentQueueFamilyIndex);
 
@@ -207,7 +221,8 @@ VulkanSwapchainConfig MakeVulkanSwapchainConfig(const VulkanSwapchainSupport& su
             .SharingMode = queueFamilyIndices.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
             .QueueFamilyIndices = queueFamilyIndices,
             .PreTransform = support.Capabilities.currentTransform,
-            .Suspended = IsZeroFramebuffer(framebufferSize) || IsZeroExtent(extent),
+            .CompositeAlpha = ChooseCompositeAlpha(support.Capabilities.supportedCompositeAlpha),
+            .Suspended = IsZeroFramebuffer(framebufferExtent) || IsZeroExtent(extent),
     };
 }
 
@@ -270,10 +285,10 @@ public:
     Impl(const VulkanPhysicalDeviceSelection& physicalDevice,
          const VulkanDevice& device,
          VkSurfaceKHR surface,
-         NWindow::WindowSize framebufferSize)
+         VkExtent2D framebufferExtent)
         : m_device(device.GetHandle())
         , m_config(MakeVulkanSwapchainConfig(ReadVulkanSwapchainSupport(physicalDevice.Handle, surface),
-                                             framebufferSize,
+                                             framebufferExtent,
                                              physicalDevice.GraphicsQueueFamilyIndex,
                                              physicalDevice.PresentQueueFamilyIndex)) {
         if (m_config.Suspended) {
@@ -338,6 +353,11 @@ public:
     AcquireNextImage(std::uint64_t timeoutNanoseconds, VkSemaphore semaphore, VkFence fence) const {
         EnsureActive("Vulkan swapchain acquire requires an active swapchain");
 
+        if (semaphore == VK_NULL_HANDLE && fence == VK_NULL_HANDLE) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                  "Vulkan swapchain acquire requires a semaphore or fence");
+        }
+
         std::uint32_t imageIndex = 0;
         const VkResult result =
                 vkAcquireNextImageKHR(m_device, m_swapchain, timeoutNanoseconds, semaphore, fence, &imageIndex);
@@ -398,7 +418,7 @@ private:
                 .queueFamilyIndexCount = static_cast<std::uint32_t>(m_config.QueueFamilyIndices.size()),
                 .pQueueFamilyIndices = m_config.QueueFamilyIndices.data(),
                 .preTransform = m_config.PreTransform,
-                .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                .compositeAlpha = m_config.CompositeAlpha,
                 .presentMode = m_config.PresentMode,
                 .clipped = VK_TRUE,
                 .oldSwapchain = VK_NULL_HANDLE,
@@ -432,8 +452,8 @@ private:
 VulkanSwapchain::VulkanSwapchain(const VulkanPhysicalDeviceSelection& physicalDevice,
                                  const VulkanDevice& device,
                                  VkSurfaceKHR surface,
-                                 NWindow::WindowSize framebufferSize)
-    : m_impl(std::make_unique<Impl>(physicalDevice, device, surface, framebufferSize)) {
+                                 VkExtent2D framebufferExtent)
+    : m_impl(std::make_unique<Impl>(physicalDevice, device, surface, framebufferExtent)) {
 }
 
 VulkanSwapchain::~VulkanSwapchain() = default;
