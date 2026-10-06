@@ -452,7 +452,7 @@ TEST_F(GraphicsTest, CreatesImageViewAndSamplerAndPreservesDescriptors) {
     const NGraphics::ImageDescriptor imageDescriptor{
             .Extent = {.Width = 128, .Height = 64, .Depth = 1},
             .MipLevels = 4,
-            .ArrayLayers = 2,
+            .ArrayLayers = 1,
             .Format = NGraphics::EImageFormat::RGBA8_UNORM,
             .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
             .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
@@ -466,7 +466,7 @@ TEST_F(GraphicsTest, CreatesImageViewAndSamplerAndPreservesDescriptors) {
             .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
             .BaseMipLevel = 1,
             .LevelCount = 2,
-            .BaseArrayLayer = 1,
+            .BaseArrayLayer = 0,
             .LayerCount = 1,
     };
     const NGraphics::SamplerDescriptor samplerDescriptor{
@@ -492,7 +492,7 @@ TEST_F(GraphicsTest, CreatesImageViewAndSamplerAndPreservesDescriptors) {
     EXPECT_EQ(m_state.CreatedImages[0].MipLevels, 4U);
     EXPECT_EQ(m_state.CreatedImageViews[0].Image, image);
     EXPECT_EQ(m_state.CreatedSamplers[0].MaxLod, 4.0F);
-    EXPECT_EQ(graphics.GetImageDescriptor(image).ArrayLayers, 2U);
+    EXPECT_EQ(graphics.GetImageDescriptor(image).ArrayLayers, 1U);
     EXPECT_EQ(graphics.GetImageViewDescriptor(view).BaseMipLevel, 1U);
     EXPECT_EQ(graphics.GetSamplerDescriptor(sampler).AddressModeV, NGraphics::ESamplerAddressMode::ClampToEdge);
 }
@@ -512,6 +512,23 @@ TEST_F(GraphicsTest, RejectsInvalidImageDescriptors) {
         (void)graphics.CreateImage({
                 .Extent = {.Width = 1, .Height = 1, .Depth = 1},
                 .MipLevels = 0,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 2},
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .ArrayLayers = 2,
                 .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
                 .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
         });
@@ -577,6 +594,15 @@ TEST_F(GraphicsTest, RejectsInvalidImageViewBindings) {
                 .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
                 .BaseMipLevel = 1,
                 .LevelCount = 2,
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImageView({
+                .Image = image,
+                .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+                .LayerCount = 2,
         });
     });
 }

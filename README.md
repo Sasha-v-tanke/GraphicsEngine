@@ -149,22 +149,27 @@ draw checkpoint.
 - immutable `GraphicsCapabilities` и проверку `RequiredGraphicsCapabilities`;
 - единственный presentation-aware frame submission path;
 - backend-independent `CompletionPoint`, который можно использовать для frame/resource lifetime decisions;
-- backend-independent `BufferDescriptor` и opaque `BufferHandle` без native API handles в public API.
+- backend-independent `BufferDescriptor`, `ImageDescriptor`, `ImageViewDescriptor`, `SamplerDescriptor` и opaque
+  handles без native API handles в public API.
 
 Concrete backend выбирается централизованно через graphics backend factory. Public Graphics API не содержит Vulkan,
 OpenGL, GLFW или других native types.
 
-Graphics владеет GPU resource lifetime на уровне public handles. `BufferHandle` привязан к origin `Graphics`, имеет
-generation и становится недействительным после destroy, поэтому stale/cross-backend handles не принимаются обратно.
-`BufferDescriptor` описывает semantic size/usage/access/lifetime, а backend сам выбирает native memory usage,
-allocation strategy и concrete buffer creation flags.
+Graphics владеет GPU resource lifetime на уровне public handles. `BufferHandle`, `ImageHandle`, `ImageViewHandle` и
+`SamplerHandle` привязаны к origin `Graphics`, имеют generation и становятся недействительными после destroy, поэтому
+stale/cross-backend handles не принимаются обратно. `BufferDescriptor` описывает semantic size/usage/access/lifetime, а
+backend сам выбирает native memory usage, allocation strategy и concrete buffer creation flags.
+
+`ImageDescriptor`, `ImageViewDescriptor` и `SamplerDescriptor` описывают backend-independent texture resource contract:
+format, usage, access, lifetime, subresource range и sampling state. Текущий MVP subset поддерживает только 2D
+single-layer images/views; 2D-array, 3D и cube dimensions должны вводиться отдельным dimension/view-type contract перед
+их backend mapping.
 
 Physical destruction backend resources может быть immediate или deferred до заданного `CompletionPoint`. Фиксированное
 количество кадров не считается доказательством GPU completion. Frame-local buffers явно помечаются lifetime policy, а
 recycle transient/staging памяти должен быть completion-aware.
 
-Image, Sampler, Shader, Pipeline, descriptor/binding и RenderGraph API добавляются только при появлении их прямых
-потребителей.
+Shader, Pipeline, descriptor/binding и RenderGraph API добавляются только при появлении их прямых потребителей.
 
 ## Frame Pipeline and Multithreading
 

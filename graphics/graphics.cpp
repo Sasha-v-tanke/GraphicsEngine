@@ -256,12 +256,20 @@ ImageHandle Graphics::CreateImage(const ImageDescriptor& descriptor) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Image extent must be greater than zero");
     }
 
+    if (descriptor.Extent.Depth != 1) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Only 2D images are supported");
+    }
+
     if (descriptor.MipLevels == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Image mip level count must be greater than zero");
     }
 
     if (descriptor.ArrayLayers == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Image array layer count must be greater than zero");
+    }
+
+    if (descriptor.ArrayLayers != 1) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Only single-layer 2D images are supported");
     }
 
     if (descriptor.Usage == 0) {
@@ -371,6 +379,10 @@ ImageViewHandle Graphics::CreateImageView(const ImageViewDescriptor& descriptor)
     if (descriptor.LayerCount == 0 || descriptor.BaseArrayLayer >= image.Descriptor.ArrayLayers ||
         descriptor.LayerCount > image.Descriptor.ArrayLayers - descriptor.BaseArrayLayer) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Image view layer range is invalid");
+    }
+
+    if (descriptor.BaseArrayLayer != 0 || descriptor.LayerCount != 1) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Only single-layer 2D image views are supported");
     }
 
     if (m_nextImageViewGeneration == std::numeric_limits<std::uint64_t>::max()) {
