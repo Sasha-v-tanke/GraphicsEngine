@@ -2,6 +2,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <spawn.h>
 #include <string>
 #include <thread>
@@ -112,6 +113,24 @@ char** GetEnvironment() {
 #else
     return environ;
 #endif
+}
+
+std::optional<std::uint32_t>
+FindMemoryType(VkPhysicalDevice physicalDevice, std::uint32_t typeBits, VkMemoryPropertyFlags requiredProperties) {
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+
+    for (std::uint32_t typeIndex = 0; typeIndex < memoryProperties.memoryTypeCount; ++typeIndex) {
+        const bool supported = (typeBits & (1U << typeIndex)) != 0;
+        const bool hasProperties =
+                (memoryProperties.memoryTypes[typeIndex].propertyFlags & requiredProperties) == requiredProperties;
+
+        if (supported && hasProperties) {
+            return typeIndex;
+        }
+    }
+
+    return std::nullopt;
 }
 
 void RunSpawnedSmoke(std::string_view filter) {
@@ -269,6 +288,26 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
         const VkImage image = device.CreateImage(imageDescriptor);
         ASSERT_NE(image, VK_NULL_HANDLE);
 
+        VkMemoryRequirements memoryRequirements{};
+        vkGetImageMemoryRequirements(device.GetHandle(), image, &memoryRequirements);
+
+        const std::optional<std::uint32_t> memoryTypeIndex = FindMemoryType(physicalDevice.Handle,
+                                                                            memoryRequirements.memoryTypeBits,
+                                                                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        ASSERT_TRUE(memoryTypeIndex.has_value());
+
+        const VkMemoryAllocateInfo allocationInfo{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .allocationSize = memoryRequirements.size,
+                .memoryTypeIndex = *memoryTypeIndex,
+        };
+
+        VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+        ASSERT_EQ(vkAllocateMemory(device.GetHandle(), &allocationInfo, nullptr, &imageMemory), VK_SUCCESS);
+        ASSERT_EQ(vkBindImageMemory(device.GetHandle(), image, imageMemory, 0), VK_SUCCESS);
+
         const VkImageView imageView =
                 device.CreateImageView(image,
                                        {
@@ -290,6 +329,7 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
         device.DestroySampler(sampler);
         device.DestroyImageView(imageView);
         device.DestroyImage(image);
+        vkFreeMemory(device.GetHandle(), imageMemory, nullptr);
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {
             GTEST_SKIP() << exception.GetMessage();
