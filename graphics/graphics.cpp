@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -459,7 +460,8 @@ ImageViewDescriptor Graphics::GetImageViewDescriptor(ImageViewHandle imageView) 
 }
 
 SamplerHandle Graphics::CreateSampler(const SamplerDescriptor& descriptor) {
-    if (descriptor.MinLod < 0.0F || descriptor.MaxLod < descriptor.MinLod) {
+    if (!std::isfinite(descriptor.MinLod) || !std::isfinite(descriptor.MaxLod) || descriptor.MinLod < 0.0F ||
+        descriptor.MaxLod < descriptor.MinLod) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Sampler LOD range is invalid");
     }
 

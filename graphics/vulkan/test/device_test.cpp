@@ -249,87 +249,97 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
     try {
         NWindow::WindowRuntime runtime;
         NWindow::Window window{MakeWindowConfig()};
+        std::vector<std::string> validationErrors;
 
         NVulkan::VulkanInstanceConfig instanceConfig;
         instanceConfig.ApplicationName = "GraphicsEngineVulkanDeviceTest";
         instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
         instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
         instanceConfig.EnableDebugUtils = true;
+        instanceConfig.DebugMessageHandler = [&validationErrors](const NVulkan::VulkanDebugMessage& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                validationErrors.push_back(message.Message);
+            }
+        };
 
         NVulkan::VulkanInstance instance{instanceConfig};
         const NVulkan::NGlfw::VulkanSurface surface{instance, window};
-        const NVulkan::VulkanPhysicalDeviceSelection physicalDevice =
-                NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
-        const NVulkan::VulkanDevice device{physicalDevice};
-
-        EXPECT_NE(device.GetHandle(), VK_NULL_HANDLE);
-        EXPECT_TRUE(device.GetGraphicsCapabilities().Presentation);
-        EXPECT_TRUE(device.GetGraphicsCapabilities().TimelineCompletion);
-        EXPECT_EQ(device.GetGraphicsCapabilities().MaxFramesInFlight, 2U);
-
         {
-            const NVulkan::VulkanLockedQueue graphicsQueue = device.LockGraphicsQueue();
-            EXPECT_NE(graphicsQueue.GetHandle(), VK_NULL_HANDLE);
-            EXPECT_EQ(graphicsQueue.GetFamilyIndex(), physicalDevice.GraphicsQueueFamilyIndex);
+            const NVulkan::VulkanPhysicalDeviceSelection physicalDevice =
+                    NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
+            const NVulkan::VulkanDevice device{physicalDevice};
+
+            EXPECT_NE(device.GetHandle(), VK_NULL_HANDLE);
+            EXPECT_TRUE(device.GetGraphicsCapabilities().Presentation);
+            EXPECT_TRUE(device.GetGraphicsCapabilities().TimelineCompletion);
+            EXPECT_EQ(device.GetGraphicsCapabilities().MaxFramesInFlight, 2U);
+
+            {
+                const NVulkan::VulkanLockedQueue graphicsQueue = device.LockGraphicsQueue();
+                EXPECT_NE(graphicsQueue.GetHandle(), VK_NULL_HANDLE);
+                EXPECT_EQ(graphicsQueue.GetFamilyIndex(), physicalDevice.GraphicsQueueFamilyIndex);
+            }
+
+            {
+                const NVulkan::VulkanLockedQueue presentQueue = device.LockPresentQueue();
+                EXPECT_NE(presentQueue.GetHandle(), VK_NULL_HANDLE);
+                EXPECT_EQ(presentQueue.GetFamilyIndex(), physicalDevice.PresentQueueFamilyIndex);
+            }
+
+            const NGraphics::ImageDescriptor imageDescriptor{
+                    .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+                    .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                    .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+                    .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+            };
+            const VkImage image = device.CreateImage(imageDescriptor);
+            ASSERT_NE(image, VK_NULL_HANDLE);
+
+            VkMemoryRequirements memoryRequirements{};
+            vkGetImageMemoryRequirements(device.GetHandle(), image, &memoryRequirements);
+
+            const std::optional<std::uint32_t> memoryTypeIndex = FindMemoryType(physicalDevice.Handle,
+                                                                                memoryRequirements.memoryTypeBits,
+                                                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+            ASSERT_TRUE(memoryTypeIndex.has_value());
+
+            const VkMemoryAllocateInfo allocationInfo{
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                    .pNext = nullptr,
+                    .allocationSize = memoryRequirements.size,
+                    .memoryTypeIndex = *memoryTypeIndex,
+            };
+
+            VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+            ASSERT_EQ(vkAllocateMemory(device.GetHandle(), &allocationInfo, nullptr, &imageMemory), VK_SUCCESS);
+            ASSERT_EQ(vkBindImageMemory(device.GetHandle(), image, imageMemory, 0), VK_SUCCESS);
+
+            const VkImageView imageView =
+                    device.CreateImageView(image,
+                                           {
+                                                   .Image = {},
+                                                   .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                                                   .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+                                           });
+            EXPECT_NE(imageView, VK_NULL_HANDLE);
+
+            const VkSampler sampler = device.CreateSampler({
+                    .MinFilter = NGraphics::ESamplerFilter::Linear,
+                    .MagFilter = NGraphics::ESamplerFilter::Linear,
+                    .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
+                    .AddressModeV = NGraphics::ESamplerAddressMode::ClampToEdge,
+                    .AddressModeW = NGraphics::ESamplerAddressMode::ClampToEdge,
+            });
+            EXPECT_NE(sampler, VK_NULL_HANDLE);
+
+            device.DestroySampler(sampler);
+            device.DestroyImageView(imageView);
+            device.DestroyImage(image);
+            vkFreeMemory(device.GetHandle(), imageMemory, nullptr);
         }
 
-        {
-            const NVulkan::VulkanLockedQueue presentQueue = device.LockPresentQueue();
-            EXPECT_NE(presentQueue.GetHandle(), VK_NULL_HANDLE);
-            EXPECT_EQ(presentQueue.GetFamilyIndex(), physicalDevice.PresentQueueFamilyIndex);
-        }
-
-        const NGraphics::ImageDescriptor imageDescriptor{
-                .Extent = {.Width = 4, .Height = 4, .Depth = 1},
-                .Format = NGraphics::EImageFormat::RGBA8_UNORM,
-                .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
-                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
-        };
-        const VkImage image = device.CreateImage(imageDescriptor);
-        ASSERT_NE(image, VK_NULL_HANDLE);
-
-        VkMemoryRequirements memoryRequirements{};
-        vkGetImageMemoryRequirements(device.GetHandle(), image, &memoryRequirements);
-
-        const std::optional<std::uint32_t> memoryTypeIndex = FindMemoryType(physicalDevice.Handle,
-                                                                            memoryRequirements.memoryTypeBits,
-                                                                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        ASSERT_TRUE(memoryTypeIndex.has_value());
-
-        const VkMemoryAllocateInfo allocationInfo{
-                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .pNext = nullptr,
-                .allocationSize = memoryRequirements.size,
-                .memoryTypeIndex = *memoryTypeIndex,
-        };
-
-        VkDeviceMemory imageMemory = VK_NULL_HANDLE;
-        ASSERT_EQ(vkAllocateMemory(device.GetHandle(), &allocationInfo, nullptr, &imageMemory), VK_SUCCESS);
-        ASSERT_EQ(vkBindImageMemory(device.GetHandle(), image, imageMemory, 0), VK_SUCCESS);
-
-        const VkImageView imageView =
-                device.CreateImageView(image,
-                                       {
-                                               .Image = {},
-                                               .Format = NGraphics::EImageFormat::RGBA8_UNORM,
-                                               .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
-                                       });
-        EXPECT_NE(imageView, VK_NULL_HANDLE);
-
-        const VkSampler sampler = device.CreateSampler({
-                .MinFilter = NGraphics::ESamplerFilter::Linear,
-                .MagFilter = NGraphics::ESamplerFilter::Linear,
-                .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
-                .AddressModeV = NGraphics::ESamplerAddressMode::ClampToEdge,
-                .AddressModeW = NGraphics::ESamplerAddressMode::ClampToEdge,
-        });
-        EXPECT_NE(sampler, VK_NULL_HANDLE);
-
-        device.DestroySampler(sampler);
-        device.DestroyImageView(imageView);
-        device.DestroyImage(image);
-        vkFreeMemory(device.GetHandle(), imageMemory, nullptr);
+        EXPECT_TRUE(validationErrors.empty()) << (validationErrors.empty() ? "" : validationErrors.front());
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {
             GTEST_SKIP() << exception.GetMessage();

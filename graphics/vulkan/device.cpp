@@ -199,12 +199,16 @@ public:
     }
 
     [[nodiscard]] VkImage CreateImage(const NGraphics::ImageDescriptor& descriptor) const {
+        const VkFormat format = ToVulkanFormat(descriptor.Format);
+        const VkImageUsageFlags usage = ToVulkanImageUsage(descriptor.Usage);
+        ValidateImageSupport(descriptor, format, usage);
+
         const VkImageCreateInfo createInfo{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0,
                 .imageType = VK_IMAGE_TYPE_2D,
-                .format = ToVulkanFormat(descriptor.Format),
+                .format = format,
                 .extent =
                         {
                                 .width = descriptor.Extent.Width,
@@ -215,7 +219,7 @@ public:
                 .arrayLayers = descriptor.ArrayLayers,
                 .samples = VK_SAMPLE_COUNT_1_BIT,
                 .tiling = VK_IMAGE_TILING_OPTIMAL,
-                .usage = ToVulkanImageUsage(descriptor.Usage),
+                .usage = usage,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
                 .queueFamilyIndexCount = 0,
                 .pQueueFamilyIndices = nullptr,
@@ -374,6 +378,48 @@ private:
         }
 
         return queue;
+    }
+
+    void
+    ValidateImageSupport(const NGraphics::ImageDescriptor& descriptor, VkFormat format, VkImageUsageFlags usage) const {
+        const VkPhysicalDeviceImageFormatInfo2 formatInfo{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+                .pNext = nullptr,
+                .format = format,
+                .type = VK_IMAGE_TYPE_2D,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = usage,
+                .flags = 0,
+        };
+
+        VkImageFormatProperties2 properties{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+                .pNext = nullptr,
+                .imageFormatProperties = {},
+        };
+        const VkResult result = vkGetPhysicalDeviceImageFormatProperties2(m_physicalDevice, &formatInfo, &properties);
+
+        if (result == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED,
+                                  "Vulkan image format and usage combination is not supported");
+        }
+
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to query Vulkan image format support: {}",
+                                  GetVkResultName(result));
+        }
+
+        const VkImageFormatProperties& imageProperties = properties.imageFormatProperties;
+        if (descriptor.Extent.Width > imageProperties.maxExtent.width ||
+            descriptor.Extent.Height > imageProperties.maxExtent.height ||
+            descriptor.Extent.Depth > imageProperties.maxExtent.depth ||
+            descriptor.MipLevels > imageProperties.maxMipLevels ||
+            descriptor.ArrayLayers > imageProperties.maxArrayLayers ||
+            (imageProperties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) == 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED,
+                                  "Vulkan image descriptor exceeds supported image format limits");
+        }
     }
 
 private:

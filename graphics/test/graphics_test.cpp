@@ -1,3 +1,4 @@
+#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -718,6 +719,20 @@ TEST_F(GraphicsTest, RejectsInvalidSamplerDescriptor) {
         (void)graphics.CreateSampler({
                 .MinLod = 2.0F,
                 .MaxLod = 1.0F,
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateSampler({
+                .MinLod = std::numeric_limits<float>::quiet_NaN(),
+                .MaxLod = 1.0F,
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateSampler({
+                .MinLod = 0.0F,
+                .MaxLod = std::numeric_limits<float>::infinity(),
         });
     });
 }
