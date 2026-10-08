@@ -1,3 +1,4 @@
+#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -26,7 +27,16 @@ struct FakeGraphicsState {
     std::vector<std::pair<std::uint64_t, NGraphics::FrameSubmission>> InFlightSubmissions;
     std::vector<NGraphics::BufferDescriptor> CreatedBuffers;
     std::vector<std::pair<std::uint64_t, std::optional<std::uint64_t>>> DestroyedBuffers;
+    std::vector<NGraphics::ImageDescriptor> CreatedImages;
+    std::vector<std::pair<std::uint64_t, std::optional<std::uint64_t>>> DestroyedImages;
+    std::vector<NGraphics::ImageViewDescriptor> CreatedImageViews;
+    std::vector<std::pair<std::uint64_t, std::optional<std::uint64_t>>> DestroyedImageViews;
+    std::vector<NGraphics::SamplerDescriptor> CreatedSamplers;
+    std::vector<std::pair<std::uint64_t, std::optional<std::uint64_t>>> DestroyedSamplers;
     std::uint64_t NextBuffer = 1;
+    std::uint64_t NextImage = 1;
+    std::uint64_t NextImageView = 1;
+    std::uint64_t NextSampler = 1;
     std::uint64_t NextCompletion = 1;
     std::uint64_t CompletedValue = 0;
 };
@@ -68,6 +78,33 @@ public:
 
     void DestroyBuffer(std::uint64_t bufferValue, std::optional<std::uint64_t> completedAfter) noexcept override {
         m_state.DestroyedBuffers.emplace_back(bufferValue, completedAfter);
+    }
+
+    [[nodiscard]] std::uint64_t CreateImage(const NGraphics::ImageDescriptor& descriptor) override {
+        m_state.CreatedImages.push_back(descriptor);
+        return m_state.NextImage++;
+    }
+
+    void DestroyImage(std::uint64_t imageValue, std::optional<std::uint64_t> completedAfter) noexcept override {
+        m_state.DestroyedImages.emplace_back(imageValue, completedAfter);
+    }
+
+    [[nodiscard]] std::uint64_t CreateImageView(const NGraphics::ImageViewDescriptor& descriptor) override {
+        m_state.CreatedImageViews.push_back(descriptor);
+        return m_state.NextImageView++;
+    }
+
+    void DestroyImageView(std::uint64_t imageViewValue, std::optional<std::uint64_t> completedAfter) noexcept override {
+        m_state.DestroyedImageViews.emplace_back(imageViewValue, completedAfter);
+    }
+
+    [[nodiscard]] std::uint64_t CreateSampler(const NGraphics::SamplerDescriptor& descriptor) override {
+        m_state.CreatedSamplers.push_back(descriptor);
+        return m_state.NextSampler++;
+    }
+
+    void DestroySampler(std::uint64_t samplerValue, std::optional<std::uint64_t> completedAfter) noexcept override {
+        m_state.DestroyedSamplers.emplace_back(samplerValue, completedAfter);
     }
 
 private:
@@ -408,6 +445,296 @@ TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredBufferDestruction) {
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { graphics.DestroyBuffer(buffer, otherCompletion); });
     EXPECT_EQ(m_state.DestroyedBuffers.size(), 0U);
+}
+
+TEST_F(GraphicsTest, CreatesImageViewAndSamplerAndPreservesDescriptors) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::ImageDescriptor imageDescriptor{
+            .Extent = {.Width = 128, .Height = 64, .Depth = 1},
+            .MipLevels = 4,
+            .ArrayLayers = 1,
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+            .Lifetime = NGraphics::EImageLifetime::Persistent,
+    };
+
+    const NGraphics::ImageHandle image = graphics.CreateImage(imageDescriptor);
+    const NGraphics::ImageViewDescriptor viewDescriptor{
+            .Image = image,
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+            .BaseMipLevel = 1,
+            .LevelCount = 2,
+            .BaseArrayLayer = 0,
+            .LayerCount = 1,
+    };
+    const NGraphics::SamplerDescriptor samplerDescriptor{
+            .MinFilter = NGraphics::ESamplerFilter::Nearest,
+            .MagFilter = NGraphics::ESamplerFilter::Linear,
+            .AddressModeU = NGraphics::ESamplerAddressMode::Repeat,
+            .AddressModeV = NGraphics::ESamplerAddressMode::ClampToEdge,
+            .AddressModeW = NGraphics::ESamplerAddressMode::ClampToBorder,
+            .MinLod = 0.0F,
+            .MaxLod = 4.0F,
+    };
+
+    const NGraphics::ImageViewHandle view = graphics.CreateImageView(viewDescriptor);
+    const NGraphics::SamplerHandle sampler = graphics.CreateSampler(samplerDescriptor);
+
+    ASSERT_TRUE(image.IsValid());
+    ASSERT_TRUE(view.IsValid());
+    ASSERT_TRUE(sampler.IsValid());
+    ASSERT_EQ(m_state.CreatedImages.size(), 1U);
+    ASSERT_EQ(m_state.CreatedImageViews.size(), 1U);
+    ASSERT_EQ(m_state.CreatedSamplers.size(), 1U);
+    EXPECT_EQ(m_state.CreatedImages[0].Extent.Width, 128U);
+    EXPECT_EQ(m_state.CreatedImages[0].MipLevels, 4U);
+    EXPECT_EQ(m_state.CreatedImageViews[0].Image, image);
+    EXPECT_EQ(m_state.CreatedSamplers[0].MaxLod, 4.0F);
+    EXPECT_EQ(graphics.GetImageDescriptor(image).ArrayLayers, 1U);
+    EXPECT_EQ(graphics.GetImageViewDescriptor(view).BaseMipLevel, 1U);
+    EXPECT_EQ(graphics.GetSamplerDescriptor(sampler).AddressModeV, NGraphics::ESamplerAddressMode::ClampToEdge);
+}
+
+TEST_F(GraphicsTest, RejectsInvalidImageDescriptors) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 0, .Height = 1, .Depth = 1},
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .MipLevels = 0,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .MipLevels = 2,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    (void)graphics.CreateImage({
+            .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+            .MipLevels = 3,
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+                .MipLevels = 4,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 2},
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .ArrayLayers = 2,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .Usage = 0,
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .Usage = 0x80000000U,
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .Format = NGraphics::EImageFormat::D32_FLOAT,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::ColorAttachment),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuWrite),
+        });
+    });
+}
+
+TEST_F(GraphicsTest, RejectsInvalidImageViewBindings) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::ImageHandle image = graphics.CreateImage({
+            .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+            .MipLevels = 2,
+            .ArrayLayers = 1,
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImageView({
+                .Image = image,
+                .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Depth),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImageView({
+                .Image = image,
+                .Format = NGraphics::EImageFormat::BGRA8_UNORM,
+                .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImageView({
+                .Image = image,
+                .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+                .BaseMipLevel = 1,
+                .LevelCount = 2,
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImageView({
+                .Image = image,
+                .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+                .LayerCount = 2,
+        });
+    });
+}
+
+TEST_F(GraphicsTest, TracksImageResourceLifetimeAndRejectsStaleHandles) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::ImageHandle image = graphics.CreateImage({
+            .Extent = {.Width = 8, .Height = 8, .Depth = 1},
+            .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+            .Lifetime = NGraphics::EImageLifetime::FrameLocal,
+    });
+    const NGraphics::ImageViewHandle view = graphics.CreateImageView({
+            .Image = image,
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+    });
+    const NGraphics::SamplerHandle sampler = graphics.CreateSampler({});
+    const NGraphics::CompletionPoint completion = graphics.SubmitFrame({
+            .FrameIndex = 11,
+            .RequiresPresentation = false,
+            .ResourceUseRecords = {},
+    });
+
+    graphics.DestroyImageView(view, completion);
+    graphics.DestroySampler(sampler, completion);
+    graphics.DestroyImage(image, completion);
+
+    ASSERT_EQ(m_state.DestroyedImageViews.size(), 1U);
+    ASSERT_EQ(m_state.DestroyedSamplers.size(), 1U);
+    ASSERT_EQ(m_state.DestroyedImages.size(), 1U);
+    EXPECT_EQ(*m_state.DestroyedImageViews[0].second, completion.GetValue());
+    EXPECT_EQ(*m_state.DestroyedSamplers[0].second, completion.GetValue());
+    EXPECT_EQ(*m_state.DestroyedImages[0].second, completion.GetValue());
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graphics.GetImageViewDescriptor(view); });
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graphics.GetSamplerDescriptor(sampler); });
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graphics.GetImageDescriptor(image); });
+}
+
+TEST_F(GraphicsTest, RejectsForeignImageAndSamplerHandles) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::ImageHandle image = graphics.CreateImage({
+            .Extent = {.Width = 8, .Height = 8, .Depth = 1},
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+    });
+    const NGraphics::SamplerHandle sampler = graphics.CreateSampler({});
+
+    FakeGraphicsState otherState;
+    g_fakeGraphicsState = &otherState;
+    NGraphics::Graphics other = CreateGraphics();
+    g_fakeGraphicsState = &m_state;
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { other.DestroyImage(image); });
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { other.DestroySampler(sampler); });
+}
+
+TEST_F(GraphicsTest, RejectsDestroyingImageWithLiveViews) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    const NGraphics::ImageHandle image = graphics.CreateImage({
+            .Extent = {.Width = 8, .Height = 8, .Depth = 1},
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+    });
+    const NGraphics::ImageViewHandle view = graphics.CreateImageView({
+            .Image = image,
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+    });
+
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { graphics.DestroyImage(image); });
+
+    graphics.DestroyImageView(view);
+    graphics.DestroyImage(image);
+
+    EXPECT_EQ(m_state.DestroyedImageViews.size(), 1U);
+    EXPECT_EQ(m_state.DestroyedImages.size(), 1U);
+}
+
+TEST_F(GraphicsTest, RejectsInvalidSamplerDescriptor) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateSampler({
+                .MinLod = 2.0F,
+                .MaxLod = 1.0F,
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateSampler({
+                .MinLod = std::numeric_limits<float>::quiet_NaN(),
+                .MaxLod = 1.0F,
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateSampler({
+                .MinLod = 0.0F,
+                .MaxLod = std::numeric_limits<float>::infinity(),
+        });
+    });
 }
 
 } // namespace

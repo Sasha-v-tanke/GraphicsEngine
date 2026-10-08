@@ -144,6 +144,7 @@ jobs:
             glm \
             glfw \
             molten-vk \
+            vulkan-validationlayers \
             vulkan-volk \
             googletest
 

@@ -46,3 +46,9 @@ or authoring-specific flip policy belongs to asset cooking or higher-level impor
 
 The image loader does not create GPU images, image views, samplers, or renderer objects. Failed image loads publish
 `FAILED` with resource identity and file path context in `ErrorInfo`.
+
+GPU image objects live in the Graphics module. `NGraphics::ImageDescriptor`, `ImageViewDescriptor`, and
+`SamplerDescriptor` define the backend-independent contract for renderer/backend use: format, usage, access, lifetime,
+subresource range, and sampling state are explicit, while native image, view, sampler, and descriptor handles remain
+backend-private. CPU `ImageData` can feed later upload code without changing the resource-manager identity or load-state
+contract.

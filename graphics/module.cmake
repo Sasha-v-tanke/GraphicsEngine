@@ -7,6 +7,7 @@ API(
     graphics.h
     graphics_capabilities.h
     graphics_config.h
+    image.h
 )
 
 SOURCES(

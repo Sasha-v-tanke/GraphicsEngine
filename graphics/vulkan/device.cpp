@@ -1,4 +1,5 @@
 #include "device.h"
+#include "resource_conversion.h"
 
 #include <algorithm>
 #include <array>
@@ -40,6 +41,8 @@ std::string_view GetVkResultName(VkResult result) {
         return "VK_ERROR_TOO_MANY_OBJECTS";
     case VK_ERROR_DEVICE_LOST:
         return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED:
+        return "VK_ERROR_FORMAT_NOT_SUPPORTED";
     default:
         return "VK_RESULT_UNKNOWN";
     }
@@ -195,6 +198,136 @@ public:
         return VulkanLockedQueue{std::unique_lock{m_queueMutex}, m_presentQueue, m_presentQueueFamilyIndex};
     }
 
+    [[nodiscard]] VkImage CreateImage(const NGraphics::ImageDescriptor& descriptor) const {
+        const VkFormat format = ToVulkanFormat(descriptor.Format);
+        const VkImageUsageFlags usage = ToVulkanImageUsage(descriptor.Usage);
+        ValidateImageSupport(descriptor, format, usage);
+
+        const VkImageCreateInfo createInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = format,
+                .extent =
+                        {
+                                .width = descriptor.Extent.Width,
+                                .height = descriptor.Extent.Height,
+                                .depth = descriptor.Extent.Depth,
+                        },
+                .mipLevels = descriptor.MipLevels,
+                .arrayLayers = descriptor.ArrayLayers,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = usage,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        VkImage image = VK_NULL_HANDLE;
+        const VkResult result = vkCreateImage(m_device, &createInfo, nullptr, &image);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to create Vulkan image: {}",
+                                  GetVkResultName(result));
+        }
+
+        return image;
+    }
+
+    void DestroyImage(VkImage image) const noexcept {
+        if (image != VK_NULL_HANDLE) {
+            vkDestroyImage(m_device, image, nullptr);
+        }
+    }
+
+    [[nodiscard]] VkImageView CreateImageView(VkImage image, const NGraphics::ImageViewDescriptor& descriptor) const {
+        if (image == VK_NULL_HANDLE) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan image view requires an image");
+        }
+
+        const VkImageViewCreateInfo createInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .image = image,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = ToVulkanFormat(descriptor.Format),
+                .components =
+                        {
+                                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+                        },
+                .subresourceRange =
+                        {
+                                .aspectMask = ToVulkanImageAspect(descriptor.Aspects),
+                                .baseMipLevel = descriptor.BaseMipLevel,
+                                .levelCount = descriptor.LevelCount,
+                                .baseArrayLayer = descriptor.BaseArrayLayer,
+                                .layerCount = descriptor.LayerCount,
+                        },
+        };
+
+        VkImageView imageView = VK_NULL_HANDLE;
+        const VkResult result = vkCreateImageView(m_device, &createInfo, nullptr, &imageView);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to create Vulkan image view: {}",
+                                  GetVkResultName(result));
+        }
+
+        return imageView;
+    }
+
+    void DestroyImageView(VkImageView imageView) const noexcept {
+        if (imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(m_device, imageView, nullptr);
+        }
+    }
+
+    [[nodiscard]] VkSampler CreateSampler(const NGraphics::SamplerDescriptor& descriptor) const {
+        const VkSamplerCreateInfo createInfo{
+                .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .magFilter = ToVulkanFilter(descriptor.MagFilter),
+                .minFilter = ToVulkanFilter(descriptor.MinFilter),
+                .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                .addressModeU = ToVulkanAddressMode(descriptor.AddressModeU),
+                .addressModeV = ToVulkanAddressMode(descriptor.AddressModeV),
+                .addressModeW = ToVulkanAddressMode(descriptor.AddressModeW),
+                .mipLodBias = 0.0F,
+                .anisotropyEnable = VK_FALSE,
+                .maxAnisotropy = 1.0F,
+                .compareEnable = VK_FALSE,
+                .compareOp = VK_COMPARE_OP_ALWAYS,
+                .minLod = descriptor.MinLod,
+                .maxLod = descriptor.MaxLod,
+                .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+                .unnormalizedCoordinates = VK_FALSE,
+        };
+
+        VkSampler sampler = VK_NULL_HANDLE;
+        const VkResult result = vkCreateSampler(m_device, &createInfo, nullptr, &sampler);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to create Vulkan sampler: {}",
+                                  GetVkResultName(result));
+        }
+
+        return sampler;
+    }
+
+    void DestroySampler(VkSampler sampler) const noexcept {
+        if (sampler != VK_NULL_HANDLE) {
+            vkDestroySampler(m_device, sampler, nullptr);
+        }
+    }
+
 private:
     [[nodiscard]] VkDevice CreateDevice() const {
         const std::vector<const char*> extensionNames = MakeNamePointers(m_plan.Extensions);
@@ -247,6 +380,48 @@ private:
         return queue;
     }
 
+    void
+    ValidateImageSupport(const NGraphics::ImageDescriptor& descriptor, VkFormat format, VkImageUsageFlags usage) const {
+        const VkPhysicalDeviceImageFormatInfo2 formatInfo{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+                .pNext = nullptr,
+                .format = format,
+                .type = VK_IMAGE_TYPE_2D,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = usage,
+                .flags = 0,
+        };
+
+        VkImageFormatProperties2 properties{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+                .pNext = nullptr,
+                .imageFormatProperties = {},
+        };
+        const VkResult result = vkGetPhysicalDeviceImageFormatProperties2(m_physicalDevice, &formatInfo, &properties);
+
+        if (result == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED,
+                                  "Vulkan image format and usage combination is not supported");
+        }
+
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to query Vulkan image format support: {}",
+                                  GetVkResultName(result));
+        }
+
+        const VkImageFormatProperties& imageProperties = properties.imageFormatProperties;
+        if (descriptor.Extent.Width > imageProperties.maxExtent.width ||
+            descriptor.Extent.Height > imageProperties.maxExtent.height ||
+            descriptor.Extent.Depth > imageProperties.maxExtent.depth ||
+            descriptor.MipLevels > imageProperties.maxMipLevels ||
+            descriptor.ArrayLayers > imageProperties.maxArrayLayers ||
+            (imageProperties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) == 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED,
+                                  "Vulkan image descriptor exceeds supported image format limits");
+        }
+    }
+
 private:
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VulkanDevicePlan m_plan;
@@ -278,6 +453,30 @@ VulkanLockedQueue VulkanDevice::LockGraphicsQueue() const {
 
 VulkanLockedQueue VulkanDevice::LockPresentQueue() const {
     return m_impl->LockPresentQueue();
+}
+
+VkImage VulkanDevice::CreateImage(const NGraphics::ImageDescriptor& descriptor) const {
+    return m_impl->CreateImage(descriptor);
+}
+
+void VulkanDevice::DestroyImage(VkImage image) const noexcept {
+    m_impl->DestroyImage(image);
+}
+
+VkImageView VulkanDevice::CreateImageView(VkImage image, const NGraphics::ImageViewDescriptor& descriptor) const {
+    return m_impl->CreateImageView(image, descriptor);
+}
+
+void VulkanDevice::DestroyImageView(VkImageView imageView) const noexcept {
+    m_impl->DestroyImageView(imageView);
+}
+
+VkSampler VulkanDevice::CreateSampler(const NGraphics::SamplerDescriptor& descriptor) const {
+    return m_impl->CreateSampler(descriptor);
+}
+
+void VulkanDevice::DestroySampler(VkSampler sampler) const noexcept {
+    m_impl->DestroySampler(sampler);
 }
 
 } // namespace NVulkan

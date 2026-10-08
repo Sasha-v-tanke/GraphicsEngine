@@ -4,6 +4,7 @@ API(
     device.h
     instance.h
     physical_device.h
+    resource_conversion.h
     swapchain.h
 )
 
@@ -11,11 +12,13 @@ SOURCES(
     device.cpp
     instance.cpp
     physical_device.cpp
+    resource_conversion.cpp
     swapchain.cpp
 )
 
 PUBLIC_DEPENDS(
     Common
+    Graphics
     Vulkan
 )
 
