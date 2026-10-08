@@ -4,12 +4,14 @@ API(
     device.h
     instance.h
     physical_device.h
+    swapchain.h
 )
 
 SOURCES(
     device.cpp
     instance.cpp
     physical_device.cpp
+    swapchain.cpp
 )
 
 PUBLIC_DEPENDS(
