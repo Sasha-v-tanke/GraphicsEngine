@@ -25,6 +25,8 @@ std::string_view GetVkResultName(VkResult result) {
     switch (result) {
     case VK_SUCCESS:
         return "VK_SUCCESS";
+    case VK_INCOMPLETE:
+        return "VK_INCOMPLETE";
     case VK_NOT_READY:
         return "VK_NOT_READY";
     case VK_TIMEOUT:
@@ -180,25 +182,35 @@ std::string_view GetVkResultName(VkResult result) {
     return view;
 }
 
-[[nodiscard]] std::vector<VkImage> ReadSwapchainImages(VkDevice device, VkSwapchainKHR swapchain) {
+template<typename T, typename TReader>
+[[nodiscard]] std::vector<T>
+ReadVulkanCollection(TReader reader, std::string_view countError, std::string_view readError) {
     std::uint32_t count = 0;
-    VkResult result = vkGetSwapchainImagesKHR(device, swapchain, &count, nullptr);
+    VkResult result = reader(&count, nullptr);
     if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan swapchain image count: {}",
-                              GetVkResultName(result));
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "{}: {}", countError, GetVkResultName(result));
     }
 
-    std::vector<VkImage> images(count);
-    result = vkGetSwapchainImagesKHR(device, swapchain, &count, images.data());
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan swapchain images: {}",
-                              GetVkResultName(result));
-    }
+    std::vector<T> values;
+    do {
+        values.resize(count);
+        result = reader(&count, values.data());
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "{}: {}", readError, GetVkResultName(result));
+        }
+    } while (result == VK_INCOMPLETE);
 
-    images.resize(count);
-    return images;
+    values.resize(count);
+    return values;
+}
+
+[[nodiscard]] std::vector<VkImage> ReadSwapchainImages(VkDevice device, VkSwapchainKHR swapchain) {
+    return ReadVulkanCollection<VkImage>(
+            [device, swapchain](std::uint32_t* count, VkImage* images) {
+                return vkGetSwapchainImagesKHR(device, swapchain, count, images);
+            },
+            "Failed to read Vulkan swapchain image count",
+            "Failed to read Vulkan swapchain images");
 }
 
 } // namespace
@@ -240,42 +252,19 @@ VulkanSwapchainSupport ReadVulkanSwapchainSupport(VkPhysicalDevice physicalDevic
                               GetVkResultName(result));
     }
 
-    std::uint32_t formatCount = 0;
-    result = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan surface format count: {}",
-                              GetVkResultName(result));
-    }
+    support.Formats = ReadVulkanCollection<VkSurfaceFormatKHR>(
+            [physicalDevice, surface](std::uint32_t* count, VkSurfaceFormatKHR* formats) {
+                return vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, count, formats);
+            },
+            "Failed to read Vulkan surface format count",
+            "Failed to read Vulkan surface formats");
 
-    support.Formats.resize(formatCount);
-    result = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, support.Formats.data());
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan surface formats: {}",
-                              GetVkResultName(result));
-    }
-    support.Formats.resize(formatCount);
-
-    std::uint32_t presentModeCount = 0;
-    result = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, nullptr);
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan present mode count: {}",
-                              GetVkResultName(result));
-    }
-
-    support.PresentModes.resize(presentModeCount);
-    result = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,
-                                                       surface,
-                                                       &presentModeCount,
-                                                       support.PresentModes.data());
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to read Vulkan present modes: {}",
-                              GetVkResultName(result));
-    }
-    support.PresentModes.resize(presentModeCount);
+    support.PresentModes = ReadVulkanCollection<VkPresentModeKHR>(
+            [physicalDevice, surface](std::uint32_t* count, VkPresentModeKHR* presentModes) {
+                return vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, count, presentModes);
+            },
+            "Failed to read Vulkan present mode count",
+            "Failed to read Vulkan present modes");
 
     return support;
 }
@@ -349,7 +338,7 @@ public:
         return m_imageViews;
     }
 
-    [[nodiscard]] std::optional<std::uint32_t>
+    [[nodiscard]] VulkanSwapchainAcquireResult
     AcquireNextImage(std::uint64_t timeoutNanoseconds, VkSemaphore semaphore, VkFence fence) const {
         EnsureActive("Vulkan swapchain acquire requires an active swapchain");
 
@@ -362,12 +351,36 @@ public:
         const VkResult result =
                 vkAcquireNextImageKHR(m_device, m_swapchain, timeoutNanoseconds, semaphore, fence, &imageIndex);
 
-        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
-            return imageIndex;
+        if (result == VK_SUCCESS) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::Acquired,
+                    .ImageIndex = imageIndex,
+            };
         }
 
-        if (result == VK_NOT_READY || result == VK_TIMEOUT || result == VK_ERROR_OUT_OF_DATE_KHR) {
-            return std::nullopt;
+        if (result == VK_SUBOPTIMAL_KHR) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::Suboptimal,
+                    .ImageIndex = imageIndex,
+            };
+        }
+
+        if (result == VK_NOT_READY) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::NotReady,
+            };
+        }
+
+        if (result == VK_TIMEOUT) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::Timeout,
+            };
+        }
+
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::OutOfDate,
+            };
         }
 
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
@@ -375,9 +388,9 @@ public:
                               GetVkResultName(result));
     }
 
-    void Present(VulkanLockedQueue presentQueue,
-                 std::uint32_t imageIndex,
-                 std::span<const VkSemaphore> waitSemaphores) const {
+    [[nodiscard]] EVulkanSwapchainPresentStatus Present(VulkanLockedQueue presentQueue,
+                                                        std::uint32_t imageIndex,
+                                                        std::span<const VkSemaphore> waitSemaphores) const {
         EnsureActive("Vulkan swapchain present requires an active swapchain");
 
         const VkPresentInfoKHR presentInfo{
@@ -392,8 +405,16 @@ public:
         };
 
         const VkResult result = vkQueuePresentKHR(presentQueue.GetHandle(), &presentInfo);
-        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
-            return;
+        if (result == VK_SUCCESS) {
+            return EVulkanSwapchainPresentStatus::Presented;
+        }
+
+        if (result == VK_SUBOPTIMAL_KHR) {
+            return EVulkanSwapchainPresentStatus::Suboptimal;
+        }
+
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            return EVulkanSwapchainPresentStatus::OutOfDate;
         }
 
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
@@ -482,15 +503,15 @@ std::span<const VkImageView> VulkanSwapchain::GetImageViews() const noexcept {
     return m_impl->GetImageViews();
 }
 
-std::optional<std::uint32_t>
+VulkanSwapchainAcquireResult
 VulkanSwapchain::AcquireNextImage(std::uint64_t timeoutNanoseconds, VkSemaphore semaphore, VkFence fence) const {
     return m_impl->AcquireNextImage(timeoutNanoseconds, semaphore, fence);
 }
 
-void VulkanSwapchain::Present(VulkanLockedQueue presentQueue,
-                              std::uint32_t imageIndex,
-                              std::span<const VkSemaphore> waitSemaphores) const {
-    m_impl->Present(std::move(presentQueue), imageIndex, waitSemaphores);
+EVulkanSwapchainPresentStatus VulkanSwapchain::Present(VulkanLockedQueue presentQueue,
+                                                       std::uint32_t imageIndex,
+                                                       std::span<const VkSemaphore> waitSemaphores) const {
+    return m_impl->Present(std::move(presentQueue), imageIndex, waitSemaphores);
 }
 
 } // namespace NVulkan

@@ -109,8 +109,11 @@ The selection policy is deterministic:
 A zero framebuffer extent is a suspended presentation state. In that state no
 `VkSwapchainKHR` is created and acquire/present calls are rejected with the
 project error model instead of treating minimization as a fatal backend failure.
-`SwapchainImageIndex` values come from `vkAcquireNextImageKHR` and are unrelated
-to Engine `FrameExecutionSlot` indices.
+Acquire returns `Acquired`, `Suboptimal`, `NotReady`, `Timeout` or `OutOfDate`
+without collapsing recreation-relevant WSI states. Present returns `Presented`,
+`Suboptimal` or `OutOfDate` for the same reason. `SwapchainImageIndex` values
+come from `vkAcquireNextImageKHR` and are unrelated to Engine
+`FrameExecutionSlot` indices.
 
 ## Dispatch
 

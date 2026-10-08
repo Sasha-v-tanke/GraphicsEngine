@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <span>
 #include <vector>
 #include <vulkan.h>
@@ -30,6 +29,25 @@ struct VulkanSwapchainConfig {
     VkSurfaceTransformFlagBitsKHR PreTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     VkCompositeAlphaFlagBitsKHR CompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     bool Suspended = false;
+};
+
+enum class EVulkanSwapchainAcquireStatus {
+    Acquired,
+    Suboptimal,
+    NotReady,
+    Timeout,
+    OutOfDate,
+};
+
+struct VulkanSwapchainAcquireResult {
+    EVulkanSwapchainAcquireStatus Status = EVulkanSwapchainAcquireStatus::NotReady;
+    std::uint32_t ImageIndex = 0;
+};
+
+enum class EVulkanSwapchainPresentStatus {
+    Presented,
+    Suboptimal,
+    OutOfDate,
 };
 
 [[nodiscard]] VulkanSwapchainConfig MakeVulkanSwapchainConfig(const VulkanSwapchainSupport& support,
@@ -60,12 +78,12 @@ public:
 
     [[nodiscard]] std::span<const VkImageView> GetImageViews() const noexcept;
 
-    [[nodiscard]] std::optional<std::uint32_t>
+    [[nodiscard]] VulkanSwapchainAcquireResult
     AcquireNextImage(std::uint64_t timeoutNanoseconds, VkSemaphore semaphore, VkFence fence) const;
 
-    void Present(VulkanLockedQueue presentQueue,
-                 std::uint32_t imageIndex,
-                 std::span<const VkSemaphore> waitSemaphores) const;
+    [[nodiscard]] EVulkanSwapchainPresentStatus Present(VulkanLockedQueue presentQueue,
+                                                        std::uint32_t imageIndex,
+                                                        std::span<const VkSemaphore> waitSemaphores) const;
 
 private:
     class Impl;

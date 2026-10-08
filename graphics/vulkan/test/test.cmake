@@ -9,7 +9,9 @@ SOURCES(
 
 if (GRAPHICS_ENGINE_BUILD_GLFW)
     SOURCES(
+        device_glfw_test.cpp
         glfw_surface_test.cpp
+        swapchain_glfw_test.cpp
     )
 endif ()
 
