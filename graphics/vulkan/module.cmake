@@ -5,6 +5,7 @@ API(
     instance.h
     physical_device.h
     resource_conversion.h
+    swapchain.h
 )
 
 SOURCES(
@@ -12,6 +13,7 @@ SOURCES(
     instance.cpp
     physical_device.cpp
     resource_conversion.cpp
+    swapchain.cpp
 )
 
 PUBLIC_DEPENDS(
