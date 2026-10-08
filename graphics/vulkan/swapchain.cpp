@@ -237,45 +237,65 @@ VulkanSwapchainSupport ReadVulkanSwapchainSupport(VkPhysicalDevice physicalDevic
                               GetVkResultName(result));
     }
 
-    std::uint32_t formatCount = 0;
-    result = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to enumerate Vulkan surface formats: {}",
-                              GetVkResultName(result));
-    }
+    while (true) {
+        std::uint32_t formatCount = 0;
+        result = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to enumerate Vulkan surface formats: {}",
+                                  GetVkResultName(result));
+        }
 
-    support.Formats.resize(formatCount);
-    if (formatCount != 0) {
+        support.Formats.resize(formatCount);
+        if (formatCount == 0) {
+            break;
+        }
+
         result = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, support.Formats.data());
+        if (result == VK_INCOMPLETE) {
+            continue;
+        }
+
         if (result != VK_SUCCESS) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "Failed to read Vulkan surface formats: {}",
                                   GetVkResultName(result));
         }
+
         support.Formats.resize(formatCount);
+        break;
     }
 
-    std::uint32_t presentModeCount = 0;
-    result = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, nullptr);
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Failed to enumerate Vulkan present modes: {}",
-                              GetVkResultName(result));
-    }
+    while (true) {
+        std::uint32_t presentModeCount = 0;
+        result = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, nullptr);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to enumerate Vulkan present modes: {}",
+                                  GetVkResultName(result));
+        }
 
-    support.PresentModes.resize(presentModeCount);
-    if (presentModeCount != 0) {
+        support.PresentModes.resize(presentModeCount);
+        if (presentModeCount == 0) {
+            break;
+        }
+
         result = vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice,
                                                            surface,
                                                            &presentModeCount,
                                                            support.PresentModes.data());
+        if (result == VK_INCOMPLETE) {
+            continue;
+        }
+
         if (result != VK_SUCCESS) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "Failed to read Vulkan present modes: {}",
                                   GetVkResultName(result));
         }
+
         support.PresentModes.resize(presentModeCount);
+        break;
     }
 
     return support;
@@ -394,9 +414,16 @@ public:
                                                       signalSemaphore,
                                                       signalFence,
                                                       &imageIndex);
-        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        if (result == VK_SUCCESS) {
             return {
                     .Status = EVulkanSwapchainAcquireStatus::ACQUIRED,
+                    .ImageIndex = imageIndex,
+            };
+        }
+
+        if (result == VK_SUBOPTIMAL_KHR) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::SUBOPTIMAL,
                     .ImageIndex = imageIndex,
             };
         }
@@ -404,6 +431,18 @@ public:
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             return {
                     .Status = EVulkanSwapchainAcquireStatus::OUT_OF_DATE,
+            };
+        }
+
+        if (result == VK_NOT_READY) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::NOT_READY,
+            };
+        }
+
+        if (result == VK_TIMEOUT) {
+            return {
+                    .Status = EVulkanSwapchainAcquireStatus::TIMEOUT,
             };
         }
 

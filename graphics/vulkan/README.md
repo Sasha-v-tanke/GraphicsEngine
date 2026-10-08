@@ -109,9 +109,9 @@ That state is not fatal and creates no `VkSwapchainKHR`; callers recreate the
 presentation chain when the framebuffer becomes non-zero again.
 
 Acquire and present wrappers translate WSI results into explicit backend states:
-acquired/presented, suboptimal, out-of-date or suspended. They do not record
-rendering commands or perform layout transitions; the future command/submission
-path owns those responsibilities.
+acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
+They do not record rendering commands or perform layout transitions; the future
+command/submission path owns those responsibilities.
 
 ## Dispatch
 

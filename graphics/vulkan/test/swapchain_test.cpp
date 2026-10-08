@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <spawn.h>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
@@ -34,9 +36,45 @@ extern char** environ;
 
 namespace {
 
+using NVulkan::EVulkanSwapchainAcquireStatus;
+using NVulkan::EVulkanSwapchainPresentStatus;
 using NVulkan::MakeVulkanSwapchainPlan;
 using NVulkan::VulkanSwapchainPlan;
 using NVulkan::VulkanSwapchainSupport;
+
+struct SemaphoreDeleter {
+    VkDevice Device = VK_NULL_HANDLE;
+
+    void operator()(VkSemaphore semaphore) const noexcept {
+        if (semaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(Device, semaphore, nullptr);
+        }
+    }
+};
+
+struct FenceDeleter {
+    VkDevice Device = VK_NULL_HANDLE;
+
+    void operator()(VkFence fence) const noexcept {
+        if (fence != VK_NULL_HANDLE) {
+            vkDestroyFence(Device, fence, nullptr);
+        }
+    }
+};
+
+struct CommandPoolDeleter {
+    VkDevice Device = VK_NULL_HANDLE;
+
+    void operator()(VkCommandPool commandPool) const noexcept {
+        if (commandPool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(Device, commandPool, nullptr);
+        }
+    }
+};
+
+using UniqueSemaphore = std::unique_ptr<std::remove_pointer_t<VkSemaphore>, SemaphoreDeleter>;
+using UniqueFence = std::unique_ptr<std::remove_pointer_t<VkFence>, FenceDeleter>;
+using UniqueCommandPool = std::unique_ptr<std::remove_pointer_t<VkCommandPool>, CommandPoolDeleter>;
 
 VulkanSwapchainSupport MakeSupport() {
     return {
@@ -90,6 +128,125 @@ bool IsEnvironmentFailure(const NCommon::Exception& exception) {
            message.find("Failed to create GLFW window") != std::string::npos ||
            message.find("Failed to initialize GLFW") != std::string::npos ||
            message.find("Failed to get GLFW Vulkan instance extensions") != std::string::npos;
+}
+
+UniqueSemaphore CreateSemaphore(VkDevice device) {
+    const VkSemaphoreCreateInfo createInfo{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    EXPECT_EQ(vkCreateSemaphore(device, &createInfo, nullptr, &semaphore), VK_SUCCESS);
+
+    return UniqueSemaphore{semaphore, SemaphoreDeleter{device}};
+}
+
+UniqueFence CreateFence(VkDevice device) {
+    const VkFenceCreateInfo createInfo{
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+    };
+
+    VkFence fence = VK_NULL_HANDLE;
+    EXPECT_EQ(vkCreateFence(device, &createInfo, nullptr, &fence), VK_SUCCESS);
+
+    return UniqueFence{fence, FenceDeleter{device}};
+}
+
+UniqueCommandPool CreateCommandPool(VkDevice device, std::uint32_t queueFamilyIndex) {
+    const VkCommandPoolCreateInfo createInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = queueFamilyIndex,
+    };
+
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    EXPECT_EQ(vkCreateCommandPool(device, &createInfo, nullptr, &commandPool), VK_SUCCESS);
+
+    return UniqueCommandPool{commandPool, CommandPoolDeleter{device}};
+}
+
+VkCommandBuffer AllocateCommandBuffer(VkDevice device, VkCommandPool commandPool) {
+    const VkCommandBufferAllocateInfo allocateInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+    };
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    EXPECT_EQ(vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer), VK_SUCCESS);
+
+    return commandBuffer;
+}
+
+void RecordPresentTransition(VkCommandBuffer commandBuffer, VkImage image) {
+    const VkCommandBufferBeginInfo beginInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    ASSERT_EQ(vkBeginCommandBuffer(commandBuffer, &beginInfo), VK_SUCCESS);
+
+    const VkImageMemoryBarrier2 barrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .dstAccessMask = 0,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange =
+                    {
+                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                            .baseMipLevel = 0,
+                            .levelCount = 1,
+                            .baseArrayLayer = 0,
+                            .layerCount = 1,
+                    },
+    };
+    const VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
+
+    ASSERT_EQ(vkEndCommandBuffer(commandBuffer), VK_SUCCESS);
+}
+
+void SubmitPresentTransition(const NVulkan::VulkanDevice& device,
+                             VkCommandBuffer commandBuffer,
+                             VkSemaphore imageAvailable,
+                             VkSemaphore presentReady,
+                             VkFence fence) {
+    const VkSemaphoreSubmitInfo waitSemaphore{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = imageAvailable,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    };
+    const VkCommandBufferSubmitInfo commandBufferInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .commandBuffer = commandBuffer,
+    };
+    const VkSemaphoreSubmitInfo signalSemaphore{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = presentReady,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+    };
+    const VkSubmitInfo2 submitInfo{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = 1,
+            .pWaitSemaphoreInfos = &waitSemaphore,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &commandBufferInfo,
+            .signalSemaphoreInfoCount = 1,
+            .pSignalSemaphoreInfos = &signalSemaphore,
+    };
+
+    const NVulkan::VulkanLockedQueue graphicsQueue = device.LockGraphicsQueue();
+    ASSERT_EQ(vkQueueSubmit2(graphicsQueue.GetHandle(), 1, &submitInfo, fence), VK_SUCCESS);
 }
 
 NWindow::WindowConfig MakeWindowConfig() {
@@ -173,7 +330,7 @@ void RunSpawnedSmoke(std::string_view filter) {
 
     kill(pid, SIGKILL);
     waitpid(pid, &status, 0);
-    GTEST_SKIP() << "Vulkan swapchain smoke timed out in this environment";
+    FAIL() << "Vulkan swapchain smoke timed out";
 }
 
 } // namespace
@@ -303,6 +460,34 @@ TEST(VulkanSwapchainChild, DISABLED_CreatesAndDestroysSwapchain) {
             EXPECT_NE(image.Handle, VK_NULL_HANDLE);
             EXPECT_NE(image.View, VK_NULL_HANDLE);
         }
+
+        const UniqueSemaphore imageAvailable = CreateSemaphore(device.GetHandle());
+        const UniqueSemaphore presentReady = CreateSemaphore(device.GetHandle());
+        const UniqueFence submitted = CreateFence(device.GetHandle());
+        const UniqueCommandPool commandPool =
+                CreateCommandPool(device.GetHandle(), physicalDevice.GraphicsQueueFamilyIndex);
+
+        const NVulkan::VulkanSwapchainAcquireResult acquire =
+                swapchain.AcquireNextImage(imageAvailable.get(), VK_NULL_HANDLE, UINT64_MAX);
+        ASSERT_TRUE(acquire.Status == EVulkanSwapchainAcquireStatus::ACQUIRED ||
+                    acquire.Status == EVulkanSwapchainAcquireStatus::SUBOPTIMAL);
+        ASSERT_LT(acquire.ImageIndex, swapchain.GetImages().size());
+
+        const VkCommandBuffer commandBuffer = AllocateCommandBuffer(device.GetHandle(), commandPool.get());
+        RecordPresentTransition(commandBuffer, swapchain.GetImages()[acquire.ImageIndex].Handle);
+        SubmitPresentTransition(device, commandBuffer, imageAvailable.get(), presentReady.get(), submitted.get());
+        const VkFence submittedFence = submitted.get();
+        ASSERT_EQ(vkWaitForFences(device.GetHandle(), 1, &submittedFence, VK_TRUE, UINT64_MAX), VK_SUCCESS);
+
+        {
+            const NVulkan::VulkanLockedQueue presentQueue = device.LockPresentQueue();
+            const EVulkanSwapchainPresentStatus presentStatus =
+                    swapchain.Present(presentQueue, acquire.ImageIndex, {presentReady.get()});
+            EXPECT_TRUE(presentStatus == EVulkanSwapchainPresentStatus::PRESENTED ||
+                        presentStatus == EVulkanSwapchainPresentStatus::SUBOPTIMAL);
+        }
+
+        ASSERT_EQ(vkDeviceWaitIdle(device.GetHandle()), VK_SUCCESS);
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {
             GTEST_SKIP() << exception.GetMessage();

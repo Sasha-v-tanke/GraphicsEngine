@@ -38,7 +38,10 @@ struct VulkanSwapchainImage {
 
 enum class EVulkanSwapchainAcquireStatus {
     ACQUIRED,
+    SUBOPTIMAL,
     OUT_OF_DATE,
+    NOT_READY,
+    TIMEOUT,
     SUSPENDED,
 };
 
