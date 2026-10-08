@@ -32,6 +32,21 @@ extern char** environ;
 
 namespace {
 
+constexpr int SmokeEnvironmentSkipExitCode = 77;
+constexpr std::string_view SmokeChildEnvironment = "GRAPHICS_ENGINE_VULKAN_DEVICE_SMOKE_CHILD";
+
+bool IsSpawnedSmokeChild() {
+    return std::getenv(SmokeChildEnvironment.data()) != nullptr;
+}
+
+void SkipSmoke(std::string_view message) {
+    if (IsSpawnedSmokeChild()) {
+        std::exit(SmokeEnvironmentSkipExitCode);
+    }
+
+    GTEST_SKIP() << message;
+}
+
 bool IsEnvironmentFailure(const NCommon::Exception& exception) {
     const std::string& message = exception.GetMessage();
 
@@ -102,7 +117,9 @@ void RunSpawnedSmoke(std::string_view filter) {
     };
 
     pid_t pid = 0;
+    ASSERT_EQ(setenv(SmokeChildEnvironment.data(), "1", 1), 0);
     const int spawnResult = posix_spawn(&pid, executable.c_str(), nullptr, nullptr, arguments, GetEnvironment());
+    unsetenv(SmokeChildEnvironment.data());
     ASSERT_EQ(spawnResult, 0);
     ASSERT_NE(pid, -1);
 
@@ -113,6 +130,9 @@ void RunSpawnedSmoke(std::string_view filter) {
 
         if (result == pid) {
             ASSERT_TRUE(WIFEXITED(status));
+            if (WEXITSTATUS(status) == SmokeEnvironmentSkipExitCode) {
+                GTEST_SKIP() << "Vulkan logical device smoke environment is unavailable";
+            }
             EXPECT_EQ(WEXITSTATUS(status), 0);
             return;
         }
@@ -162,7 +182,7 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
         }
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {
-            GTEST_SKIP() << exception.GetMessage();
+            SkipSmoke(exception.GetMessage());
         }
 
         throw;
