@@ -186,22 +186,25 @@ template<typename T, typename TReader>
 [[nodiscard]] std::vector<T>
 ReadVulkanCollection(TReader reader, std::string_view countError, std::string_view readError) {
     std::uint32_t count = 0;
-    VkResult result = reader(&count, nullptr);
-    if (result != VK_SUCCESS) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "{}: {}", countError, GetVkResultName(result));
-    }
-
     std::vector<T> values;
-    do {
+
+    while (true) {
+        VkResult result = reader(&count, nullptr);
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "{}: {}", countError, GetVkResultName(result));
+        }
+
         values.resize(count);
         result = reader(&count, values.data());
         if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "{}: {}", readError, GetVkResultName(result));
         }
-    } while (result == VK_INCOMPLETE);
 
-    values.resize(count);
-    return values;
+        if (result == VK_SUCCESS) {
+            values.resize(count);
+            return values;
+        }
+    }
 }
 
 [[nodiscard]] std::vector<VkImage> ReadSwapchainImages(VkDevice device, VkSwapchainKHR swapchain) {
