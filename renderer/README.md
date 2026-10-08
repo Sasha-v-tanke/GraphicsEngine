@@ -31,9 +31,10 @@ new acquisitions but does not replace the versions already retained by `RenderWo
 Retained resource versions therefore remain alive for all CPU users of the frame and are released at the frame lifetime
 boundary.
 
-`RenderWorld` also publishes frame resource use records derived from retained leases. `FrameSubmission` carries those
-records into the graphics backend submission boundary so backend-side GPU lifetime can retain the same logical resource
-versions until the submission completion point retires. Extraction itself still does not expose native backend objects.
+`RenderWorld` also publishes frame resource use records derived from retained leases. `FrameSubmission` owns those
+common records and moves them into the graphics backend submission boundary, so backend-side GPU lifetime retains the
+same logical resource versions until the submission completion point retires. Extraction itself still does not expose
+native backend objects, and Graphics does not depend on Resources.
 
 ## Renderer preparation
 

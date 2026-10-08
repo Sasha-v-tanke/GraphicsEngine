@@ -30,7 +30,7 @@ public:
           RenderFrameIdentity frame,
           const std::pmr::vector<RenderView>& views,
           const std::pmr::vector<RenderObject>& objects,
-          const std::pmr::vector<NResources::ResourceUseRecord>& resourceUseRecords) {
+          const std::pmr::vector<NCommon::ResourceUseRecord>& resourceUseRecords) {
         void* storage = memory.allocate(sizeof(RenderWorld), alignof(RenderWorld));
 
         return *::new (storage) RenderWorld{frame,
@@ -63,7 +63,7 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
     std::pmr::memory_resource& memory = storage.GetMemoryResource();
     auto& views = storage.Emplace<std::pmr::vector<RenderView>>(&memory);
     auto& objects = storage.Emplace<std::pmr::vector<RenderObject>>(&memory);
-    auto& resourceUseRecords = storage.Emplace<std::pmr::vector<NResources::ResourceUseRecord>>(&memory);
+    auto& resourceUseRecords = storage.Emplace<std::pmr::vector<NCommon::ResourceUseRecord>>(&memory);
 
     views.reserve(viewCount);
     objects.reserve(objectCount);

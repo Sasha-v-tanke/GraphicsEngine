@@ -1,5 +1,6 @@
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <graphics/backend/backend.h>
@@ -22,7 +23,7 @@ struct FakeGraphicsState {
     };
     int CreatedCount = 0;
     int DestroyedCount = 0;
-    std::vector<NGraphics::FrameSubmission> Submissions;
+    std::vector<std::pair<std::uint64_t, NGraphics::FrameSubmission>> InFlightSubmissions;
     std::vector<NGraphics::BufferDescriptor> CreatedBuffers;
     std::vector<std::pair<std::uint64_t, std::optional<std::uint64_t>>> DestroyedBuffers;
     std::uint64_t NextBuffer = 1;
@@ -47,12 +48,16 @@ public:
         return m_state.Capabilities;
     }
 
-    [[nodiscard]] std::uint64_t SubmitFrame(const NGraphics::FrameSubmission& submission) override {
-        m_state.Submissions.push_back(submission);
-        return m_state.NextCompletion++;
+    [[nodiscard]] std::uint64_t SubmitFrame(NGraphics::FrameSubmission submission) override {
+        const std::uint64_t completion = m_state.NextCompletion++;
+        m_state.InFlightSubmissions.emplace_back(completion, std::move(submission));
+        return completion;
     }
 
     [[nodiscard]] bool IsCompleted(std::uint64_t completionValue) const override {
+        std::erase_if(m_state.InFlightSubmissions,
+                      [&](const auto& entry) { return entry.first <= m_state.CompletedValue; });
+
         return completionValue <= m_state.CompletedValue;
     }
 
@@ -135,17 +140,55 @@ TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
     });
 
     ASSERT_TRUE(completion.IsValid());
-    ASSERT_EQ(m_state.Submissions.size(), 1U);
-    EXPECT_EQ(m_state.Submissions[0].FrameIndex, 42U);
-    EXPECT_TRUE(m_state.Submissions[0].RequiresPresentation);
-    ASSERT_EQ(m_state.Submissions[0].ResourceUseRecords.size(), 1U);
-    EXPECT_TRUE(m_state.Submissions[0].ResourceUseRecords[0].IsValid());
-    EXPECT_EQ(m_state.Submissions[0].ResourceUseRecords[0].GetVersion(), lease->GetVersion());
+    ASSERT_EQ(m_state.InFlightSubmissions.size(), 1U);
+    EXPECT_EQ(m_state.InFlightSubmissions[0].second.FrameIndex, 42U);
+    EXPECT_TRUE(m_state.InFlightSubmissions[0].second.RequiresPresentation);
+    ASSERT_EQ(m_state.InFlightSubmissions[0].second.ResourceUseRecords.size(), 1U);
+    EXPECT_TRUE(m_state.InFlightSubmissions[0].second.ResourceUseRecords[0].IsValid());
+    EXPECT_EQ(m_state.InFlightSubmissions[0].second.ResourceUseRecords[0].GetVersion(), lease->GetVersion());
     EXPECT_FALSE(graphics.IsCompleted(completion));
 
     m_state.CompletedValue = completion.GetValue();
 
     EXPECT_TRUE(graphics.IsCompleted(completion));
+}
+
+TEST_F(GraphicsTest, RetainsSubmissionResourcesUntilCompletion) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    NResources::ResourceManager resources;
+    const auto resource = resources.Request<int>(NResources::ResourceIdentity{"test", "gpu-retained"});
+    const auto operation = resources.BeginLoading(resource);
+    auto payload = std::make_shared<int>(9);
+    const std::weak_ptr<const int> weakPayload = payload;
+
+    resources.PublishReady(operation, payload);
+    payload.reset();
+
+    std::optional<NResources::ResourceLease<int>> lease = resources.TryAcquire(resource);
+
+    ASSERT_TRUE(lease.has_value());
+
+    const auto completion = graphics.SubmitFrame({
+            .FrameIndex = 43,
+            .RequiresPresentation = false,
+            .ResourceUseRecords = {lease->GetUseRecord()},
+    });
+
+    resources.RequestUnload(resource);
+    resources.CompleteUnload(resource);
+    lease.reset();
+
+    ASSERT_FALSE(weakPayload.expired());
+    ASSERT_EQ(m_state.InFlightSubmissions.size(), 1U);
+
+    EXPECT_FALSE(graphics.IsCompleted(completion));
+    EXPECT_FALSE(weakPayload.expired());
+
+    m_state.CompletedValue = completion.GetValue();
+
+    EXPECT_TRUE(graphics.IsCompleted(completion));
+    EXPECT_TRUE(weakPayload.expired());
+    EXPECT_TRUE(m_state.InFlightSubmissions.empty());
 }
 
 TEST_F(GraphicsTest, RejectsPresentationSubmissionWhenBackendHasNoPresentationPath) {
