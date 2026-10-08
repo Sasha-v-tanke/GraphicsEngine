@@ -46,6 +46,27 @@ constexpr ImageAspectFlags KNOWN_IMAGE_ASPECT_MASK =
     return ImageAspect(EImageAspect::Color);
 }
 
+[[nodiscard]] std::uint32_t CalculateMaxMipLevels(const ImageExtent& extent) noexcept {
+    std::uint32_t maxDimension = extent.Width;
+
+    if (extent.Height > maxDimension) {
+        maxDimension = extent.Height;
+    }
+
+    if (extent.Depth > maxDimension) {
+        maxDimension = extent.Depth;
+    }
+
+    std::uint32_t levels = 1;
+
+    while (maxDimension > 1) {
+        maxDimension /= 2;
+        ++levels;
+    }
+
+    return levels;
+}
+
 class BufferCreationGuard final {
 public:
     BufferCreationGuard(NBackend::IGraphicsBackend& backend, std::uint64_t value) noexcept
@@ -262,6 +283,10 @@ ImageHandle Graphics::CreateImage(const ImageDescriptor& descriptor) {
 
     if (descriptor.MipLevels == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Image mip level count must be greater than zero");
+    }
+
+    if (descriptor.MipLevels > CalculateMaxMipLevels(descriptor.Extent)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Image mip level count exceeds full mip chain");
     }
 
     if (descriptor.ArrayLayers == 0) {

@@ -519,6 +519,31 @@ TEST_F(GraphicsTest, RejectsInvalidImageDescriptors) {
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
         (void)graphics.CreateImage({
+                .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                .MipLevels = 2,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    (void)graphics.CreateImage({
+            .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+            .MipLevels = 3,
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
+                .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+                .MipLevels = 4,
+                .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+                .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+        });
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.CreateImage({
                 .Extent = {.Width = 1, .Height = 1, .Depth = 2},
                 .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
                 .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),

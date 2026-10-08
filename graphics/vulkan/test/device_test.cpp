@@ -253,7 +253,7 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
         NVulkan::VulkanInstanceConfig instanceConfig;
         instanceConfig.ApplicationName = "GraphicsEngineVulkanDeviceTest";
         instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
-        instanceConfig.ValidationMode = NVulkan::EValidationMode::EnabledIfAvailable;
+        instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
         instanceConfig.EnableDebugUtils = true;
 
         NVulkan::VulkanInstance instance{instanceConfig};
