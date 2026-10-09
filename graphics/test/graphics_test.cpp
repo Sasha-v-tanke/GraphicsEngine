@@ -819,6 +819,10 @@ TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { const NGraphics::Material material{{}, layout, bindings}; });
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{NResources::ResourceIdentity{"shader", "wrong"}, layout, bindings};
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
         const NGraphics::Material material{
                 NResources::ResourceIdentity{"pipeline", "duplicate-layout"},
                 {layout[0], layout[0]},
@@ -878,6 +882,27 @@ TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
                                         {
                                                 .Resource = NResources::ResourceIdentity{"buffer", "camera"},
                                                 .SizeBytes = 0,
+                                        },
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
+                        },
+                },
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "wrong-resource-class"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Buffer =
+                                        {
+                                                .Resource = NResources::ResourceIdentity{"image", "camera"},
+                                                .SizeBytes = 64,
                                         },
                                 .Image = {},
                                 .Sampler = {},

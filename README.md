@@ -167,10 +167,11 @@ single-layer images/views; 2D-array, 3D и cube dimensions должны ввод
 
 `Material` связывает logical pipeline identity с immutable binding layout и resource bindings для uniform/storage
 buffers, sampled images и samplers. Public contract хранит backend-independent resource identities, ranges и semantic
-binding slots, а не concrete GPU handles; Vulkan descriptor sets, descriptor pools, uniform alignment и backend limits
-остаются ответственностью concrete backend при подготовке submit. Материал config-driven в пределах frame usage:
-опубликованный resource snapshot удерживает immutable binding configuration, а backend descriptor path должен резолвить
-и удерживать concrete dependencies для GPU lifetime.
+binding slots, а не concrete GPU handles. Resource classes фиксированы: `pipeline`, `buffer`, `image`, `sampler`.
+Vulkan descriptor sets, descriptor pools, uniform alignment и backend limits остаются ответственностью concrete backend
+при подготовке submit. Материал config-driven в пределах frame usage: опубликованный resource snapshot удерживает
+immutable binding configuration, а backend descriptor path должен резолвить и удерживать concrete dependencies для GPU
+lifetime.
 
 Physical destruction backend resources может быть immediate или deferred до заданного `CompletionPoint`. Фиксированное
 количество кадров не считается доказательством GPU completion. Frame-local buffers явно помечаются lifetime policy, а

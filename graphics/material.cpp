@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <string_view>
 #include <utility>
 
 #include <GraphicsEngine/lib/common/error/error.h>
@@ -14,6 +15,10 @@ namespace {
 constexpr ShaderVisibilityFlags KNOWN_SHADER_VISIBILITY_MASK = ShaderVisibility(EShaderVisibility::Vertex) |
                                                                ShaderVisibility(EShaderVisibility::Fragment) |
                                                                ShaderVisibility(EShaderVisibility::Compute);
+constexpr std::string_view BUFFER_RESOURCE_CLASS = "buffer";
+constexpr std::string_view IMAGE_RESOURCE_CLASS = "image";
+constexpr std::string_view PIPELINE_RESOURCE_CLASS = "pipeline";
+constexpr std::string_view SAMPLER_RESOURCE_CLASS = "sampler";
 
 [[nodiscard]] bool IsKnownBindingType(EMaterialBindingType type) noexcept {
     switch (type) {
@@ -26,6 +31,11 @@ constexpr ShaderVisibilityFlags KNOWN_SHADER_VISIBILITY_MASK = ShaderVisibility(
     }
 
     return false;
+}
+
+[[nodiscard]] bool IsResourceClass(const NResources::ResourceIdentity& identity,
+                                   std::string_view resourceClass) noexcept {
+    return identity.GetResourceClass() == resourceClass;
 }
 
 [[nodiscard]] const MaterialBindingLayoutEntry* FindLayoutEntry(std::span<const MaterialBindingLayoutEntry> layout,
@@ -71,7 +81,8 @@ void ValidateBindingValue(const MaterialBinding& binding) {
     switch (binding.Type) {
     case EMaterialBindingType::UniformBuffer:
     case EMaterialBindingType::StorageBuffer:
-        if (!binding.Buffer.Resource.IsValid() || binding.Buffer.SizeBytes == 0) {
+        if (!binding.Buffer.Resource.IsValid() || !IsResourceClass(binding.Buffer.Resource, BUFFER_RESOURCE_CLASS) ||
+            binding.Buffer.SizeBytes == 0) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material buffer binding is invalid");
         }
 
@@ -80,17 +91,20 @@ void ValidateBindingValue(const MaterialBinding& binding) {
         }
         return;
     case EMaterialBindingType::SampledImage:
-        if (!binding.Image.Resource.IsValid()) {
+        if (!binding.Image.Resource.IsValid() || !IsResourceClass(binding.Image.Resource, IMAGE_RESOURCE_CLASS)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material image binding is invalid");
         }
         return;
     case EMaterialBindingType::Sampler:
-        if (!binding.Sampler.Resource.IsValid()) {
+        if (!binding.Sampler.Resource.IsValid() || !IsResourceClass(binding.Sampler.Resource, SAMPLER_RESOURCE_CLASS)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material sampler binding is invalid");
         }
         return;
     case EMaterialBindingType::CombinedImageSampler:
-        if (!binding.CombinedImageSampler.Image.IsValid() || !binding.CombinedImageSampler.Sampler.IsValid()) {
+        if (!binding.CombinedImageSampler.Image.IsValid() ||
+            !IsResourceClass(binding.CombinedImageSampler.Image, IMAGE_RESOURCE_CLASS) ||
+            !binding.CombinedImageSampler.Sampler.IsValid() ||
+            !IsResourceClass(binding.CombinedImageSampler.Sampler, SAMPLER_RESOURCE_CLASS)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                                   "Material combined image sampler binding is invalid");
         }
@@ -135,7 +149,7 @@ Material::Material(NResources::ResourceIdentity pipeline,
     : m_pipeline(std::move(pipeline))
     , m_layout(std::move(layout))
     , m_bindings(std::move(bindings)) {
-    if (!m_pipeline.IsValid()) {
+    if (!m_pipeline.IsValid() || !IsResourceClass(m_pipeline, PIPELINE_RESOURCE_CLASS)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material pipeline identity is invalid");
     }
 
