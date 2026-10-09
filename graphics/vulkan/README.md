@@ -121,13 +121,17 @@ material bindings resolved by the Vulkan backend. Public `Material` continues to
 store only backend-independent `ResourceIdentity` values and ranges; it never
 stores `VkDescriptorSet`, `VkDescriptorSetLayout` or native resource handles.
 
-Descriptor cache keys are built from the material binding layout plus logical
-resource identities and buffer ranges. The concrete `VkBuffer`, `VkImageView`
-and `VkSampler` values are supplied only by backend resolution immediately before
-descriptor acquisition. A repeated compatible request returns the cached set
-instead of updating or freeing an in-flight descriptor set. New cache entries are
-allocated once and written once, so the current policy is safe for persistent
-material bindings and can be extended to frame/worker arenas later.
+Descriptor cache keys are built from the material binding layout, logical
+resource identities, resolved resource versions, descriptor-relevant concrete
+Vulkan handles, buffer ranges and image layout. A repeated compatible request
+returns the cached set instead of updating or freeing an in-flight descriptor
+set. A hot-reloaded resource version or recreated Vulkan representation receives
+a new descriptor set while old sets remain valid for already submitted work.
+
+Buffer bindings are checked against backend-supplied alignment and range limits
+before `vkUpdateDescriptorSets()`. The manager can retain descriptor use until a
+submission completion value is reported and refuses destruction while retained
+sets are still in flight.
 
 Telemetry reports descriptor allocations, cache hits and misses. It is intended
 for backend diagnostics and future frame-resource tuning, not for public

@@ -427,7 +427,13 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
             ASSERT_NE(sampler, VK_NULL_HANDLE);
 
             {
-                NVulkan::VulkanDescriptorManager descriptors{device.GetHandle()};
+                NVulkan::VulkanDescriptorManager descriptors{device.GetHandle(),
+                                                             {
+                                                                     .MinUniformBufferOffsetAlignment = 16,
+                                                                     .MinStorageBufferOffsetAlignment = 16,
+                                                                     .MaxUniformBufferRange = 1024,
+                                                                     .MaxStorageBufferRange = 1024,
+                                                             }};
                 const std::vector<NGraphics::MaterialBindingLayoutEntry> layout{
                         {
                                 .Binding = 0,
@@ -454,8 +460,8 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                                                         },
                                         },
                                 .Buffer = {},
-                                .Image = {.ImageView = imageView},
-                                .Sampler = {.Sampler = sampler},
+                                .Image = {.ImageView = imageView, .ResourceVersion = 1},
+                                .Sampler = {.Sampler = sampler, .ResourceVersion = 1},
                         },
                 };
 
@@ -463,13 +469,59 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                         descriptors.Acquire({.Layout = layout, .Bindings = bindings});
                 const NVulkan::VulkanDescriptorSetLease second =
                         descriptors.Acquire({.Layout = layout, .Bindings = bindings});
+                std::vector<NVulkan::VulkanResolvedMaterialBinding> reloadedBindings = bindings;
+                reloadedBindings.front().Image.ResourceVersion = 2;
+                const NVulkan::VulkanDescriptorSetLease reloaded =
+                        descriptors.Acquire({.Layout = layout, .Bindings = reloadedBindings});
 
                 EXPECT_TRUE(first.IsValid());
                 EXPECT_EQ(first.GetLayout(), second.GetLayout());
                 EXPECT_EQ(first.GetSet(), second.GetSet());
-                EXPECT_EQ(descriptors.GetTelemetry().Allocations, 1U);
-                EXPECT_EQ(descriptors.GetTelemetry().CacheMisses, 1U);
+                EXPECT_NE(first.GetSet(), reloaded.GetSet());
+                EXPECT_EQ(descriptors.GetTelemetry().Allocations, 2U);
+                EXPECT_EQ(descriptors.GetTelemetry().CacheMisses, 2U);
                 EXPECT_EQ(descriptors.GetTelemetry().CacheHits, 1U);
+
+                const std::vector<NGraphics::MaterialBindingLayoutEntry> bufferLayout{
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex),
+                                .Count = 1,
+                        },
+                };
+                const std::vector<NVulkan::VulkanResolvedMaterialBinding> misalignedBuffer{
+                        {
+                                .Material =
+                                        {
+                                                .Binding = 0,
+                                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                                .Buffer =
+                                                        {
+                                                                .Resource = NResources::ResourceIdentity{"buffer",
+                                                                                                         "camera"},
+                                                                .OffsetBytes = 1,
+                                                                .SizeBytes = 64,
+                                                        },
+                                        },
+                                .Buffer =
+                                        {
+                                                .Buffer = reinterpret_cast<VkBuffer>(1),
+                                                .ResourceVersion = 1,
+                                                .BufferSizeBytes = 256,
+                                                .OffsetBytes = 1,
+                                                .SizeBytes = 64,
+                                        },
+                        },
+                };
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+                    (void)descriptors.Acquire({.Layout = bufferLayout, .Bindings = misalignedBuffer});
+                });
+
+                descriptors.RetainUntil(first, 3);
+                EXPECT_TRUE(descriptors.HasInFlightDescriptors());
+                descriptors.ReleaseCompleted(3);
+                EXPECT_FALSE(descriptors.HasInFlightDescriptors());
             }
 
             device.DestroySampler(sampler);
