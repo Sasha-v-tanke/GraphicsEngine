@@ -7,6 +7,7 @@
 #include <graphics/backend/backend.h>
 #include <graphics/backend/factory.h>
 #include <graphics/graphics.h>
+#include <graphics/material.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <resources/resource_manager.h>
@@ -734,6 +735,163 @@ TEST_F(GraphicsTest, RejectsInvalidSamplerDescriptor) {
                 .MinLod = 0.0F,
                 .MaxLod = std::numeric_limits<float>::infinity(),
         });
+    });
+}
+
+TEST_F(GraphicsTest, CreatesMaterialAndPreservesBindingDescriptors) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    const NGraphics::BufferHandle uniforms = graphics.CreateBuffer({
+            .SizeBytes = 256,
+            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform),
+            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+    });
+    const NGraphics::ImageHandle image = graphics.CreateImage({
+            .Extent = {.Width = 4, .Height = 4, .Depth = 1},
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+    });
+    const NGraphics::ImageViewHandle imageView = graphics.CreateImageView({
+            .Image = image,
+            .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+    });
+    const NGraphics::SamplerHandle sampler = graphics.CreateSampler({});
+
+    const NGraphics::Material material{
+            NResources::ResourceIdentity{"pipeline", "textured"},
+            {
+                    {
+                            .Binding = 0,
+                            .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                            .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex),
+                    },
+                    {
+                            .Binding = 1,
+                            .Type = NGraphics::EMaterialBindingType::CombinedImageSampler,
+                            .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Fragment),
+                    },
+            },
+            {
+                    {
+                            .Binding = 0,
+                            .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                            .Buffer =
+                                    {
+                                            .Buffer = uniforms,
+                                            .SizeBytes = 256,
+                                    },
+                    },
+                    {
+                            .Binding = 1,
+                            .Type = NGraphics::EMaterialBindingType::CombinedImageSampler,
+                            .CombinedImageSampler =
+                                    {
+                                            .ImageView = imageView,
+                                            .Sampler = sampler,
+                                    },
+                    },
+            },
+    };
+
+    EXPECT_EQ(material.GetPipeline(), (NResources::ResourceIdentity{"pipeline", "textured"}));
+    ASSERT_EQ(material.GetLayout().size(), 2U);
+    EXPECT_EQ(material.GetLayout()[1].Binding, 1U);
+    EXPECT_EQ(material.GetLayout()[1].Type, NGraphics::EMaterialBindingType::CombinedImageSampler);
+    ASSERT_EQ(material.GetBindings().size(), 2U);
+    EXPECT_EQ(material.GetBindings()[0].Buffer.Buffer, uniforms);
+    EXPECT_EQ(material.GetBindings()[0].Buffer.SizeBytes, 256U);
+    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.ImageView, imageView);
+    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.Sampler, sampler);
+}
+
+TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
+    NGraphics::Graphics graphics = CreateGraphics();
+    const NGraphics::BufferHandle uniforms = graphics.CreateBuffer({
+            .SizeBytes = 64,
+            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform),
+            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+    });
+
+    const std::vector<NGraphics::MaterialBindingLayoutEntry> layout{
+            {
+                    .Binding = 0,
+                    .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                    .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex),
+            },
+    };
+    const std::vector<NGraphics::MaterialBinding> bindings{
+            {
+                    .Binding = 0,
+                    .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                    .Buffer =
+                            {
+                                    .Buffer = uniforms,
+                                    .SizeBytes = 64,
+                            },
+            },
+    };
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { const NGraphics::Material material{{}, layout, bindings}; });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "duplicate-layout"},
+                {layout[0], layout[0]},
+                bindings,
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "array"},
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex),
+                                .Count = 2,
+                        },
+                },
+                bindings,
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "missing"},
+                layout,
+                {},
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "type-mismatch"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::Sampler,
+                        },
+                },
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "invalid-buffer"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Buffer =
+                                        {
+                                                .Buffer = uniforms,
+                                                .SizeBytes = 0,
+                                        },
+                        },
+                },
+        };
     });
 }
 

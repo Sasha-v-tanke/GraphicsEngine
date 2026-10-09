@@ -165,11 +165,17 @@ format, usage, access, lifetime, subresource range и sampling state. Текущ
 single-layer images/views; 2D-array, 3D и cube dimensions должны вводиться отдельным dimension/view-type contract перед
 их backend mapping.
 
+`Material` связывает logical pipeline identity с immutable binding layout и resource bindings для buffers, images и
+samplers. Public contract хранит только backend-independent handles и semantic binding slots; Vulkan descriptor sets,
+descriptor pools, uniform alignment и backend limits остаются ответственностью concrete backend при подготовке submit.
+Материал config-driven в пределах frame usage: опубликованный resource snapshot использует ту версию bindings, которую
+удержал renderer на момент extract.
+
 Physical destruction backend resources может быть immediate или deferred до заданного `CompletionPoint`. Фиксированное
 количество кадров не считается доказательством GPU completion. Frame-local buffers явно помечаются lifetime policy, а
 recycle transient/staging памяти должен быть completion-aware.
 
-Shader, Pipeline, descriptor/binding и RenderGraph API добавляются только при появлении их прямых потребителей.
+Shader, Pipeline и RenderGraph API добавляются только при появлении их прямых потребителей.
 
 ## Frame Pipeline and Multithreading
 
