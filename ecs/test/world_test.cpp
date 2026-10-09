@@ -282,6 +282,22 @@ TEST(EcsWorld, DeferredCreateDoesNotMutateEntityStorageBeforeCommit) {
     EXPECT_TRUE(world.IsAlive(deferred));
 }
 
+TEST(EcsWorld, DeferredCreateReusesFreeEntitySlots) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.DestroyEntity(first);
+
+    const NEcs::Entity deferred = world.DeferCreateEntity();
+    EXPECT_EQ(deferred.Index, first.Index);
+    EXPECT_NE(deferred.Generation, first.Generation);
+    EXPECT_FALSE(world.IsAlive(deferred));
+
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(deferred));
+}
+
 TEST(EcsWorld, RunSystemsCommitsDeferredStructuralChangesAfterAllSystems) {
     NEcs::World world;
 

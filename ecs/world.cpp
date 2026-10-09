@@ -9,6 +9,10 @@ std::uint32_t World::IDeferredCommand::GetReservedEntityCount() const noexcept {
     return 0;
 }
 
+void World::IDeferredCommand::RollbackReservation(World& world) {
+    static_cast<void>(world);
+}
+
 Entity World::CreateEntity() {
     ValidateStructuralWriteAllowed();
 
@@ -41,11 +45,22 @@ Entity World::CreateEntity() {
     };
 }
 
-World::DeferredCreateEntityCommand::DeferredCreateEntityCommand(Entity entity)
-    : Entity_(entity) {
+World::DeferredCreateEntityCommand::DeferredCreateEntityCommand(Entity entity, bool reusedFreeSlot)
+    : Entity_(entity)
+    , ReusedFreeSlot_(reusedFreeSlot) {
 }
 
 void World::DeferredCreateEntityCommand::Apply(World& world) {
+    if (ReusedFreeSlot_) {
+        auto& state = world.Entities_[Entity_.Index];
+        if (state.Alive || state.Reserved || state.Generation != Entity_.Generation) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Deferred ECS entity create is no longer valid");
+        }
+
+        state.Alive = true;
+        return;
+    }
+
     if (Entity_.Index > world.Entities_.size()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Deferred ECS entity create order is invalid");
     }
@@ -71,6 +86,12 @@ std::uint32_t World::DeferredCreateEntityCommand::GetReservedEntityCount() const
     return 1;
 }
 
+void World::DeferredCreateEntityCommand::RollbackReservation(World& world) {
+    if (ReusedFreeSlot_) {
+        world.FreeEntityIndices_.push_back(Entity_.Index);
+    }
+}
+
 World::DeferredDestroyEntityCommand::DeferredDestroyEntityCommand(Entity entity)
     : Entity_(entity) {
 }
@@ -81,12 +102,24 @@ void World::DeferredDestroyEntityCommand::Apply(World& world) {
 
 Entity World::DeferCreateEntity() {
     Entity entity;
+    bool reusedFreeSlot = false;
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
 
-        const std::uint32_t index = static_cast<std::uint32_t>(Entities_.size() + ReservedDeferredEntityCount_);
-        const std::uint32_t generation = NextNewEntityGeneration_++;
+        std::uint32_t index = 0;
+        std::uint32_t generation = 0;
+
+        if (!FreeEntityIndices_.empty()) {
+            index = FreeEntityIndices_.back();
+            FreeEntityIndices_.pop_back();
+            generation = Entities_[index].Generation;
+            reusedFreeSlot = true;
+        } else {
+            index = static_cast<std::uint32_t>(Entities_.size() + ReservedDeferredEntityCount_);
+            generation = NextNewEntityGeneration_++;
+        }
+
         ++ReservedDeferredEntityCount_;
         entity = {
                 .Index = index,
@@ -94,9 +127,11 @@ Entity World::DeferCreateEntity() {
         };
 
         if (IsCollectingSystemDeferredStructuralCommands_) {
-            ActiveDeferredStructuralCommands_.push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
+            ActiveDeferredStructuralCommands_.push_back(
+                    std::make_unique<DeferredCreateEntityCommand>(entity, reusedFreeSlot));
         } else {
-            DeferredStructuralCommands_.push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
+            DeferredStructuralCommands_.push_back(
+                    std::make_unique<DeferredCreateEntityCommand>(entity, reusedFreeSlot));
         }
     }
 
@@ -167,6 +202,7 @@ void World::RunSystems() {
         } catch (...) {
             for (const auto& command: ActiveDeferredStructuralCommands_) {
                 ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
+                command->RollbackReservation(*this);
             }
             IsRunningSystems_ = false;
             IsCollectingSystemDeferredStructuralCommands_ = false;

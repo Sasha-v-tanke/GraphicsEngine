@@ -166,17 +166,20 @@ private:
 
         virtual void Apply(World& world) = 0;
         [[nodiscard]] virtual std::uint32_t GetReservedEntityCount() const noexcept;
+        virtual void RollbackReservation(World& world);
     };
 
     class DeferredCreateEntityCommand final: public IDeferredCommand {
     public:
-        explicit DeferredCreateEntityCommand(Entity entity);
+        DeferredCreateEntityCommand(Entity entity, bool reusedFreeSlot);
 
         void Apply(World& world) override;
         [[nodiscard]] std::uint32_t GetReservedEntityCount() const noexcept override;
+        void RollbackReservation(World& world) override;
 
     private:
         Entity Entity_;
+        bool ReusedFreeSlot_ = false;
     };
 
     class DeferredDestroyEntityCommand final: public IDeferredCommand {
