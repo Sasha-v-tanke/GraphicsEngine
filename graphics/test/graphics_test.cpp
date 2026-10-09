@@ -779,10 +779,16 @@ TEST_F(GraphicsTest, CreatesMaterialAndPreservesBindingDescriptors) {
                                             .Buffer = uniforms,
                                             .SizeBytes = 256,
                                     },
+                            .Image = {},
+                            .Sampler = {},
+                            .CombinedImageSampler = {},
                     },
                     {
                             .Binding = 1,
                             .Type = NGraphics::EMaterialBindingType::CombinedImageSampler,
+                            .Buffer = {},
+                            .Image = {},
+                            .Sampler = {},
                             .CombinedImageSampler =
                                     {
                                             .ImageView = imageView,
@@ -827,6 +833,9 @@ TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
                                     .Buffer = uniforms,
                                     .SizeBytes = 64,
                             },
+                    .Image = {},
+                    .Sampler = {},
+                    .CombinedImageSampler = {},
             },
     };
 
@@ -871,6 +880,10 @@ TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
                         {
                                 .Binding = 0,
                                 .Type = NGraphics::EMaterialBindingType::Sampler,
+                                .Buffer = {},
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
                         },
                 },
         };
@@ -889,6 +902,9 @@ TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
                                                 .Buffer = uniforms,
                                                 .SizeBytes = 0,
                                         },
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
                         },
                 },
         };
