@@ -108,61 +108,27 @@ void ValidateBinding(const VulkanResolvedMaterialBinding& binding) {
 
 } // namespace
 
-struct VulkanDescriptorManager::DescriptorKey {
-    struct LayoutEntry {
-        std::uint32_t Binding = 0;
-        NGraphics::EMaterialBindingType Type = NGraphics::EMaterialBindingType::UniformBuffer;
-        NGraphics::ShaderVisibilityFlags Visibility = 0;
-        std::uint32_t Count = 0;
+std::size_t VulkanDescriptorManager::DescriptorKeyHash::operator()(const DescriptorKey& key) const noexcept {
+    std::size_t seed = 0;
 
-        [[nodiscard]] friend bool operator==(const LayoutEntry&, const LayoutEntry&) noexcept = default;
-    };
-
-    struct BindingEntry {
-        std::uint32_t Binding = 0;
-        NGraphics::EMaterialBindingType Type = NGraphics::EMaterialBindingType::UniformBuffer;
-        NResources::ResourceIdentity First;
-        NResources::ResourceIdentity Second;
-        std::uint64_t OffsetBytes = 0;
-        std::uint64_t SizeBytes = 0;
-
-        [[nodiscard]] friend bool operator==(const BindingEntry&, const BindingEntry&) noexcept = default;
-    };
-
-    std::vector<LayoutEntry> Layout;
-    std::vector<BindingEntry> Bindings;
-
-    [[nodiscard]] friend bool operator==(const DescriptorKey&, const DescriptorKey&) noexcept = default;
-};
-
-struct VulkanDescriptorManager::DescriptorKeyHash {
-    [[nodiscard]] std::size_t operator()(const DescriptorKey& key) const noexcept {
-        std::size_t seed = 0;
-
-        for (const DescriptorKey::LayoutEntry& entry: key.Layout) {
-            HashCombine(seed, entry.Binding);
-            HashCombine(seed, static_cast<std::uint32_t>(entry.Type));
-            HashCombine(seed, entry.Visibility);
-            HashCombine(seed, entry.Count);
-        }
-
-        for (const DescriptorKey::BindingEntry& entry: key.Bindings) {
-            HashCombine(seed, entry.Binding);
-            HashCombine(seed, static_cast<std::uint32_t>(entry.Type));
-            HashIdentity(seed, entry.First);
-            HashIdentity(seed, entry.Second);
-            HashCombine(seed, entry.OffsetBytes);
-            HashCombine(seed, entry.SizeBytes);
-        }
-
-        return seed;
+    for (const DescriptorKey::LayoutEntry& entry: key.Layout) {
+        HashCombine(seed, entry.Binding);
+        HashCombine(seed, static_cast<std::uint32_t>(entry.Type));
+        HashCombine(seed, entry.Visibility);
+        HashCombine(seed, entry.Count);
     }
-};
 
-struct VulkanDescriptorManager::DescriptorEntry {
-    VkDescriptorSetLayout Layout = VK_NULL_HANDLE;
-    VkDescriptorSet Set = VK_NULL_HANDLE;
-};
+    for (const DescriptorKey::BindingEntry& entry: key.Bindings) {
+        HashCombine(seed, entry.Binding);
+        HashCombine(seed, static_cast<std::uint32_t>(entry.Type));
+        HashIdentity(seed, entry.First);
+        HashIdentity(seed, entry.Second);
+        HashCombine(seed, entry.OffsetBytes);
+        HashCombine(seed, entry.SizeBytes);
+    }
+
+    return seed;
+}
 
 VulkanDescriptorManager::DescriptorKey VulkanDescriptorManager::MakeKey(const VulkanDescriptorRequest& request) {
     VulkanDescriptorManager::DescriptorKey key;

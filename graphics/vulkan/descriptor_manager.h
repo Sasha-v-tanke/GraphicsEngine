@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <unordered_map>
@@ -84,9 +85,41 @@ public:
     }
 
 private:
-    struct DescriptorKey;
-    struct DescriptorKeyHash;
-    struct DescriptorEntry;
+    struct DescriptorKey {
+        struct LayoutEntry {
+            std::uint32_t Binding = 0;
+            NGraphics::EMaterialBindingType Type = NGraphics::EMaterialBindingType::UniformBuffer;
+            NGraphics::ShaderVisibilityFlags Visibility = 0;
+            std::uint32_t Count = 0;
+
+            [[nodiscard]] friend bool operator==(const LayoutEntry&, const LayoutEntry&) noexcept = default;
+        };
+
+        struct BindingEntry {
+            std::uint32_t Binding = 0;
+            NGraphics::EMaterialBindingType Type = NGraphics::EMaterialBindingType::UniformBuffer;
+            NResources::ResourceIdentity First;
+            NResources::ResourceIdentity Second;
+            std::uint64_t OffsetBytes = 0;
+            std::uint64_t SizeBytes = 0;
+
+            [[nodiscard]] friend bool operator==(const BindingEntry&, const BindingEntry&) noexcept = default;
+        };
+
+        std::vector<LayoutEntry> Layout;
+        std::vector<BindingEntry> Bindings;
+
+        [[nodiscard]] friend bool operator==(const DescriptorKey&, const DescriptorKey&) noexcept = default;
+    };
+
+    struct DescriptorKeyHash {
+        [[nodiscard]] std::size_t operator()(const DescriptorKey& key) const noexcept;
+    };
+
+    struct DescriptorEntry {
+        VkDescriptorSetLayout Layout = VK_NULL_HANDLE;
+        VkDescriptorSet Set = VK_NULL_HANDLE;
+    };
 
     [[nodiscard]] static DescriptorKey MakeKey(const VulkanDescriptorRequest& request);
     [[nodiscard]] VkDescriptorSetLayout
