@@ -1,6 +1,7 @@
 #include "material.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 #include <GraphicsEngine/lib/common/error/error.h>
@@ -70,22 +71,26 @@ void ValidateBindingValue(const MaterialBinding& binding) {
     switch (binding.Type) {
     case EMaterialBindingType::UniformBuffer:
     case EMaterialBindingType::StorageBuffer:
-        if (!binding.Buffer.Buffer.IsValid() || binding.Buffer.SizeBytes == 0) {
+        if (!binding.Buffer.Resource.IsValid() || binding.Buffer.SizeBytes == 0) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material buffer binding is invalid");
+        }
+
+        if (binding.Buffer.OffsetBytes > std::numeric_limits<std::uint64_t>::max() - binding.Buffer.SizeBytes) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material buffer binding range is invalid");
         }
         return;
     case EMaterialBindingType::SampledImage:
-        if (!binding.Image.ImageView.IsValid()) {
+        if (!binding.Image.Resource.IsValid()) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material image binding is invalid");
         }
         return;
     case EMaterialBindingType::Sampler:
-        if (!binding.Sampler.Sampler.IsValid()) {
+        if (!binding.Sampler.Resource.IsValid()) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material sampler binding is invalid");
         }
         return;
     case EMaterialBindingType::CombinedImageSampler:
-        if (!binding.CombinedImageSampler.ImageView.IsValid() || !binding.CombinedImageSampler.Sampler.IsValid()) {
+        if (!binding.CombinedImageSampler.Image.IsValid() || !binding.CombinedImageSampler.Sampler.IsValid()) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                                   "Material combined image sampler binding is invalid");
         }

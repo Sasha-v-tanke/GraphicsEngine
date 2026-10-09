@@ -4,8 +4,6 @@
 #include <span>
 #include <vector>
 
-#include <GraphicsEngine/graphics/buffer.h>
-#include <GraphicsEngine/graphics/image.h>
 #include <GraphicsEngine/resources/resource_identity.h>
 
 namespace NGraphics {
@@ -46,22 +44,22 @@ struct MaterialBindingLayoutEntry {
 };
 
 struct MaterialBufferBinding {
-    BufferHandle Buffer;
+    NResources::ResourceIdentity Resource;
     std::uint64_t OffsetBytes = 0;
     std::uint64_t SizeBytes = 0;
 };
 
 struct MaterialImageBinding {
-    ImageViewHandle ImageView;
+    NResources::ResourceIdentity Resource;
 };
 
 struct MaterialSamplerBinding {
-    SamplerHandle Sampler;
+    NResources::ResourceIdentity Resource;
 };
 
 struct MaterialCombinedImageSamplerBinding {
-    ImageViewHandle ImageView;
-    SamplerHandle Sampler;
+    NResources::ResourceIdentity Image;
+    NResources::ResourceIdentity Sampler;
 };
 
 struct MaterialBinding {

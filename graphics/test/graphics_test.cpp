@@ -739,23 +739,6 @@ TEST_F(GraphicsTest, RejectsInvalidSamplerDescriptor) {
 }
 
 TEST_F(GraphicsTest, CreatesMaterialAndPreservesBindingDescriptors) {
-    NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::BufferHandle uniforms = graphics.CreateBuffer({
-            .SizeBytes = 256,
-            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform),
-            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
-    });
-    const NGraphics::ImageHandle image = graphics.CreateImage({
-            .Extent = {.Width = 4, .Height = 4, .Depth = 1},
-            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
-            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
-    });
-    const NGraphics::ImageViewHandle imageView = graphics.CreateImageView({
-            .Image = image,
-            .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
-    });
-    const NGraphics::SamplerHandle sampler = graphics.CreateSampler({});
-
     const NGraphics::Material material{
             NResources::ResourceIdentity{"pipeline", "textured"},
             {
@@ -776,7 +759,7 @@ TEST_F(GraphicsTest, CreatesMaterialAndPreservesBindingDescriptors) {
                             .Type = NGraphics::EMaterialBindingType::UniformBuffer,
                             .Buffer =
                                     {
-                                            .Buffer = uniforms,
+                                            .Resource = NResources::ResourceIdentity{"buffer", "camera"},
                                             .SizeBytes = 256,
                                     },
                             .Image = {},
@@ -791,8 +774,8 @@ TEST_F(GraphicsTest, CreatesMaterialAndPreservesBindingDescriptors) {
                             .Sampler = {},
                             .CombinedImageSampler =
                                     {
-                                            .ImageView = imageView,
-                                            .Sampler = sampler,
+                                            .Image = NResources::ResourceIdentity{"image", "albedo"},
+                                            .Sampler = NResources::ResourceIdentity{"sampler", "linear"},
                                     },
                     },
             },
@@ -803,20 +786,14 @@ TEST_F(GraphicsTest, CreatesMaterialAndPreservesBindingDescriptors) {
     EXPECT_EQ(material.GetLayout()[1].Binding, 1U);
     EXPECT_EQ(material.GetLayout()[1].Type, NGraphics::EMaterialBindingType::CombinedImageSampler);
     ASSERT_EQ(material.GetBindings().size(), 2U);
-    EXPECT_EQ(material.GetBindings()[0].Buffer.Buffer, uniforms);
+    EXPECT_EQ(material.GetBindings()[0].Buffer.Resource, (NResources::ResourceIdentity{"buffer", "camera"}));
     EXPECT_EQ(material.GetBindings()[0].Buffer.SizeBytes, 256U);
-    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.ImageView, imageView);
-    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.Sampler, sampler);
+    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.Image, (NResources::ResourceIdentity{"image", "albedo"}));
+    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.Sampler,
+              (NResources::ResourceIdentity{"sampler", "linear"}));
 }
 
 TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
-    NGraphics::Graphics graphics = CreateGraphics();
-    const NGraphics::BufferHandle uniforms = graphics.CreateBuffer({
-            .SizeBytes = 64,
-            .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform),
-            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
-    });
-
     const std::vector<NGraphics::MaterialBindingLayoutEntry> layout{
             {
                     .Binding = 0,
@@ -830,7 +807,7 @@ TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
                     .Type = NGraphics::EMaterialBindingType::UniformBuffer,
                     .Buffer =
                             {
-                                    .Buffer = uniforms,
+                                    .Resource = NResources::ResourceIdentity{"buffer", "camera"},
                                     .SizeBytes = 64,
                             },
                     .Image = {},
@@ -899,8 +876,30 @@ TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
                                 .Type = NGraphics::EMaterialBindingType::UniformBuffer,
                                 .Buffer =
                                         {
-                                                .Buffer = uniforms,
+                                                .Resource = NResources::ResourceIdentity{"buffer", "camera"},
                                                 .SizeBytes = 0,
+                                        },
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
+                        },
+                },
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "range-overflow"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Buffer =
+                                        {
+                                                .Resource = NResources::ResourceIdentity{"buffer", "camera"},
+                                                .OffsetBytes = std::numeric_limits<std::uint64_t>::max(),
+                                                .SizeBytes = 1,
                                         },
                                 .Image = {},
                                 .Sampler = {},
