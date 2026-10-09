@@ -173,6 +173,7 @@ TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
 
     const auto completion = graphics.SubmitFrame({
             .FrameIndex = 42,
+            .FrameSlotIndex = 0,
             .RequiresPresentation = true,
             .ResourceUseRecords = {lease->GetUseRecord()},
     });
@@ -180,6 +181,7 @@ TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
     ASSERT_TRUE(completion.IsValid());
     ASSERT_EQ(m_state.InFlightSubmissions.size(), 1U);
     EXPECT_EQ(m_state.InFlightSubmissions[0].second.FrameIndex, 42U);
+    EXPECT_EQ(m_state.InFlightSubmissions[0].second.FrameSlotIndex, 0U);
     EXPECT_TRUE(m_state.InFlightSubmissions[0].second.RequiresPresentation);
     ASSERT_EQ(m_state.InFlightSubmissions[0].second.ResourceUseRecords.size(), 1U);
     EXPECT_TRUE(m_state.InFlightSubmissions[0].second.ResourceUseRecords[0].IsValid());
@@ -208,6 +210,7 @@ TEST_F(GraphicsTest, RetainsSubmissionResourcesUntilCompletion) {
 
     const auto completion = graphics.SubmitFrame({
             .FrameIndex = 43,
+            .FrameSlotIndex = 1,
             .RequiresPresentation = false,
             .ResourceUseRecords = {lease->GetUseRecord()},
     });
@@ -240,7 +243,21 @@ TEST_F(GraphicsTest, RejectsPresentationSubmissionWhenBackendHasNoPresentationPa
     ExpectError(NCommon::EError::UNSUPPORTED, [&] {
         (void)graphics.SubmitFrame({
                 .FrameIndex = 1,
+                .FrameSlotIndex = 0,
                 .RequiresPresentation = true,
+                .ResourceUseRecords = {},
+        });
+    });
+}
+
+TEST_F(GraphicsTest, RejectsFrameSlotOutsideMaxFramesInFlight) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.SubmitFrame({
+                .FrameIndex = 1,
+                .FrameSlotIndex = 2,
+                .RequiresPresentation = false,
                 .ResourceUseRecords = {},
         });
     });
@@ -262,6 +279,7 @@ TEST_F(GraphicsTest, RejectsCompletionPointFromAnotherGraphics) {
 
     const auto completion = first.SubmitFrame({
             .FrameIndex = 1,
+            .FrameSlotIndex = 0,
             .RequiresPresentation = true,
             .ResourceUseRecords = {},
     });
