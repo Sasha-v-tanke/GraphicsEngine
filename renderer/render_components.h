@@ -4,9 +4,14 @@
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/resources/resource_handle.h>
 
-namespace NResources {
+namespace NGraphics {
 
 class Material;
+
+} // namespace NGraphics
+
+namespace NResources {
+
 class MeshData;
 
 } // namespace NResources
@@ -23,7 +28,7 @@ struct CameraComponent {
 
 struct RenderableComponent {
     NResources::ResourceHandle<NResources::MeshData> Mesh;
-    NResources::ResourceHandle<NResources::Material> Material;
+    NResources::ResourceHandle<NGraphics::Material> Material;
 };
 
 } // namespace NRenderer

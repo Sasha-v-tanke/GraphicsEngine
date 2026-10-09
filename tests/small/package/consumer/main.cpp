@@ -8,6 +8,8 @@
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
+#include <GraphicsEngine/graphics/image.h>
+#include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/math/transform.h>
@@ -54,8 +56,27 @@ int main() {
             .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
             .Lifetime = NGraphics::EBufferLifetime::Persistent,
     };
+    const NGraphics::ImageDescriptor gpuImage{
+            .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+            .Lifetime = NGraphics::EImageLifetime::Persistent,
+    };
+    const NGraphics::ImageViewDescriptor gpuImageView{
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
+    };
+    const NGraphics::SamplerDescriptor gpuSampler{
+            .MinFilter = NGraphics::ESamplerFilter::Linear,
+            .MagFilter = NGraphics::ESamplerFilter::Linear,
+            .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
+    };
+    const NGraphics::Material material{NResources::ResourceIdentity{"pipeline", "package"}};
 
-    if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256) {
+    if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256 || gpuImage.Extent.Width != 1 ||
+        gpuImageView.Aspects == 0 || gpuSampler.AddressModeU != NGraphics::ESamplerAddressMode::ClampToEdge ||
+        material.GetPipeline().GetKey() != "package") {
         return 1;
     }
 

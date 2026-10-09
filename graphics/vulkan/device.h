@@ -8,6 +8,7 @@
 #include <vulkan.h>
 
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
+#include <GraphicsEngine/graphics/image.h>
 #include <GraphicsEngine/graphics/vulkan/physical_device.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
@@ -57,6 +58,13 @@ public:
     [[nodiscard]] VulkanLockedQueue LockGraphicsQueue() const;
 
     [[nodiscard]] VulkanLockedQueue LockPresentQueue() const;
+
+    [[nodiscard]] VkImage CreateImage(const NGraphics::ImageDescriptor& descriptor) const;
+    void DestroyImage(VkImage image) const noexcept;
+    [[nodiscard]] VkImageView CreateImageView(VkImage image, const NGraphics::ImageViewDescriptor& descriptor) const;
+    void DestroyImageView(VkImageView imageView) const noexcept;
+    [[nodiscard]] VkSampler CreateSampler(const NGraphics::SamplerDescriptor& descriptor) const;
+    void DestroySampler(VkSampler sampler) const noexcept;
 
 private:
     class Impl;

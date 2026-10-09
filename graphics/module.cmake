@@ -7,14 +7,18 @@ API(
     graphics.h
     graphics_capabilities.h
     graphics_config.h
+    image.h
+    material.h
 )
 
 SOURCES(
     graphics.cpp
+    material.cpp
 )
 
 PUBLIC_DEPENDS(
     Common
+    Resources
 )
 
 RECURSE(
