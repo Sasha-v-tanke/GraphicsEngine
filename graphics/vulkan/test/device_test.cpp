@@ -296,7 +296,8 @@ TEST(VulkanResourceConversion, RejectsUnsupportedImageAndSamplerValues) {
 }
 
 TEST(VulkanDescriptorManager, RejectsNullDevice) {
-    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [] { const NVulkan::VulkanDescriptorManager manager{}; });
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                       [] { const NVulkan::VulkanDescriptorManager manager{VK_NULL_HANDLE}; });
 }
 
 TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilities) {
