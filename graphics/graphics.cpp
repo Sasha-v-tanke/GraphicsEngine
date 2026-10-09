@@ -76,6 +76,13 @@ CompletionPoint Graphics::SubmitFrame(FrameSubmission submission) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Graphics backend does not support presentation");
     }
 
+    if (submission.FrameSlotIndex >= m_backend->GetCapabilities().MaxFramesInFlight) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "Frame submission slot {} is out of range [0, {})",
+                              submission.FrameSlotIndex,
+                              m_backend->GetCapabilities().MaxFramesInFlight);
+    }
+
     const std::uint64_t value = m_backend->SubmitFrame(std::move(submission));
 
     if (value == 0) {
