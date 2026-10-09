@@ -2,10 +2,12 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <spawn.h>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
@@ -124,7 +126,69 @@ void RunSpawnedSmoke(std::string_view filter) {
 
     kill(pid, SIGKILL);
     waitpid(pid, &status, 0);
-    GTEST_SKIP() << "Vulkan frame context smoke timed out in this environment";
+    FAIL() << "Vulkan frame context smoke timed out";
+}
+
+struct FenceDeleter {
+    VkDevice Device = VK_NULL_HANDLE;
+
+    void operator()(VkFence fence) const noexcept {
+        if (fence != VK_NULL_HANDLE) {
+            vkDestroyFence(Device, fence, nullptr);
+        }
+    }
+};
+
+using UniqueFence = std::unique_ptr<std::remove_pointer_t<VkFence>, FenceDeleter>;
+
+UniqueFence CreateFence(VkDevice device) {
+    const VkFenceCreateInfo createInfo{
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+    };
+
+    VkFence fence = VK_NULL_HANDLE;
+    EXPECT_EQ(vkCreateFence(device, &createInfo, nullptr, &fence), VK_SUCCESS);
+
+    return UniqueFence{fence, FenceDeleter{device}};
+}
+
+VkCommandBuffer AllocateCommandBuffer(VkDevice device, VkCommandPool commandPool) {
+    const VkCommandBufferAllocateInfo allocateInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+    };
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    EXPECT_EQ(vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer), VK_SUCCESS);
+
+    return commandBuffer;
+}
+
+void RecordEmptyCommandBuffer(VkCommandBuffer commandBuffer) {
+    const VkCommandBufferBeginInfo beginInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+
+    ASSERT_EQ(vkBeginCommandBuffer(commandBuffer, &beginInfo), VK_SUCCESS);
+    ASSERT_EQ(vkEndCommandBuffer(commandBuffer), VK_SUCCESS);
+}
+
+void SubmitCommandBuffer(const NVulkan::VulkanDevice& device, VkCommandBuffer commandBuffer, VkFence fence) {
+    const VkCommandBufferSubmitInfo commandBufferInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .commandBuffer = commandBuffer,
+    };
+    const VkSubmitInfo2 submitInfo{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &commandBufferInfo,
+    };
+
+    const NVulkan::VulkanLockedQueue graphicsQueue = device.LockGraphicsQueue();
+    ASSERT_EQ(vkQueueSubmit2(graphicsQueue.GetHandle(), 1, &submitInfo, fence), VK_SUCCESS);
 }
 
 struct VulkanRuntime {
@@ -166,6 +230,8 @@ TEST(VulkanFrameContextChild, DISABLED_UsesOneContextPerFrameSlotAndBlocksReuseU
         EXPECT_NE(second->GetCommandPool(), VK_NULL_HANDLE);
         EXPECT_NE(second->GetCommandPool(), first->GetCommandPool());
 
+        EXPECT_EQ(ring.TryAcquire({.FrameIndex = 2, .FrameSlotIndex = 0}, [](std::uint64_t) { return true; }), nullptr);
+
         ring.MarkSubmitted({.FrameIndex = 0, .FrameSlotIndex = 0}, 7);
 
         EXPECT_EQ(ring.TryAcquire({.FrameIndex = 2, .FrameSlotIndex = 0}, [](std::uint64_t) { return false; }),
@@ -189,10 +255,14 @@ TEST(VulkanFrameContextChild, DISABLED_UsesOneContextPerFrameSlotAndBlocksReuseU
 TEST(VulkanFrameContextChild, DISABLED_SupportsSingleFrameRingAndShutdownInFlight) {
     try {
         VulkanRuntime runtime;
+        const UniqueFence fence = CreateFence(runtime.Device.GetHandle());
         NVulkan::VulkanFrameContextRing ring{runtime.Device, 1};
 
         NVulkan::VulkanFrameContext* context = ring.TryAcquire({.FrameIndex = 0, .FrameSlotIndex = 0}, nullptr);
         ASSERT_NE(context, nullptr);
+        VkCommandBuffer commandBuffer = AllocateCommandBuffer(runtime.Device.GetHandle(), context->GetCommandPool());
+        RecordEmptyCommandBuffer(commandBuffer);
+        SubmitCommandBuffer(runtime.Device, commandBuffer, fence.get());
         ring.MarkSubmitted({.FrameIndex = 0, .FrameSlotIndex = 0}, 1);
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {

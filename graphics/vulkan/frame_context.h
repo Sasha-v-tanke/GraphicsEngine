@@ -18,6 +18,12 @@ struct VulkanFrameContextAcquire {
     std::size_t FrameSlotIndex = 0;
 };
 
+enum class EVulkanFrameContextState {
+    FREE,
+    ACQUIRED,
+    IN_FLIGHT,
+};
+
 class VulkanFrameContext final: public NCommon::NonTransferable {
 public:
     ~VulkanFrameContext();
@@ -28,6 +34,8 @@ public:
 
     [[nodiscard]] VkCommandPool GetCommandPool() const noexcept;
 
+    [[nodiscard]] EVulkanFrameContextState GetState() const noexcept;
+
     [[nodiscard]] std::optional<std::uint64_t> GetCompletionValue() const noexcept;
 
 private:
@@ -37,7 +45,7 @@ private:
 
     void MarkSubmitted(std::uint64_t completionValue);
 
-    void MarkCompleted() noexcept;
+    void ReleaseCompleted() noexcept;
 
     [[nodiscard]] bool IsInFlight() const noexcept;
 
@@ -48,8 +56,8 @@ private:
     std::size_t m_frameSlotIndex = 0;
     std::uint64_t m_frameIndex = 0;
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
+    EVulkanFrameContextState m_state = EVulkanFrameContextState::FREE;
     std::optional<std::uint64_t> m_completionValue;
-    bool m_acquired = false;
 
     friend class VulkanFrameContextRing;
 };
@@ -69,8 +77,6 @@ public:
     [[nodiscard]] VulkanFrameContext& Get(VulkanFrameContextAcquire acquire);
 
     void MarkSubmitted(VulkanFrameContextAcquire acquire, std::uint64_t completionValue);
-
-    void MarkCompleted(VulkanFrameContextAcquire acquire);
 
 private:
     [[nodiscard]] VulkanFrameContext& GetBySlot(std::size_t frameSlotIndex);

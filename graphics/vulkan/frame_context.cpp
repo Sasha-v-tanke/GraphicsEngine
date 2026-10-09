@@ -86,37 +86,50 @@ std::optional<std::uint64_t> VulkanFrameContext::GetCompletionValue() const noex
     return m_completionValue;
 }
 
+EVulkanFrameContextState VulkanFrameContext::GetState() const noexcept {
+    return m_state;
+}
+
 void VulkanFrameContext::Acquire(std::uint64_t frameIndex) {
-    if (IsInFlight()) {
+    if (m_state != EVulkanFrameContextState::FREE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "Vulkan frame context {} cannot be acquired before completion {}",
+                              "Vulkan frame context {} cannot be acquired from state {}",
                               m_frameSlotIndex,
-                              *m_completionValue);
+                              static_cast<int>(m_state));
     }
 
     ResetCommandPool(m_device, m_commandPool);
     m_frameIndex = frameIndex;
-    m_acquired = true;
+    m_state = EVulkanFrameContextState::ACQUIRED;
 }
 
 void VulkanFrameContext::MarkSubmitted(std::uint64_t completionValue) {
+    if (m_state != EVulkanFrameContextState::ACQUIRED) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Vulkan frame context {} cannot be submitted from state {}",
+                              m_frameSlotIndex,
+                              static_cast<int>(m_state));
+    }
+
     if (completionValue == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan frame completion value must be valid");
     }
 
     m_completionValue = completionValue;
+    m_state = EVulkanFrameContextState::IN_FLIGHT;
 }
 
-void VulkanFrameContext::MarkCompleted() noexcept {
+void VulkanFrameContext::ReleaseCompleted() noexcept {
     m_completionValue.reset();
+    m_state = EVulkanFrameContextState::FREE;
 }
 
 bool VulkanFrameContext::IsInFlight() const noexcept {
-    return m_completionValue.has_value();
+    return m_state == EVulkanFrameContextState::IN_FLIGHT;
 }
 
 bool VulkanFrameContext::MatchesFrame(std::uint64_t frameIndex) const noexcept {
-    return m_acquired && m_frameIndex == frameIndex;
+    return m_state != EVulkanFrameContextState::FREE && m_frameIndex == frameIndex;
 }
 
 VulkanFrameContextRing::VulkanFrameContextRing(const VulkanDevice& device, std::size_t maxActiveFrames)
@@ -156,12 +169,16 @@ VulkanFrameContext* VulkanFrameContextRing::TryAcquire(VulkanFrameContextAcquire
                                                        const CompletionQuery& isCompleted) {
     VulkanFrameContext& context = GetBySlot(acquire.FrameSlotIndex);
 
-    if (context.IsInFlight()) {
+    if (context.GetState() == EVulkanFrameContextState::ACQUIRED) {
+        return nullptr;
+    }
+
+    if (context.GetState() == EVulkanFrameContextState::IN_FLIGHT) {
         if (!isCompleted || !isCompleted(*context.GetCompletionValue())) {
             return nullptr;
         }
 
-        context.MarkCompleted();
+        context.ReleaseCompleted();
     }
 
     context.Acquire(acquire.FrameIndex);
@@ -183,10 +200,6 @@ VulkanFrameContext& VulkanFrameContextRing::Get(VulkanFrameContextAcquire acquir
 
 void VulkanFrameContextRing::MarkSubmitted(VulkanFrameContextAcquire acquire, std::uint64_t completionValue) {
     Get(acquire).MarkSubmitted(completionValue);
-}
-
-void VulkanFrameContextRing::MarkCompleted(VulkanFrameContextAcquire acquire) {
-    Get(acquire).MarkCompleted();
 }
 
 VulkanFrameContext& VulkanFrameContextRing::GetBySlot(std::size_t frameSlotIndex) {
