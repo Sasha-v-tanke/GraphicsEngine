@@ -19,7 +19,6 @@ constexpr ShaderVisibilityFlags KNOWN_SHADER_VISIBILITY_MASK = ShaderVisibility(
     case EMaterialBindingType::UniformBuffer:
     case EMaterialBindingType::StorageBuffer:
     case EMaterialBindingType::SampledImage:
-    case EMaterialBindingType::StorageImage:
     case EMaterialBindingType::Sampler:
     case EMaterialBindingType::CombinedImageSampler:
         return true;
@@ -76,7 +75,6 @@ void ValidateBindingValue(const MaterialBinding& binding) {
         }
         return;
     case EMaterialBindingType::SampledImage:
-    case EMaterialBindingType::StorageImage:
         if (!binding.Image.ImageView.IsValid()) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material image binding is invalid");
         }

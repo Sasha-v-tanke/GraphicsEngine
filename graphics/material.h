@@ -14,7 +14,6 @@ enum class EMaterialBindingType {
     UniformBuffer,
     StorageBuffer,
     SampledImage,
-    StorageImage,
     Sampler,
     CombinedImageSampler,
 };
