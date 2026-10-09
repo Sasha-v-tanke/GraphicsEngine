@@ -172,6 +172,11 @@ VulkanDescriptorManager::VulkanDescriptorManager(VkDevice device, VulkanDescript
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan descriptor manager device is null");
     }
 
+    if (m_limits.MinUniformBufferOffsetAlignment == 0 || m_limits.MinStorageBufferOffsetAlignment == 0 ||
+        m_limits.MaxUniformBufferRange == 0 || m_limits.MaxStorageBufferRange == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan descriptor limits are invalid");
+    }
+
     const std::array poolSizes{
             VkDescriptorPoolSize{.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                  .descriptorCount = DESCRIPTOR_POOL_BINDING_COUNT},
@@ -199,7 +204,9 @@ VulkanDescriptorManager::VulkanDescriptorManager(VkDevice device, VulkanDescript
 }
 
 VulkanDescriptorManager::~VulkanDescriptorManager() {
-    if (HasInFlightDescriptors()) {
+    const std::scoped_lock lock{m_mutex};
+
+    if (!m_inFlightCompletions.empty()) {
         std::terminate();
     }
 
@@ -215,15 +222,8 @@ VulkanDescriptorManager::~VulkanDescriptorManager() {
 }
 
 VulkanDescriptorSetLease VulkanDescriptorManager::Acquire(const VulkanDescriptorRequest& request) {
-    ValidateLayout(request.Layout);
-
-    if (request.Layout.size() != request.Bindings.size()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor bindings must match layout");
-    }
-
-    for (const VulkanResolvedMaterialBinding& binding: request.Bindings) {
-        ValidateBinding(binding);
-    }
+    const std::scoped_lock lock{m_mutex};
+    ValidateRequest(request);
 
     DescriptorKey key = MakeKey(request);
 
@@ -244,6 +244,8 @@ VulkanDescriptorSetLease VulkanDescriptorManager::Acquire(const VulkanDescriptor
 }
 
 void VulkanDescriptorManager::RetainUntil(VulkanDescriptorSetLease lease, std::uint64_t completionValue) {
+    const std::scoped_lock lock{m_mutex};
+
     if (!lease.IsValid() || completionValue == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor retention request is invalid");
     }
@@ -252,6 +254,8 @@ void VulkanDescriptorManager::RetainUntil(VulkanDescriptorSetLease lease, std::u
 }
 
 void VulkanDescriptorManager::ReleaseCompleted(std::uint64_t completedValue) noexcept {
+    const std::scoped_lock lock{m_mutex};
+
     std::erase_if(m_inFlightCompletions,
                   [completedValue](std::uint64_t completion) { return completion <= completedValue; });
 }
@@ -355,6 +359,60 @@ void VulkanDescriptorManager::ValidateBinding(const VulkanResolvedMaterialBindin
     }
 
     GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unsupported descriptor binding type");
+}
+
+void VulkanDescriptorManager::ValidateRequest(const VulkanDescriptorRequest& request) const {
+    ValidateLayout(request.Layout);
+
+    if (request.Layout.size() != request.Bindings.size()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor bindings must match layout");
+    }
+
+    const NGraphics::ShaderVisibilityFlags knownVisibility =
+            NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex) |
+            NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Fragment) |
+            NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Compute);
+
+    for (std::size_t layoutIndex = 0; layoutIndex < request.Layout.size(); ++layoutIndex) {
+        const NGraphics::MaterialBindingLayoutEntry& layout = request.Layout[layoutIndex];
+
+        if ((layout.Visibility & ~knownVisibility) != 0 || layout.Count != 1) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor layout entry is unsupported");
+        }
+
+        for (std::size_t otherIndex = layoutIndex + 1; otherIndex < request.Layout.size(); ++otherIndex) {
+            if (layout.Binding == request.Layout[otherIndex].Binding) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                      "Descriptor layout contains duplicate binding");
+            }
+        }
+    }
+
+    for (std::size_t bindingIndex = 0; bindingIndex < request.Bindings.size(); ++bindingIndex) {
+        const VulkanResolvedMaterialBinding& binding = request.Bindings[bindingIndex];
+        ValidateBinding(binding);
+
+        const auto layoutIt = std::ranges::find_if(
+                request.Layout,
+                [slot = binding.Material.Binding](const NGraphics::MaterialBindingLayoutEntry& entry) {
+                    return entry.Binding == slot;
+                });
+
+        if (layoutIt == request.Layout.end()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor binding is not declared in layout");
+        }
+
+        if (layoutIt->Type != binding.Material.Type) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor binding type does not match layout");
+        }
+
+        for (std::size_t otherIndex = bindingIndex + 1; otherIndex < request.Bindings.size(); ++otherIndex) {
+            if (binding.Material.Binding == request.Bindings[otherIndex].Material.Binding) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                      "Descriptor request contains duplicate binding");
+            }
+        }
+    }
 }
 
 void VulkanDescriptorManager::WriteSet(VkDescriptorSet set,

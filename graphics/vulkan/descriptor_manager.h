@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -50,8 +51,8 @@ struct VulkanDescriptorRequest {
 };
 
 struct VulkanDescriptorLimits {
-    std::uint64_t MinUniformBufferOffsetAlignment = 1;
-    std::uint64_t MinStorageBufferOffsetAlignment = 1;
+    std::uint64_t MinUniformBufferOffsetAlignment = 0;
+    std::uint64_t MinStorageBufferOffsetAlignment = 0;
     std::uint64_t MaxUniformBufferRange = 0;
     std::uint64_t MaxStorageBufferRange = 0;
 };
@@ -86,7 +87,7 @@ private:
 
 class VulkanDescriptorManager final: public NCommon::NonTransferable {
 public:
-    explicit VulkanDescriptorManager(VkDevice device, VulkanDescriptorLimits limits = {});
+    explicit VulkanDescriptorManager(VkDevice device, VulkanDescriptorLimits limits);
     ~VulkanDescriptorManager();
 
     [[nodiscard]] VulkanDescriptorSetLease Acquire(const VulkanDescriptorRequest& request);
@@ -94,6 +95,7 @@ public:
     void ReleaseCompleted(std::uint64_t completedValue) noexcept;
 
     [[nodiscard]] bool HasInFlightDescriptors() const noexcept {
+        const std::scoped_lock lock{m_mutex};
         return !m_inFlightCompletions.empty();
     }
 
@@ -150,6 +152,7 @@ private:
                                               std::span<const NGraphics::MaterialBindingLayoutEntry> entries);
     void ValidateBufferBinding(const VulkanResolvedMaterialBinding& binding) const;
     void ValidateBinding(const VulkanResolvedMaterialBinding& binding) const;
+    void ValidateRequest(const VulkanDescriptorRequest& request) const;
     void WriteSet(VkDescriptorSet set, std::span<const VulkanResolvedMaterialBinding> bindings) const;
 
     VkDevice m_device = VK_NULL_HANDLE;
@@ -158,6 +161,7 @@ private:
     VulkanDescriptorTelemetry m_telemetry;
     std::unordered_map<DescriptorKey, DescriptorEntry, DescriptorKeyHash> m_cache;
     std::vector<std::uint64_t> m_inFlightCompletions;
+    mutable std::mutex m_mutex;
 };
 
 } // namespace NVulkan

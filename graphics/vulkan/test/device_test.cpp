@@ -44,6 +44,13 @@ NVulkan::VulkanPhysicalDeviceSelection MakeSelection() {
             .Capabilities =
                     {
                             .ApiVersion = VK_API_VERSION_1_3,
+                            .DescriptorLimits =
+                                    {
+                                            .MinUniformBufferOffsetAlignment = 16,
+                                            .MinStorageBufferOffsetAlignment = 16,
+                                            .MaxUniformBufferRange = 1024,
+                                            .MaxStorageBufferRange = 1024,
+                                    },
                             .Extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME},
                             .Features =
                                     {
@@ -247,8 +254,15 @@ TEST(VulkanResourceConversion, RejectsUnsupportedImageAndSamplerValues) {
 }
 
 TEST(VulkanDescriptorManager, RejectsNullDevice) {
-    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                       [] { const NVulkan::VulkanDescriptorManager manager{VK_NULL_HANDLE}; });
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [] {
+        const NVulkan::VulkanDescriptorManager manager{VK_NULL_HANDLE,
+                                                       {
+                                                               .MinUniformBufferOffsetAlignment = 1,
+                                                               .MinStorageBufferOffsetAlignment = 1,
+                                                               .MaxUniformBufferRange = 1,
+                                                               .MaxStorageBufferRange = 1,
+                                                       }};
+    });
 }
 
 TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilities) {
@@ -427,13 +441,7 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
             ASSERT_NE(sampler, VK_NULL_HANDLE);
 
             {
-                NVulkan::VulkanDescriptorManager descriptors{device.GetHandle(),
-                                                             {
-                                                                     .MinUniformBufferOffsetAlignment = 16,
-                                                                     .MinStorageBufferOffsetAlignment = 16,
-                                                                     .MaxUniformBufferRange = 1024,
-                                                                     .MaxStorageBufferRange = 1024,
-                                                             }};
+                NVulkan::VulkanDescriptorManager descriptors{device.GetHandle(), device.GetDescriptorLimits()};
                 const std::vector<NGraphics::MaterialBindingLayoutEntry> layout{
                         {
                                 .Binding = 0,
@@ -516,6 +524,12 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                 };
                 NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
                     (void)descriptors.Acquire({.Layout = bufferLayout, .Bindings = misalignedBuffer});
+                });
+
+                std::vector<NVulkan::VulkanResolvedMaterialBinding> mismatchedBindings = bindings;
+                mismatchedBindings.front().Material.Binding = 1;
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+                    (void)descriptors.Acquire({.Layout = layout, .Bindings = mismatchedBindings});
                 });
 
                 descriptors.RetainUntil(first, 3);
