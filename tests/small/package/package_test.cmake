@@ -210,6 +210,7 @@ set(
     "GraphicsEngine/graphics/graphics_capabilities.h"
     "GraphicsEngine/graphics/graphics_config.h"
     "GraphicsEngine/graphics/image.h"
+    "GraphicsEngine/graphics/material.h"
     "GraphicsEngine/lib/common/error/assert.h"
     "GraphicsEngine/lib/common/error/error.h"
     "GraphicsEngine/lib/common/error/exception.h"
