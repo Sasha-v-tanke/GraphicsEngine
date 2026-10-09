@@ -14,7 +14,9 @@ component invalidates references to that component. Creating or removing other
 entities/components does not promise stable iteration order for queries.
 Deferred structural changes reserve entity identities and enqueue create,
 destroy, add-component or remove-component commands. They become visible only
-after the queue is committed.
+after the queue is committed. A pending deferred entity create blocks immediate
+entity creation until the deferred queue is committed, so deferred identities
+cannot collide with immediately created entities.
 
 ## Mutation Phases
 
@@ -23,12 +25,15 @@ The public access model already records `Read<T>()` and `Write<T>()`
 declarations so MVP-4 can add parallel scheduling without changing system
 registration semantics.
 
-System callbacks may mutate `World`. They may also enqueue deferred structural
-changes; `RunSystems()` applies that queue after all currently registered
-systems complete. Callers that manage their own phases can use
-`ApplyDeferredStructuralChanges()` as an explicit structural commit point.
-Parallel conflict detection is a later feature; this core keeps mutation rules
-explicit and predictable.
+System callbacks may mutate existing components directly. Structural writes
+(`CreateEntity()`, `DestroyEntity()`, `AddComponent<T>()` and
+`RemoveComponent<T>()`) are rejected while systems are running; callbacks must
+use the deferred structural APIs instead. `RunSystems()` collects deferred
+commands per system callback, merges them in registered system order, and
+applies the queue after all currently registered systems complete. Callers that
+manage their own phases can use `ApplyDeferredStructuralChanges()` as an
+explicit structural commit point. Parallel conflict detection is a later
+feature; this core keeps mutation rules explicit and predictable.
 
 ## Access Contract
 

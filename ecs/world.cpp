@@ -1,10 +1,18 @@
 #include "world.h"
 
 #include <algorithm>
+#include <iterator>
 
 namespace NEcs {
 
 Entity World::CreateEntity() {
+    ValidateStructuralWriteAllowed();
+
+    if (ReservedDeferredEntityCount_ > 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS deferred entity creates must be committed before immediate entity creation");
+    }
+
     if (!FreeEntityIndices_.empty()) {
         const std::uint32_t index = FreeEntityIndices_.back();
         FreeEntityIndices_.pop_back();
@@ -33,6 +41,18 @@ World::DeferredCreateEntityCommand::DeferredCreateEntityCommand(Entity entity)
 }
 
 void World::DeferredCreateEntityCommand::Apply(World& world) {
+    if (Entity_.Index > world.Entities_.size()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Deferred ECS entity create order is invalid");
+    }
+
+    if (Entity_.Index == world.Entities_.size()) {
+        world.Entities_.push_back({
+                .Generation = Entity_.Generation,
+                .Alive = false,
+                .Reserved = true,
+        });
+    }
+
     auto& state = world.Entities_[Entity_.Index];
     if (state.Alive || !state.Reserved || state.Generation != Entity_.Generation) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Deferred ECS entity create is no longer valid");
@@ -56,29 +76,15 @@ Entity World::DeferCreateEntity() {
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
 
-        if (!FreeEntityIndices_.empty()) {
-            const std::uint32_t index = FreeEntityIndices_.back();
-            FreeEntityIndices_.pop_back();
-            Entities_[index].Reserved = true;
-            entity = {
-                    .Index = index,
-                    .Generation = Entities_[index].Generation,
-            };
-        } else {
-            const std::uint32_t index = static_cast<std::uint32_t>(Entities_.size());
-            Entities_.push_back({
-                    .Generation = 0,
-                    .Alive = false,
-                    .Reserved = true,
-            });
-            entity = {
-                    .Index = index,
-                    .Generation = 0,
-            };
-        }
-
-        DeferredStructuralCommands_.push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
+        const std::uint32_t index = static_cast<std::uint32_t>(Entities_.size() + ReservedDeferredEntityCount_);
+        ++ReservedDeferredEntityCount_;
+        entity = {
+                .Index = index,
+                .Generation = 0,
+        };
     }
+
+    PushDeferredCommand(std::make_unique<DeferredCreateEntityCommand>(entity));
 
     return entity;
 }
@@ -88,6 +94,8 @@ void World::DeferDestroyEntity(Entity entity) {
 }
 
 void World::DestroyEntity(Entity entity) {
+    ValidateStructuralWriteAllowed();
+
     if (!IsAlive(entity)) {
         return;
     }
@@ -136,7 +144,27 @@ std::size_t World::GetSystemCount() const noexcept {
 
 void World::RunSystems() {
     for (auto& system: Systems_) {
-        system.Callback(*this);
+        std::vector<std::unique_ptr<IDeferredCommand>> systemCommands;
+        ActiveDeferredStructuralCommands_ = &systemCommands;
+        IsRunningSystems_ = true;
+
+        try {
+            system.Callback(*this);
+        } catch (...) {
+            IsRunningSystems_ = false;
+            ActiveDeferredStructuralCommands_ = nullptr;
+            throw;
+        }
+
+        IsRunningSystems_ = false;
+        ActiveDeferredStructuralCommands_ = nullptr;
+
+        {
+            std::scoped_lock lock{DeferredStructuralMutex_};
+            DeferredStructuralCommands_.insert(DeferredStructuralCommands_.end(),
+                                               std::make_move_iterator(systemCommands.begin()),
+                                               std::make_move_iterator(systemCommands.end()));
+        }
     }
 
     ApplyDeferredStructuralChanges();
@@ -150,9 +178,29 @@ void World::ApplyDeferredStructuralChanges() {
         commands.swap(DeferredStructuralCommands_);
     }
 
-    for (auto& command: commands) {
-        command->Apply(*this);
+    IsApplyingDeferredStructuralChanges_ = true;
+
+    std::size_t nextCommand = 0;
+
+    try {
+        for (auto& command: commands) {
+            command->Apply(*this);
+            ++nextCommand;
+        }
+    } catch (...) {
+        IsApplyingDeferredStructuralChanges_ = false;
+        {
+            std::scoped_lock lock{DeferredStructuralMutex_};
+            DeferredStructuralCommands_.insert(
+                    DeferredStructuralCommands_.begin(),
+                    std::make_move_iterator(commands.begin() + static_cast<std::ptrdiff_t>(nextCommand + 1)),
+                    std::make_move_iterator(commands.end()));
+        }
+        throw;
     }
+
+    IsApplyingDeferredStructuralChanges_ = false;
+    ReservedDeferredEntityCount_ = 0;
 }
 
 void World::ValidateAlive(Entity entity) const {
@@ -167,7 +215,19 @@ void World::ValidateSystemIndex(std::size_t index) const {
     }
 }
 
+void World::ValidateStructuralWriteAllowed() const {
+    if (IsRunningSystems_ && !IsApplyingDeferredStructuralChanges_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS structural changes during system execution must be deferred");
+    }
+}
+
 void World::PushDeferredCommand(std::unique_ptr<IDeferredCommand> command) {
+    if (ActiveDeferredStructuralCommands_ != nullptr) {
+        ActiveDeferredStructuralCommands_->push_back(std::move(command));
+        return;
+    }
+
     std::scoped_lock lock{DeferredStructuralMutex_};
     DeferredStructuralCommands_.push_back(std::move(command));
 }

@@ -36,6 +36,7 @@ public:
 
     template<typename T, typename... TArgs>
     T& AddComponent(Entity entity, TArgs&&... args) {
+        ValidateStructuralWriteAllowed();
         ValidateAlive(entity);
         auto& storage = GetOrCreateStorage<T>();
         return storage.Emplace(entity.Index, std::forward<TArgs>(args)...);
@@ -84,6 +85,8 @@ public:
 
     template<typename T>
     bool RemoveComponent(Entity entity) {
+        ValidateStructuralWriteAllowed();
+
         if (!IsAlive(entity)) {
             return false;
         }
@@ -190,10 +193,14 @@ private:
         template<typename... TValues>
         DeferredAddComponentCommand(Entity entity, TValues&&... args)
             : Entity_(entity)
-            , Args_(std::forward<TArgs>(args)...) {
+            , Args_(std::forward<TValues>(args)...) {
         }
 
         void Apply(World& world) override {
+            if (!world.IsAlive(Entity_)) {
+                return;
+            }
+
             std::apply([&](auto&... args) { world.AddComponent<T>(Entity_, std::move(args)...); }, Args_);
         }
 
@@ -295,6 +302,7 @@ private:
 
     void ValidateAlive(Entity entity) const;
     void ValidateSystemIndex(std::size_t index) const;
+    void ValidateStructuralWriteAllowed() const;
     void PushDeferredCommand(std::unique_ptr<IDeferredCommand> command);
 
     std::vector<EntityState> Entities_;
@@ -302,6 +310,10 @@ private:
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> ComponentStorageByType_;
     std::mutex DeferredStructuralMutex_;
     std::vector<std::unique_ptr<IDeferredCommand>> DeferredStructuralCommands_;
+    std::vector<std::unique_ptr<IDeferredCommand>>* ActiveDeferredStructuralCommands_ = nullptr;
+    std::uint32_t ReservedDeferredEntityCount_ = 0;
+    bool IsRunningSystems_ = false;
+    bool IsApplyingDeferredStructuralChanges_ = false;
 
     struct RegisteredSystem {
         SystemAccessList Access;
