@@ -5,6 +5,10 @@
 
 namespace NEcs {
 
+std::uint32_t World::IDeferredCommand::GetReservedEntityCount() const noexcept {
+    return 0;
+}
+
 Entity World::CreateEntity() {
     ValidateStructuralWriteAllowed();
 
@@ -60,6 +64,10 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
 
     state.Alive = true;
     state.Reserved = false;
+}
+
+std::uint32_t World::DeferredCreateEntityCommand::GetReservedEntityCount() const noexcept {
+    return 1;
 }
 
 World::DeferredDestroyEntityCommand::DeferredDestroyEntityCommand(Entity entity)
@@ -155,6 +163,9 @@ void World::RunSystems() {
         try {
             system.Callback(*this);
         } catch (...) {
+            for (const auto& command: systemCommands) {
+                ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
+            }
             IsRunningSystems_ = false;
             ActiveDeferredStructuralCommands_ = nullptr;
             throw;
@@ -228,6 +239,7 @@ void World::ValidateStructuralWriteAllowed() const {
 
 void World::PushDeferredCommand(std::unique_ptr<IDeferredCommand> command) {
     if (ActiveDeferredStructuralCommands_ != nullptr) {
+        std::scoped_lock lock{DeferredStructuralMutex_};
         ActiveDeferredStructuralCommands_->push_back(std::move(command));
         return;
     }

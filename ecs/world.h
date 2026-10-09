@@ -165,6 +165,7 @@ private:
         virtual ~IDeferredCommand() = default;
 
         virtual void Apply(World& world) = 0;
+        [[nodiscard]] virtual std::uint32_t GetReservedEntityCount() const noexcept;
     };
 
     class DeferredCreateEntityCommand final: public IDeferredCommand {
@@ -172,6 +173,7 @@ private:
         explicit DeferredCreateEntityCommand(Entity entity);
 
         void Apply(World& world) override;
+        [[nodiscard]] std::uint32_t GetReservedEntityCount() const noexcept override;
 
     private:
         Entity Entity_;

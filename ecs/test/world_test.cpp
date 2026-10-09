@@ -342,6 +342,24 @@ TEST(EcsWorld, CommitsDeferredCommandsInSystemOrder) {
     EXPECT_EQ(world.GetComponent<Position>(entity).Y, 10);
 }
 
+TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {
+    NEcs::World world;
+    NEcs::Entity deferred;
+
+    world.RegisterSystem({}, [&](NEcs::World& systemWorld) {
+        deferred = systemWorld.DeferCreateEntity();
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "test failure");
+    });
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.RunSystems(); });
+
+    EXPECT_FALSE(world.IsAlive(deferred));
+
+    const NEcs::Entity immediate = world.CreateEntity();
+    EXPECT_EQ(immediate.Index, deferred.Index);
+    EXPECT_TRUE(world.IsAlive(immediate));
+}
+
 TEST(EcsWorld, AppliesDeferredStructuralChangesInOrder) {
     NEcs::World world;
 
