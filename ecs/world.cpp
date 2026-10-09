@@ -186,6 +186,11 @@ void World::RunSystems() {
 }
 
 void World::ApplyDeferredStructuralChanges() {
+    if (IsRunningSystems_ && !IsApplyingDeferredStructuralChanges_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS deferred structural changes cannot be explicitly committed during system execution");
+    }
+
     std::vector<std::unique_ptr<IDeferredCommand>> commands;
 
     {

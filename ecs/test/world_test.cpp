@@ -360,6 +360,21 @@ TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {
     EXPECT_TRUE(world.IsAlive(immediate));
 }
 
+TEST(EcsWorld, RejectsExplicitDeferredCommitDuringSystemExecution) {
+    NEcs::World world;
+    const NEcs::Entity entity = world.CreateEntity();
+
+    world.RegisterSystem({}, [&](NEcs::World& systemWorld) {
+        systemWorld.DeferDestroyEntity(entity);
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { systemWorld.ApplyDeferredStructuralChanges(); });
+        EXPECT_TRUE(systemWorld.IsAlive(entity));
+    });
+
+    world.RunSystems();
+
+    EXPECT_FALSE(world.IsAlive(entity));
+}
+
 TEST(EcsWorld, AppliesDeferredStructuralChangesInOrder) {
     NEcs::World world;
 
