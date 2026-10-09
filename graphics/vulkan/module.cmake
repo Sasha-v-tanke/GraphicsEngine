@@ -6,6 +6,7 @@ API(
     instance.h
     physical_device.h
     resource_conversion.h
+    submission_manager.h
     swapchain.h
 )
 
@@ -15,6 +16,7 @@ SOURCES(
     instance.cpp
     physical_device.cpp
     resource_conversion.cpp
+    submission_manager.cpp
     swapchain.cpp
 )
 

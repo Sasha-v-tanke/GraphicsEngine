@@ -127,6 +127,18 @@ backpressure instead of resetting command pools that may still be in flight.
 Shutdown is conservative: if any context is still in flight, the ring waits for
 the logical device to become idle before destroying command pools.
 
+## Submission Manager
+
+`VulkanSubmissionManager` owns backend-internal timeline completion for Vulkan
+queue work. Graphics submissions are serialized through `VulkanDevice` queue
+locks and receive a monotonically increasing timeline value from the graphics
+queue context.
+
+The manager appends its timeline semaphore signal to every graphics submit while
+preserving caller-provided binary wait/signal semaphores. WSI acquire and present
+therefore remain on binary semaphores, and frame/resource lifetime code observes
+completion by querying the returned timeline value instead of using frame numbers.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
