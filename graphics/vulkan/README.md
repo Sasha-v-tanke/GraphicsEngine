@@ -113,6 +113,26 @@ acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
 They do not record rendering commands or perform layout transitions; the future
 command/submission path owns those responsibilities.
 
+## Descriptor Manager
+
+`VulkanDescriptorManager` is backend-only descriptor infrastructure. It owns the
+descriptor pool, layout-specific set allocation and an immutable cache for
+material bindings resolved by the Vulkan backend. Public `Material` continues to
+store only backend-independent `ResourceIdentity` values and ranges; it never
+stores `VkDescriptorSet`, `VkDescriptorSetLayout` or native resource handles.
+
+Descriptor cache keys are built from the material binding layout plus logical
+resource identities and buffer ranges. The concrete `VkBuffer`, `VkImageView`
+and `VkSampler` values are supplied only by backend resolution immediately before
+descriptor acquisition. A repeated compatible request returns the cached set
+instead of updating or freeing an in-flight descriptor set. New cache entries are
+allocated once and written once, so the current policy is safe for persistent
+material bindings and can be extended to frame/worker arenas later.
+
+Telemetry reports descriptor allocations, cache hits and misses. It is intended
+for backend diagnostics and future frame-resource tuning, not for public
+renderer API decisions.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
