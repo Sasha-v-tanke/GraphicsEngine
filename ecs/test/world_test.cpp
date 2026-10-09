@@ -298,6 +298,24 @@ TEST(EcsWorld, DeferredCreateReusesFreeEntitySlots) {
     EXPECT_TRUE(world.IsAlive(deferred));
 }
 
+TEST(EcsWorld, DeferredCreateCanMixFreeSlotReuseAndAppend) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.DestroyEntity(first);
+
+    const NEcs::Entity reused = world.DeferCreateEntity();
+    const NEcs::Entity appended = world.DeferCreateEntity();
+
+    EXPECT_EQ(reused.Index, first.Index);
+    EXPECT_EQ(appended.Index, first.Index + 1);
+
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(reused));
+    EXPECT_TRUE(world.IsAlive(appended));
+}
+
 TEST(EcsWorld, RunSystemsCommitsDeferredStructuralChangesAfterAllSystems) {
     NEcs::World world;
 
@@ -380,6 +398,27 @@ TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {
     const NEcs::Entity immediate = world.CreateEntity();
     EXPECT_EQ(immediate.Index, deferred.Index);
     EXPECT_NE(immediate.Generation, deferred.Generation);
+    EXPECT_TRUE(world.IsAlive(immediate));
+}
+
+TEST(EcsWorld, RollsBackDeferredFreeSlotReservationWithNewGeneration) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.DestroyEntity(first);
+
+    NEcs::Entity deferred;
+    world.RegisterSystem({}, [&](NEcs::World& systemWorld) {
+        deferred = systemWorld.DeferCreateEntity();
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "test failure");
+    });
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.RunSystems(); });
+
+    const NEcs::Entity immediate = world.CreateEntity();
+    EXPECT_EQ(immediate.Index, deferred.Index);
+    EXPECT_NE(immediate.Generation, deferred.Generation);
+    EXPECT_FALSE(world.IsAlive(deferred));
     EXPECT_TRUE(world.IsAlive(immediate));
 }
 

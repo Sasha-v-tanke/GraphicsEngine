@@ -83,11 +83,12 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
 }
 
 std::uint32_t World::DeferredCreateEntityCommand::GetReservedEntityCount() const noexcept {
-    return 1;
+    return ReusedFreeSlot_ ? 0 : 1;
 }
 
 void World::DeferredCreateEntityCommand::RollbackReservation(World& world) {
     if (ReusedFreeSlot_) {
+        ++world.Entities_[Entity_.Index].Generation;
         world.FreeEntityIndices_.push_back(Entity_.Index);
     }
 }
@@ -120,7 +121,9 @@ Entity World::DeferCreateEntity() {
             generation = NextNewEntityGeneration_++;
         }
 
-        ++ReservedDeferredEntityCount_;
+        if (!reusedFreeSlot) {
+            ++ReservedDeferredEntityCount_;
+        }
         entity = {
                 .Index = index,
                 .Generation = generation,
