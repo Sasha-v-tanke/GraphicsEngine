@@ -357,6 +357,7 @@ TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {
 
     const NEcs::Entity immediate = world.CreateEntity();
     EXPECT_EQ(immediate.Index, deferred.Index);
+    EXPECT_NE(immediate.Generation, deferred.Generation);
     EXPECT_TRUE(world.IsAlive(immediate));
 }
 

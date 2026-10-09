@@ -312,9 +312,11 @@ private:
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> ComponentStorageByType_;
     std::mutex DeferredStructuralMutex_;
     std::vector<std::unique_ptr<IDeferredCommand>> DeferredStructuralCommands_;
-    std::vector<std::unique_ptr<IDeferredCommand>>* ActiveDeferredStructuralCommands_ = nullptr;
+    std::vector<std::unique_ptr<IDeferredCommand>> ActiveDeferredStructuralCommands_;
     std::uint32_t ReservedDeferredEntityCount_ = 0;
+    std::uint32_t NextNewEntityGeneration_ = 0;
     bool IsRunningSystems_ = false;
+    bool IsCollectingSystemDeferredStructuralCommands_ = false;
     bool IsApplyingDeferredStructuralChanges_ = false;
 
     struct RegisteredSystem {

@@ -29,14 +29,15 @@ Entity World::CreateEntity() {
     }
 
     const std::uint32_t index = static_cast<std::uint32_t>(Entities_.size());
+    const std::uint32_t generation = NextNewEntityGeneration_++;
     Entities_.push_back({
-            .Generation = 0,
+            .Generation = generation,
             .Alive = true,
     });
 
     return {
             .Index = index,
-            .Generation = 0,
+            .Generation = generation,
     };
 }
 
@@ -85,14 +86,15 @@ Entity World::DeferCreateEntity() {
         std::scoped_lock lock{DeferredStructuralMutex_};
 
         const std::uint32_t index = static_cast<std::uint32_t>(Entities_.size() + ReservedDeferredEntityCount_);
+        const std::uint32_t generation = NextNewEntityGeneration_++;
         ++ReservedDeferredEntityCount_;
         entity = {
                 .Index = index,
-                .Generation = 0,
+                .Generation = generation,
         };
 
-        if (ActiveDeferredStructuralCommands_ != nullptr) {
-            ActiveDeferredStructuralCommands_->push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
+        if (IsCollectingSystemDeferredStructuralCommands_) {
+            ActiveDeferredStructuralCommands_.push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
         } else {
             DeferredStructuralCommands_.push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
         }
@@ -156,30 +158,32 @@ std::size_t World::GetSystemCount() const noexcept {
 
 void World::RunSystems() {
     for (auto& system: Systems_) {
-        std::vector<std::unique_ptr<IDeferredCommand>> systemCommands;
-        ActiveDeferredStructuralCommands_ = &systemCommands;
+        ActiveDeferredStructuralCommands_.clear();
+        IsCollectingSystemDeferredStructuralCommands_ = true;
         IsRunningSystems_ = true;
 
         try {
             system.Callback(*this);
         } catch (...) {
-            for (const auto& command: systemCommands) {
+            for (const auto& command: ActiveDeferredStructuralCommands_) {
                 ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
             }
             IsRunningSystems_ = false;
-            ActiveDeferredStructuralCommands_ = nullptr;
+            IsCollectingSystemDeferredStructuralCommands_ = false;
+            ActiveDeferredStructuralCommands_.clear();
             throw;
         }
 
         IsRunningSystems_ = false;
-        ActiveDeferredStructuralCommands_ = nullptr;
+        IsCollectingSystemDeferredStructuralCommands_ = false;
 
         {
             std::scoped_lock lock{DeferredStructuralMutex_};
             DeferredStructuralCommands_.insert(DeferredStructuralCommands_.end(),
-                                               std::make_move_iterator(systemCommands.begin()),
-                                               std::make_move_iterator(systemCommands.end()));
+                                               std::make_move_iterator(ActiveDeferredStructuralCommands_.begin()),
+                                               std::make_move_iterator(ActiveDeferredStructuralCommands_.end()));
         }
+        ActiveDeferredStructuralCommands_.clear();
     }
 
     ApplyDeferredStructuralChanges();
@@ -243,9 +247,9 @@ void World::ValidateStructuralWriteAllowed() const {
 }
 
 void World::PushDeferredCommand(std::unique_ptr<IDeferredCommand> command) {
-    if (ActiveDeferredStructuralCommands_ != nullptr) {
+    if (IsCollectingSystemDeferredStructuralCommands_) {
         std::scoped_lock lock{DeferredStructuralMutex_};
-        ActiveDeferredStructuralCommands_->push_back(std::move(command));
+        ActiveDeferredStructuralCommands_.push_back(std::move(command));
         return;
     }
 
