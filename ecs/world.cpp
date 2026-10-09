@@ -82,9 +82,13 @@ Entity World::DeferCreateEntity() {
                 .Index = index,
                 .Generation = 0,
         };
-    }
 
-    PushDeferredCommand(std::make_unique<DeferredCreateEntityCommand>(entity));
+        if (ActiveDeferredStructuralCommands_ != nullptr) {
+            ActiveDeferredStructuralCommands_->push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
+        } else {
+            DeferredStructuralCommands_.push_back(std::make_unique<DeferredCreateEntityCommand>(entity));
+        }
+    }
 
     return entity;
 }
