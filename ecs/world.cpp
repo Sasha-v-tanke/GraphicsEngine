@@ -219,6 +219,10 @@ void World::ApplyDeferredStructuralChanges() {
                     DeferredStructuralCommands_.begin(),
                     std::make_move_iterator(commands.begin() + static_cast<std::ptrdiff_t>(nextCommand + 1)),
                     std::make_move_iterator(commands.end()));
+            ReservedDeferredEntityCount_ = 0;
+            for (const auto& command: DeferredStructuralCommands_) {
+                ReservedDeferredEntityCount_ += command->GetReservedEntityCount();
+            }
         }
         throw;
     }

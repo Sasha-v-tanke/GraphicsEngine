@@ -40,6 +40,12 @@ struct Name {
     std::string Value;
 };
 
+struct ThrowingComponent {
+    ThrowingComponent() {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "throwing component");
+    }
+};
+
 } // namespace
 
 TEST(EcsWorld, ReusesEntitySlotsWithNewGeneration) {
@@ -414,6 +420,26 @@ TEST(EcsWorld, IgnoresDeferredAddForStaleEntityAndContinuesCommit) {
     ASSERT_TRUE(world.HasComponent<Position>(second));
     EXPECT_EQ(world.GetComponent<Position>(second).X, 7);
     EXPECT_EQ(world.GetComponent<Position>(second).Y, 8);
+}
+
+TEST(EcsWorld, RecountsPendingDeferredCreatesAfterFailedCommit) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.DeferCreateEntity();
+    world.DeferAddComponent<ThrowingComponent>(first);
+    const NEcs::Entity second = world.DeferCreateEntity();
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.ApplyDeferredStructuralChanges(); });
+
+    ASSERT_TRUE(world.IsAlive(first));
+    EXPECT_FALSE(world.IsAlive(second));
+
+    const NEcs::Entity third = world.DeferCreateEntity();
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(second));
+    EXPECT_TRUE(world.IsAlive(third));
+    EXPECT_EQ(second.Index + 1, third.Index);
 }
 
 TEST(EcsWorld, ReplaysDeferredCommandsDeterministically) {
