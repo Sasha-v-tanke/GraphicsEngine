@@ -280,6 +280,13 @@ VulkanPhysicalDeviceCapabilities ReadDeviceCapabilities(VkPhysicalDevice device,
             .DeviceId = properties.deviceID,
             .Type = ConvertDeviceType(properties.deviceType),
             .MaxImageDimension2D = properties.limits.maxImageDimension2D,
+            .DescriptorLimits =
+                    {
+                            .MinUniformBufferOffsetAlignment = properties.limits.minUniformBufferOffsetAlignment,
+                            .MinStorageBufferOffsetAlignment = properties.limits.minStorageBufferOffsetAlignment,
+                            .MaxUniformBufferRange = properties.limits.maxUniformBufferRange,
+                            .MaxStorageBufferRange = properties.limits.maxStorageBufferRange,
+                    },
             .Extensions = EnumerateDeviceExtensions(device),
             .Features = ReadDeviceFeatures(device),
             .QueueFamilies = ReadQueueFamilies(device, surface),
