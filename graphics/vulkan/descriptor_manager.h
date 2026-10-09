@@ -20,17 +20,21 @@ struct VulkanDescriptorTelemetry {
 
 struct VulkanDescriptorBufferBinding {
     VkBuffer Buffer = VK_NULL_HANDLE;
+    std::uint64_t ResourceVersion = 0;
+    std::uint64_t BufferSizeBytes = 0;
     std::uint64_t OffsetBytes = 0;
     std::uint64_t SizeBytes = 0;
 };
 
 struct VulkanDescriptorImageBinding {
     VkImageView ImageView = VK_NULL_HANDLE;
+    std::uint64_t ResourceVersion = 0;
     VkImageLayout Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 };
 
 struct VulkanDescriptorSamplerBinding {
     VkSampler Sampler = VK_NULL_HANDLE;
+    std::uint64_t ResourceVersion = 0;
 };
 
 struct VulkanResolvedMaterialBinding {
@@ -43,6 +47,13 @@ struct VulkanResolvedMaterialBinding {
 struct VulkanDescriptorRequest {
     std::span<const NGraphics::MaterialBindingLayoutEntry> Layout;
     std::span<const VulkanResolvedMaterialBinding> Bindings;
+};
+
+struct VulkanDescriptorLimits {
+    std::uint64_t MinUniformBufferOffsetAlignment = 1;
+    std::uint64_t MinStorageBufferOffsetAlignment = 1;
+    std::uint64_t MaxUniformBufferRange = 0;
+    std::uint64_t MaxStorageBufferRange = 0;
 };
 
 class VulkanDescriptorSetLease final {
@@ -75,10 +86,16 @@ private:
 
 class VulkanDescriptorManager final: public NCommon::NonTransferable {
 public:
-    explicit VulkanDescriptorManager(VkDevice device);
+    explicit VulkanDescriptorManager(VkDevice device, VulkanDescriptorLimits limits = {});
     ~VulkanDescriptorManager();
 
     [[nodiscard]] VulkanDescriptorSetLease Acquire(const VulkanDescriptorRequest& request);
+    void RetainUntil(VulkanDescriptorSetLease lease, std::uint64_t completionValue);
+    void ReleaseCompleted(std::uint64_t completedValue) noexcept;
+
+    [[nodiscard]] bool HasInFlightDescriptors() const noexcept {
+        return !m_inFlightCompletions.empty();
+    }
 
     [[nodiscard]] const VulkanDescriptorTelemetry& GetTelemetry() const noexcept {
         return m_telemetry;
@@ -100,6 +117,11 @@ private:
             NGraphics::EMaterialBindingType Type = NGraphics::EMaterialBindingType::UniformBuffer;
             NResources::ResourceIdentity First;
             NResources::ResourceIdentity Second;
+            std::uint64_t FirstVersion = 0;
+            std::uint64_t SecondVersion = 0;
+            std::uint64_t FirstHandle = 0;
+            std::uint64_t SecondHandle = 0;
+            VkImageLayout ImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             std::uint64_t OffsetBytes = 0;
             std::uint64_t SizeBytes = 0;
 
@@ -126,12 +148,16 @@ private:
     GetOrCreateLayout(std::span<const NGraphics::MaterialBindingLayoutEntry> layout);
     [[nodiscard]] VkDescriptorSet AllocateSet(VkDescriptorSetLayout layout,
                                               std::span<const NGraphics::MaterialBindingLayoutEntry> entries);
+    void ValidateBufferBinding(const VulkanResolvedMaterialBinding& binding) const;
+    void ValidateBinding(const VulkanResolvedMaterialBinding& binding) const;
     void WriteSet(VkDescriptorSet set, std::span<const VulkanResolvedMaterialBinding> bindings) const;
 
     VkDevice m_device = VK_NULL_HANDLE;
     VkDescriptorPool m_pool = VK_NULL_HANDLE;
+    VulkanDescriptorLimits m_limits;
     VulkanDescriptorTelemetry m_telemetry;
     std::unordered_map<DescriptorKey, DescriptorEntry, DescriptorKeyHash> m_cache;
+    std::vector<std::uint64_t> m_inFlightCompletions;
 };
 
 } // namespace NVulkan

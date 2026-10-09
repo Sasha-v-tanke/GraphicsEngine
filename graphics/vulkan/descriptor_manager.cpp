@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <string>
@@ -75,37 +76,6 @@ void ValidateLayout(std::span<const NGraphics::MaterialBindingLayoutEntry> layou
     }
 }
 
-void ValidateBinding(const VulkanResolvedMaterialBinding& binding) {
-    switch (binding.Material.Type) {
-    case NGraphics::EMaterialBindingType::UniformBuffer:
-    case NGraphics::EMaterialBindingType::StorageBuffer:
-        if (binding.Buffer.Buffer == VK_NULL_HANDLE || binding.Buffer.SizeBytes == 0 ||
-            binding.Buffer.OffsetBytes > std::numeric_limits<std::uint64_t>::max() - binding.Buffer.SizeBytes ||
-            binding.Material.Buffer.OffsetBytes != binding.Buffer.OffsetBytes ||
-            binding.Material.Buffer.SizeBytes != binding.Buffer.SizeBytes) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor buffer binding is invalid");
-        }
-        return;
-    case NGraphics::EMaterialBindingType::SampledImage:
-        if (binding.Image.ImageView == VK_NULL_HANDLE) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor image binding is invalid");
-        }
-        return;
-    case NGraphics::EMaterialBindingType::Sampler:
-        if (binding.Sampler.Sampler == VK_NULL_HANDLE) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor sampler binding is invalid");
-        }
-        return;
-    case NGraphics::EMaterialBindingType::CombinedImageSampler:
-        if (binding.Image.ImageView == VK_NULL_HANDLE || binding.Sampler.Sampler == VK_NULL_HANDLE) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor combined image sampler is invalid");
-        }
-        return;
-    }
-
-    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unsupported descriptor binding type");
-}
-
 } // namespace
 
 std::size_t VulkanDescriptorManager::DescriptorKeyHash::operator()(const DescriptorKey& key) const noexcept {
@@ -123,6 +93,11 @@ std::size_t VulkanDescriptorManager::DescriptorKeyHash::operator()(const Descrip
         HashCombine(seed, static_cast<std::uint32_t>(entry.Type));
         HashIdentity(seed, entry.First);
         HashIdentity(seed, entry.Second);
+        HashCombine(seed, entry.FirstVersion);
+        HashCombine(seed, entry.SecondVersion);
+        HashCombine(seed, entry.FirstHandle);
+        HashCombine(seed, entry.SecondHandle);
+        HashCombine(seed, static_cast<std::uint32_t>(entry.ImageLayout));
         HashCombine(seed, entry.OffsetBytes);
         HashCombine(seed, entry.SizeBytes);
     }
@@ -145,8 +120,6 @@ VulkanDescriptorManager::DescriptorKey VulkanDescriptorManager::MakeKey(const Vu
     }
 
     for (const VulkanResolvedMaterialBinding& binding: request.Bindings) {
-        ValidateBinding(binding);
-
         VulkanDescriptorManager::DescriptorKey::BindingEntry entry{
                 .Binding = binding.Material.Binding,
                 .Type = binding.Material.Type,
@@ -156,18 +129,30 @@ VulkanDescriptorManager::DescriptorKey VulkanDescriptorManager::MakeKey(const Vu
         case NGraphics::EMaterialBindingType::UniformBuffer:
         case NGraphics::EMaterialBindingType::StorageBuffer:
             entry.First = binding.Material.Buffer.Resource;
+            entry.FirstVersion = binding.Buffer.ResourceVersion;
+            entry.FirstHandle = reinterpret_cast<std::uint64_t>(binding.Buffer.Buffer);
             entry.OffsetBytes = binding.Material.Buffer.OffsetBytes;
             entry.SizeBytes = binding.Material.Buffer.SizeBytes;
             break;
         case NGraphics::EMaterialBindingType::SampledImage:
             entry.First = binding.Material.Image.Resource;
+            entry.FirstVersion = binding.Image.ResourceVersion;
+            entry.FirstHandle = reinterpret_cast<std::uint64_t>(binding.Image.ImageView);
+            entry.ImageLayout = binding.Image.Layout;
             break;
         case NGraphics::EMaterialBindingType::Sampler:
             entry.First = binding.Material.Sampler.Resource;
+            entry.FirstVersion = binding.Sampler.ResourceVersion;
+            entry.FirstHandle = reinterpret_cast<std::uint64_t>(binding.Sampler.Sampler);
             break;
         case NGraphics::EMaterialBindingType::CombinedImageSampler:
             entry.First = binding.Material.CombinedImageSampler.Image;
             entry.Second = binding.Material.CombinedImageSampler.Sampler;
+            entry.FirstVersion = binding.Image.ResourceVersion;
+            entry.SecondVersion = binding.Sampler.ResourceVersion;
+            entry.FirstHandle = reinterpret_cast<std::uint64_t>(binding.Image.ImageView);
+            entry.SecondHandle = reinterpret_cast<std::uint64_t>(binding.Sampler.Sampler);
+            entry.ImageLayout = binding.Image.Layout;
             break;
         }
 
@@ -180,8 +165,9 @@ VulkanDescriptorManager::DescriptorKey VulkanDescriptorManager::MakeKey(const Vu
     return key;
 }
 
-VulkanDescriptorManager::VulkanDescriptorManager(VkDevice device)
-    : m_device(device) {
+VulkanDescriptorManager::VulkanDescriptorManager(VkDevice device, VulkanDescriptorLimits limits)
+    : m_device(device)
+    , m_limits(limits) {
     if (m_device == VK_NULL_HANDLE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan descriptor manager device is null");
     }
@@ -213,6 +199,10 @@ VulkanDescriptorManager::VulkanDescriptorManager(VkDevice device)
 }
 
 VulkanDescriptorManager::~VulkanDescriptorManager() {
+    if (HasInFlightDescriptors()) {
+        std::terminate();
+    }
+
     for (const auto& [_, entry]: m_cache) {
         if (entry.Layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(m_device, entry.Layout, nullptr);
@@ -231,6 +221,10 @@ VulkanDescriptorSetLease VulkanDescriptorManager::Acquire(const VulkanDescriptor
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor bindings must match layout");
     }
 
+    for (const VulkanResolvedMaterialBinding& binding: request.Bindings) {
+        ValidateBinding(binding);
+    }
+
     DescriptorKey key = MakeKey(request);
 
     if (const auto it = m_cache.find(key); it != m_cache.end()) {
@@ -247,6 +241,19 @@ VulkanDescriptorSetLease VulkanDescriptorManager::Acquire(const VulkanDescriptor
     ++m_telemetry.Allocations;
 
     return VulkanDescriptorSetLease{layout, set};
+}
+
+void VulkanDescriptorManager::RetainUntil(VulkanDescriptorSetLease lease, std::uint64_t completionValue) {
+    if (!lease.IsValid() || completionValue == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor retention request is invalid");
+    }
+
+    m_inFlightCompletions.push_back(completionValue);
+}
+
+void VulkanDescriptorManager::ReleaseCompleted(std::uint64_t completedValue) noexcept {
+    std::erase_if(m_inFlightCompletions,
+                  [completedValue](std::uint64_t completion) { return completion <= completedValue; });
 }
 
 VkDescriptorSetLayout
@@ -297,6 +304,57 @@ VulkanDescriptorManager::AllocateSet(VkDescriptorSetLayout layout,
     }
 
     return set;
+}
+
+void VulkanDescriptorManager::ValidateBufferBinding(const VulkanResolvedMaterialBinding& binding) const {
+    if (binding.Buffer.Buffer == VK_NULL_HANDLE || binding.Buffer.ResourceVersion == 0 ||
+        binding.Buffer.BufferSizeBytes == 0 || binding.Buffer.SizeBytes == 0 ||
+        binding.Buffer.OffsetBytes > std::numeric_limits<std::uint64_t>::max() - binding.Buffer.SizeBytes ||
+        binding.Buffer.OffsetBytes + binding.Buffer.SizeBytes > binding.Buffer.BufferSizeBytes ||
+        binding.Material.Buffer.OffsetBytes != binding.Buffer.OffsetBytes ||
+        binding.Material.Buffer.SizeBytes != binding.Buffer.SizeBytes) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor buffer binding is invalid");
+    }
+
+    const bool isUniform = binding.Material.Type == NGraphics::EMaterialBindingType::UniformBuffer;
+    const std::uint64_t alignment =
+            isUniform ? m_limits.MinUniformBufferOffsetAlignment : m_limits.MinStorageBufferOffsetAlignment;
+    const std::uint64_t maxRange = isUniform ? m_limits.MaxUniformBufferRange : m_limits.MaxStorageBufferRange;
+
+    if (alignment == 0 || (binding.Buffer.OffsetBytes % alignment) != 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor buffer offset alignment is invalid");
+    }
+
+    if (maxRange != 0 && binding.Buffer.SizeBytes > maxRange) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor buffer range exceeds device limits");
+    }
+}
+
+void VulkanDescriptorManager::ValidateBinding(const VulkanResolvedMaterialBinding& binding) const {
+    switch (binding.Material.Type) {
+    case NGraphics::EMaterialBindingType::UniformBuffer:
+    case NGraphics::EMaterialBindingType::StorageBuffer:
+        ValidateBufferBinding(binding);
+        return;
+    case NGraphics::EMaterialBindingType::SampledImage:
+        if (binding.Image.ImageView == VK_NULL_HANDLE || binding.Image.ResourceVersion == 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor image binding is invalid");
+        }
+        return;
+    case NGraphics::EMaterialBindingType::Sampler:
+        if (binding.Sampler.Sampler == VK_NULL_HANDLE || binding.Sampler.ResourceVersion == 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor sampler binding is invalid");
+        }
+        return;
+    case NGraphics::EMaterialBindingType::CombinedImageSampler:
+        if (binding.Image.ImageView == VK_NULL_HANDLE || binding.Image.ResourceVersion == 0 ||
+            binding.Sampler.Sampler == VK_NULL_HANDLE || binding.Sampler.ResourceVersion == 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor combined image sampler is invalid");
+        }
+        return;
+    }
+
+    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unsupported descriptor binding type");
 }
 
 void VulkanDescriptorManager::WriteSet(VkDescriptorSet set,
