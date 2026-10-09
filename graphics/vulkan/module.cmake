@@ -1,6 +1,7 @@
 MODULE(VulkanBackend)
 
 API(
+    descriptor_manager.h
     device.h
     instance.h
     physical_device.h
@@ -9,6 +10,7 @@ API(
 )
 
 SOURCES(
+    descriptor_manager.cpp
     device.cpp
     instance.cpp
     physical_device.cpp
