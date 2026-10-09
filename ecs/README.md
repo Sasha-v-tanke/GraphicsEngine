@@ -12,6 +12,9 @@ same slot, even if the slot is reused by a later entity.
 Destroying an entity removes all of its components immediately. Removing a
 component invalidates references to that component. Creating or removing other
 entities/components does not promise stable iteration order for queries.
+Deferred structural changes reserve entity identities and enqueue create,
+destroy, add-component or remove-component commands. They become visible only
+after the queue is committed.
 
 ## Mutation Phases
 
@@ -20,9 +23,12 @@ The public access model already records `Read<T>()` and `Write<T>()`
 declarations so MVP-4 can add parallel scheduling without changing system
 registration semantics.
 
-System callbacks may mutate `World`. Parallel conflict detection and deferred
-structural changes are later features; this core keeps mutation rules explicit
-and predictable.
+System callbacks may mutate `World`. They may also enqueue deferred structural
+changes; `RunSystems()` applies that queue after all currently registered
+systems complete. Callers that manage their own phases can use
+`ApplyDeferredStructuralChanges()` as an explicit structural commit point.
+Parallel conflict detection is a later feature; this core keeps mutation rules
+explicit and predictable.
 
 ## Access Contract
 

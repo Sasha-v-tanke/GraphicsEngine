@@ -227,3 +227,80 @@ TEST(EcsWorld, ConstQueryProvidesReadOnlyComponents) {
 
     EXPECT_EQ(visited, 1);
 }
+
+TEST(EcsWorld, AppliesDeferredCreateAndAddAtExplicitCommitPoint) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.DeferCreateEntity();
+    world.DeferAddComponent<Position>(entity, 5, 7);
+
+    EXPECT_FALSE(world.IsAlive(entity));
+    EXPECT_EQ(world.GetAliveEntityCount(), 0U);
+
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.IsAlive(entity));
+    ASSERT_TRUE(world.HasComponent<Position>(entity));
+    EXPECT_EQ(world.GetComponent<Position>(entity).X, 5);
+    EXPECT_EQ(world.GetComponent<Position>(entity).Y, 7);
+}
+
+TEST(EcsWorld, RunSystemsCommitsDeferredStructuralChangesAfterAllSystems) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.CreateEntity();
+    world.AddComponent<Position>(entity, 1, 2);
+
+    NEcs::Entity created;
+    int secondSystemVisits = 0;
+
+    world.RegisterSystem({NEcs::Write<Position>()}, [&](NEcs::World& systemWorld) {
+        systemWorld.Query<Position>([&](NEcs::Entity, Position&) {
+            created = systemWorld.DeferCreateEntity();
+            systemWorld.DeferAddComponent<Position>(created, 3, 4);
+        });
+    });
+
+    world.RegisterSystem({NEcs::Read<Position>()}, [&](NEcs::World& systemWorld) {
+        systemWorld.Query<Position>([&](NEcs::Entity, Position&) { ++secondSystemVisits; });
+    });
+
+    world.RunSystems();
+
+    EXPECT_EQ(secondSystemVisits, 1);
+    ASSERT_TRUE(world.IsAlive(created));
+    ASSERT_TRUE(world.HasComponent<Position>(created));
+    EXPECT_EQ(world.GetAliveEntityCount(), 2U);
+}
+
+TEST(EcsWorld, AppliesDeferredStructuralChangesInOrder) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.CreateEntity();
+    world.AddComponent<Position>(entity, 1, 2);
+
+    world.DeferRemoveComponent<Position>(entity);
+    world.DeferAddComponent<Position>(entity, 9, 10);
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.HasComponent<Position>(entity));
+    EXPECT_EQ(world.GetComponent<Position>(entity).X, 9);
+    EXPECT_EQ(world.GetComponent<Position>(entity).Y, 10);
+
+    world.DeferDestroyEntity(entity);
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_FALSE(world.IsAlive(entity));
+    EXPECT_EQ(world.GetAliveEntityCount(), 0U);
+}
+
+TEST(EcsWorld, DeferredAddSupportsConstructOnlyComponents) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.DeferCreateEntity();
+    world.DeferAddComponent<ConstructOnly>(entity, 42);
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.HasComponent<ConstructOnly>(entity));
+    EXPECT_EQ(world.GetComponent<ConstructOnly>(entity).Value, 42);
+}

@@ -7,6 +7,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <tuple>
+#include <type_traits>
 #include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
@@ -25,6 +28,9 @@ public:
     Entity CreateEntity();
     void DestroyEntity(Entity entity);
 
+    Entity DeferCreateEntity();
+    void DeferDestroyEntity(Entity entity);
+
     [[nodiscard]] bool IsAlive(Entity entity) const noexcept;
     [[nodiscard]] std::size_t GetAliveEntityCount() const noexcept;
 
@@ -33,6 +39,13 @@ public:
         ValidateAlive(entity);
         auto& storage = GetOrCreateStorage<T>();
         return storage.Emplace(entity.Index, std::forward<TArgs>(args)...);
+    }
+
+    template<typename T, typename... TArgs>
+    void DeferAddComponent(Entity entity, TArgs&&... args) {
+        PushDeferredCommand(
+                std::make_unique<DeferredAddComponentCommand<T, std::decay_t<TArgs>...>>(entity,
+                                                                                         std::forward<TArgs>(args)...));
     }
 
     template<typename T>
@@ -77,6 +90,11 @@ public:
 
         auto* storage = FindStorage<T>();
         return storage != nullptr && storage->RemoveComponent(entity.Index);
+    }
+
+    template<typename T>
+    void DeferRemoveComponent(Entity entity) {
+        PushDeferredCommand(std::make_unique<DeferredRemoveComponentCommand<T>>(entity));
     }
 
     template<typename... TComponents, typename TCallback>
@@ -130,11 +148,73 @@ public:
     [[nodiscard]] const std::vector<SystemAccess>& GetSystemAccess(std::size_t index) const;
     [[nodiscard]] std::size_t GetSystemCount() const noexcept;
     void RunSystems();
+    void ApplyDeferredStructuralChanges();
 
 private:
     struct EntityState {
         std::uint32_t Generation = 0;
         bool Alive = false;
+        bool Reserved = false;
+    };
+
+    class IDeferredCommand {
+    public:
+        virtual ~IDeferredCommand() = default;
+
+        virtual void Apply(World& world) = 0;
+    };
+
+    class DeferredCreateEntityCommand final: public IDeferredCommand {
+    public:
+        explicit DeferredCreateEntityCommand(Entity entity);
+
+        void Apply(World& world) override;
+
+    private:
+        Entity Entity_;
+    };
+
+    class DeferredDestroyEntityCommand final: public IDeferredCommand {
+    public:
+        explicit DeferredDestroyEntityCommand(Entity entity);
+
+        void Apply(World& world) override;
+
+    private:
+        Entity Entity_;
+    };
+
+    template<typename T, typename... TArgs>
+    class DeferredAddComponentCommand final: public IDeferredCommand {
+    public:
+        template<typename... TValues>
+        DeferredAddComponentCommand(Entity entity, TValues&&... args)
+            : Entity_(entity)
+            , Args_(std::forward<TArgs>(args)...) {
+        }
+
+        void Apply(World& world) override {
+            std::apply([&](auto&... args) { world.AddComponent<T>(Entity_, std::move(args)...); }, Args_);
+        }
+
+    private:
+        Entity Entity_;
+        std::tuple<TArgs...> Args_;
+    };
+
+    template<typename T>
+    class DeferredRemoveComponentCommand final: public IDeferredCommand {
+    public:
+        explicit DeferredRemoveComponentCommand(Entity entity)
+            : Entity_(entity) {
+        }
+
+        void Apply(World& world) override {
+            static_cast<void>(world.RemoveComponent<T>(Entity_));
+        }
+
+    private:
+        Entity Entity_;
     };
 
     class IComponentStorage {
@@ -215,10 +295,13 @@ private:
 
     void ValidateAlive(Entity entity) const;
     void ValidateSystemIndex(std::size_t index) const;
+    void PushDeferredCommand(std::unique_ptr<IDeferredCommand> command);
 
     std::vector<EntityState> Entities_;
     std::vector<std::uint32_t> FreeEntityIndices_;
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> ComponentStorageByType_;
+    std::mutex DeferredStructuralMutex_;
+    std::vector<std::unique_ptr<IDeferredCommand>> DeferredStructuralCommands_;
 
     struct RegisteredSystem {
         SystemAccessList Access;
