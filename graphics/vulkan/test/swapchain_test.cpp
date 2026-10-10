@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <spawn.h>
 #include <string>
 #include <thread>
@@ -25,6 +26,7 @@ extern char** environ;
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/instance.h>
 #include <graphics/vulkan/physical_device.h>
+#include <graphics/vulkan/resource_state.h>
 #include <graphics/vulkan/swapchain.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
@@ -186,18 +188,12 @@ void RecordPresentTransition(VkCommandBuffer commandBuffer, VkImage image) {
     };
     ASSERT_EQ(vkBeginCommandBuffer(commandBuffer, &beginInfo), VK_SUCCESS);
 
-    const VkImageMemoryBarrier2 barrier{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask = 0,
-            .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-            .dstAccessMask = 0,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange =
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportImage(image, NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Undefined));
+    const std::optional<VkImageMemoryBarrier2> barrier = tracker.TransitionImage({
+            .Image = image,
+            .Usage = NVulkan::EVulkanResourceUsage::Present,
+            .SubresourceRange =
                     {
                             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                             .baseMipLevel = 0,
@@ -205,11 +201,12 @@ void RecordPresentTransition(VkCommandBuffer commandBuffer, VkImage image) {
                             .baseArrayLayer = 0,
                             .layerCount = 1,
                     },
-    };
+    });
+    ASSERT_TRUE(barrier.has_value());
     const VkDependencyInfo dependencyInfo{
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
             .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &barrier,
+            .pImageMemoryBarriers = &*barrier,
     };
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 

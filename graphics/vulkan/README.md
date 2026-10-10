@@ -139,6 +139,18 @@ preserving caller-provided binary wait/signal semaphores. WSI acquire and presen
 therefore remain on binary semaphores, and frame/resource lifetime code observes
 completion by querying the returned timeline value instead of using frame numbers.
 
+## Resource State Tracking
+
+`VulkanResourceStateTracker` owns backend-internal image state for Synchronization2.
+Callers import external images, including swapchain images, with an explicit
+initial state. Semantic usages are converted to Vulkan stage, access, layout and
+queue-family state inside the backend.
+
+Image transitions produce `VkImageMemoryBarrier2` only when the tracked state
+actually changes. The tracker also records queue-family ownership state, so
+future multi-queue transfer/release/acquire paths can use the same model while
+the MVP-2 execution path remains single graphics queue.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
