@@ -14,12 +14,15 @@ void World::IDeferredCommand::RollbackReservation(World& world) {
 }
 
 struct World::DeferredStructuralCommandBuffer::State {
+    World* Owner = nullptr;
     std::uint32_t ProducerOrder = 0;
+    bool Submitted = false;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
 };
 
-World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(std::uint32_t producerOrder)
+World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(World& owner, std::uint32_t producerOrder)
     : State_(std::make_unique<State>()) {
+    State_->Owner = &owner;
     State_->ProducerOrder = producerOrder;
 }
 
@@ -29,7 +32,11 @@ World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(Deferred
 World::DeferredStructuralCommandBuffer&
 World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffer&&) noexcept = default;
 
-World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() = default;
+World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() {
+    if (State_ != nullptr && State_->Owner != nullptr && !State_->Submitted) {
+        State_->Owner->RollbackDeferredStructuralCommands(State_->Commands);
+    }
+}
 
 Entity World::CreateEntity() {
     ValidateStructuralWriteAllowed();
@@ -79,13 +86,11 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
         return;
     }
 
-    if (Entity_.Index > world.Entities_.size()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Deferred ECS entity create order is invalid");
-    }
-
-    if (Entity_.Index == world.Entities_.size()) {
+    while (Entity_.Index >= world.Entities_.size()) {
+        const std::uint32_t index = static_cast<std::uint32_t>(world.Entities_.size());
+        const std::uint32_t generation = Entity_.Generation - (Entity_.Index - index);
         world.Entities_.push_back({
-                .Generation = Entity_.Generation,
+                .Generation = generation,
                 .Alive = false,
                 .Reserved = true,
         });
@@ -133,6 +138,8 @@ Entity World::DeferCreateEntity() {
 }
 
 Entity World::DeferCreateEntity(DeferredStructuralCommandBuffer& buffer) {
+    ValidateDeferredStructuralCommandBuffer(buffer);
+
     Entity entity;
 
     {
@@ -231,10 +238,12 @@ std::size_t World::GetSystemCount() const noexcept {
 }
 
 World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder) {
-    return DeferredStructuralCommandBuffer{producerOrder};
+    return DeferredStructuralCommandBuffer{*this, producerOrder};
 }
 
 void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer) {
+    ValidateDeferredStructuralCommandBuffer(buffer);
+
     DeferredCommandBatch batch{
             .ProducerOrder = buffer.State_->ProducerOrder,
             .Commands = std::move(buffer.State_->Commands),
@@ -242,6 +251,7 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 
     std::scoped_lock lock{DeferredStructuralMutex_};
     AppendDeferredCommandBatch(std::move(batch));
+    buffer.State_->Submitted = true;
 }
 
 void World::RunSystems() {
@@ -355,6 +365,13 @@ void World::ValidateStructuralWriteAllowed() const {
     }
 }
 
+void World::ValidateDeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer& buffer) const {
+    if (buffer.State_ == nullptr || buffer.State_->Owner != this || buffer.State_->Submitted) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "ECS deferred command buffer does not belong to world");
+    }
+}
+
 void World::PushDeferredCommand(std::unique_ptr<IDeferredCommand> command) {
     if (IsCollectingSystemDeferredStructuralCommands_) {
         std::scoped_lock lock{DeferredStructuralMutex_};
@@ -373,6 +390,17 @@ void World::PushDeferredCommand(DeferredStructuralCommandBuffer& buffer, std::un
 void World::AppendDeferredCommandBatch(DeferredCommandBatch batch) {
     batch.SubmissionOrder = NextDeferredBatchSubmissionOrder_++;
     DeferredStructuralBatches_.push_back(std::move(batch));
+}
+
+void World::RollbackDeferredStructuralCommands(std::vector<std::unique_ptr<IDeferredCommand>>& commands) {
+    std::scoped_lock lock{DeferredStructuralMutex_};
+
+    for (const auto& command: commands) {
+        ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
+        command->RollbackReservation(*this);
+    }
+
+    commands.clear();
 }
 
 } // namespace NEcs

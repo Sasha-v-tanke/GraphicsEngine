@@ -167,8 +167,7 @@ public:
 
     [[nodiscard]] const std::vector<SystemAccess>& GetSystemAccess(std::size_t index) const;
     [[nodiscard]] std::size_t GetSystemCount() const noexcept;
-    [[nodiscard]] static DeferredStructuralCommandBuffer
-    CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder);
+    [[nodiscard]] DeferredStructuralCommandBuffer CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder);
     void SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer);
     void RunSystems();
     void ApplyDeferredStructuralChanges();
@@ -204,7 +203,7 @@ public:
 
         struct State;
 
-        explicit DeferredStructuralCommandBuffer(std::uint32_t producerOrder);
+        DeferredStructuralCommandBuffer(World& owner, std::uint32_t producerOrder);
 
         std::unique_ptr<State> State_;
     };
@@ -355,9 +354,11 @@ private:
     void ValidateAlive(Entity entity) const;
     void ValidateSystemIndex(std::size_t index) const;
     void ValidateStructuralWriteAllowed() const;
+    void ValidateDeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer& buffer) const;
     void PushDeferredCommand(std::unique_ptr<IDeferredCommand> command);
     static void PushDeferredCommand(DeferredStructuralCommandBuffer& buffer, std::unique_ptr<IDeferredCommand> command);
     void AppendDeferredCommandBatch(DeferredCommandBatch batch);
+    void RollbackDeferredStructuralCommands(std::vector<std::unique_ptr<IDeferredCommand>>& commands);
     Entity ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredCommand>>& commands);
 
     std::vector<EntityState> Entities_;

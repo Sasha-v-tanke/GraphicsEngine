@@ -370,8 +370,8 @@ TEST(EcsWorld, MergesSubmittedProducerBuffersByProducerOrder) {
     const NEcs::Entity entity = world.CreateEntity();
     world.AddComponent<Position>(entity, 1, 2);
 
-    auto firstProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(0);
-    auto secondProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(1);
+    auto firstProducer = world.CreateDeferredStructuralCommandBuffer(0);
+    auto secondProducer = world.CreateDeferredStructuralCommandBuffer(1);
 
     NEcs::World::DeferRemoveComponent<Position>(firstProducer, entity);
     NEcs::World::DeferAddComponent<Position>(secondProducer, entity, 9, 10);
@@ -391,8 +391,8 @@ TEST(EcsWorld, ProducerOrderDeterminesConflictingStructuralCommands) {
         const NEcs::Entity entity = world.CreateEntity();
         world.AddComponent<Position>(entity, 1, 2);
 
-        auto lowProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(10);
-        auto highProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(20);
+        auto lowProducer = world.CreateDeferredStructuralCommandBuffer(10);
+        auto highProducer = world.CreateDeferredStructuralCommandBuffer(20);
 
         NEcs::World::DeferAddComponent<Position>(lowProducer, entity, 3, 4);
         NEcs::World::DeferRemoveComponent<Position>(highProducer, entity);
@@ -406,6 +406,46 @@ TEST(EcsWorld, ProducerOrderDeterminesConflictingStructuralCommands) {
 
     EXPECT_EQ(replay(), replay());
     EXPECT_FALSE(replay());
+}
+
+TEST(EcsWorld, ProducerOrderSupportsOutOfOrderDeferredCreates) {
+    NEcs::World world;
+
+    auto lowProducer = world.CreateDeferredStructuralCommandBuffer(10);
+    auto highProducer = world.CreateDeferredStructuralCommandBuffer(20);
+
+    const NEcs::Entity highEntity = world.DeferCreateEntity(highProducer);
+    const NEcs::Entity lowEntity = world.DeferCreateEntity(lowProducer);
+
+    world.SubmitDeferredStructuralCommands(std::move(highProducer));
+    world.SubmitDeferredStructuralCommands(std::move(lowProducer));
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(lowEntity));
+    EXPECT_TRUE(world.IsAlive(highEntity));
+}
+
+TEST(EcsWorld, AbandonedProducerBufferRollsBackReservations) {
+    NEcs::World world;
+
+    {
+        auto producer = world.CreateDeferredStructuralCommandBuffer(0);
+        static_cast<void>(world.DeferCreateEntity(producer));
+    }
+
+    const NEcs::Entity entity = world.CreateEntity();
+    EXPECT_TRUE(world.IsAlive(entity));
+}
+
+TEST(EcsWorld, RejectsSubmittingProducerBufferToAnotherWorld) {
+    NEcs::World firstWorld;
+    NEcs::World secondWorld;
+
+    auto producer = firstWorld.CreateDeferredStructuralCommandBuffer(0);
+    static_cast<void>(firstWorld.DeferCreateEntity(producer));
+
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                       [&] { secondWorld.SubmitDeferredStructuralCommands(std::move(producer)); });
 }
 
 TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {
