@@ -5,6 +5,7 @@ SOURCES(
     frame_context_test.cpp
     instance_test.cpp
     physical_device_test.cpp
+    submission_manager_test.cpp
     swapchain_test.cpp
 )
 
