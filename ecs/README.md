@@ -14,9 +14,11 @@ component invalidates references to that component. Creating or removing other
 entities/components does not promise stable iteration order for queries.
 Deferred structural changes reserve entity identities and enqueue create,
 destroy, add-component or remove-component commands. They become visible only
-after the queue is committed. A pending deferred entity create blocks immediate
-entity creation until the deferred queue is committed, so deferred identities
-cannot collide with immediately created entities.
+after the queue is committed. A pending deferred entity create that appends a new
+entity slot blocks immediate entity creation until the deferred queue is
+committed. A pending deferred create that reuses a free slot removes that slot
+from the free list immediately, so immediate creation cannot collide with the
+reserved identity.
 
 ## Mutation Phases
 
@@ -29,11 +31,13 @@ System callbacks may mutate existing components directly. Structural writes
 (`CreateEntity()`, `DestroyEntity()`, `AddComponent<T>()` and
 `RemoveComponent<T>()`) are rejected while systems are running; callbacks must
 use the deferred structural APIs instead. `RunSystems()` collects deferred
-commands per system callback, merges them in registered system order, and
-applies the queue after all currently registered systems complete. Callers that
-manage their own phases can use `ApplyDeferredStructuralChanges()` as an
-explicit structural commit point. Parallel conflict detection is a later
-feature; this core keeps mutation rules explicit and predictable.
+commands and applies the queue after all currently registered systems complete.
+Parallel producers should collect commands in `DeferredStructuralCommandBuffer`
+instances, submit those buffers after their join point, and use stable
+`producerOrder` values as the deterministic merge policy. Callers that manage
+their own phases can use `ApplyDeferredStructuralChanges()` as an explicit
+structural commit point. Parallel conflict detection is a later feature; this
+core keeps mutation rules explicit and predictable.
 
 ## Access Contract
 

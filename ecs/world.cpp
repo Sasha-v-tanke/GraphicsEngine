@@ -13,6 +13,24 @@ void World::IDeferredCommand::RollbackReservation(World& world) {
     static_cast<void>(world);
 }
 
+struct World::DeferredStructuralCommandBuffer::State {
+    std::uint32_t ProducerOrder = 0;
+    std::vector<std::unique_ptr<IDeferredCommand>> Commands;
+};
+
+World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(std::uint32_t producerOrder)
+    : State_(std::make_unique<State>()) {
+    State_->ProducerOrder = producerOrder;
+}
+
+World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(DeferredStructuralCommandBuffer&&) noexcept =
+        default;
+
+World::DeferredStructuralCommandBuffer&
+World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffer&&) noexcept = default;
+
+World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() = default;
+
 Entity World::CreateEntity() {
     ValidateStructuralWriteAllowed();
 
@@ -103,46 +121,64 @@ void World::DeferredDestroyEntityCommand::Apply(World& world) {
 
 Entity World::DeferCreateEntity() {
     Entity entity;
-    bool reusedFreeSlot = false;
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
-
-        std::uint32_t index = 0;
-        std::uint32_t generation = 0;
-
-        if (!FreeEntityIndices_.empty()) {
-            index = FreeEntityIndices_.back();
-            FreeEntityIndices_.pop_back();
-            generation = Entities_[index].Generation;
-            reusedFreeSlot = true;
-        } else {
-            index = static_cast<std::uint32_t>(Entities_.size() + ReservedDeferredEntityCount_);
-            generation = NextNewEntityGeneration_++;
-        }
-
-        if (!reusedFreeSlot) {
-            ++ReservedDeferredEntityCount_;
-        }
-        entity = {
-                .Index = index,
-                .Generation = generation,
-        };
-
-        if (IsCollectingSystemDeferredStructuralCommands_) {
-            ActiveDeferredStructuralCommands_.push_back(
-                    std::make_unique<DeferredCreateEntityCommand>(entity, reusedFreeSlot));
-        } else {
-            DeferredStructuralCommands_.push_back(
-                    std::make_unique<DeferredCreateEntityCommand>(entity, reusedFreeSlot));
-        }
+        entity = ReserveDeferredEntityLocked(IsCollectingSystemDeferredStructuralCommands_
+                                                     ? ActiveDeferredStructuralCommands_
+                                                     : DeferredStructuralCommands_);
     }
+
+    return entity;
+}
+
+Entity World::DeferCreateEntity(DeferredStructuralCommandBuffer& buffer) {
+    Entity entity;
+
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        entity = ReserveDeferredEntityLocked(buffer.State_->Commands);
+    }
+
+    return entity;
+}
+
+Entity World::ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredCommand>>& commands) {
+    Entity entity;
+    bool reusedFreeSlot = false;
+
+    std::uint32_t index = 0;
+    std::uint32_t generation = 0;
+
+    if (!FreeEntityIndices_.empty()) {
+        index = FreeEntityIndices_.back();
+        FreeEntityIndices_.pop_back();
+        generation = Entities_[index].Generation;
+        reusedFreeSlot = true;
+    } else {
+        index = static_cast<std::uint32_t>(Entities_.size() + ReservedDeferredEntityCount_);
+        generation = NextNewEntityGeneration_++;
+    }
+
+    if (!reusedFreeSlot) {
+        ++ReservedDeferredEntityCount_;
+    }
+    entity = {
+            .Index = index,
+            .Generation = generation,
+    };
+
+    commands.push_back(std::make_unique<DeferredCreateEntityCommand>(entity, reusedFreeSlot));
 
     return entity;
 }
 
 void World::DeferDestroyEntity(Entity entity) {
     PushDeferredCommand(std::make_unique<DeferredDestroyEntityCommand>(entity));
+}
+
+void World::DeferDestroyEntity(DeferredStructuralCommandBuffer& buffer, Entity entity) {
+    PushDeferredCommand(buffer, std::make_unique<DeferredDestroyEntityCommand>(entity));
 }
 
 void World::DestroyEntity(Entity entity) {
@@ -194,6 +230,20 @@ std::size_t World::GetSystemCount() const noexcept {
     return Systems_.size();
 }
 
+World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder) {
+    return DeferredStructuralCommandBuffer{producerOrder};
+}
+
+void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer) {
+    DeferredCommandBatch batch{
+            .ProducerOrder = buffer.State_->ProducerOrder,
+            .Commands = std::move(buffer.State_->Commands),
+    };
+
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    AppendDeferredCommandBatch(std::move(batch));
+}
+
 void World::RunSystems() {
     for (auto& system: Systems_) {
         ActiveDeferredStructuralCommands_.clear();
@@ -218,9 +268,10 @@ void World::RunSystems() {
 
         {
             std::scoped_lock lock{DeferredStructuralMutex_};
-            DeferredStructuralCommands_.insert(DeferredStructuralCommands_.end(),
-                                               std::make_move_iterator(ActiveDeferredStructuralCommands_.begin()),
-                                               std::make_move_iterator(ActiveDeferredStructuralCommands_.end()));
+            AppendDeferredCommandBatch({
+                    .ProducerOrder = 0,
+                    .Commands = std::move(ActiveDeferredStructuralCommands_),
+            });
         }
         ActiveDeferredStructuralCommands_.clear();
     }
@@ -238,6 +289,21 @@ void World::ApplyDeferredStructuralChanges() {
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
+        std::ranges::sort(DeferredStructuralBatches_,
+                          [](const DeferredCommandBatch& lhs, const DeferredCommandBatch& rhs) {
+                              if (lhs.ProducerOrder != rhs.ProducerOrder) {
+                                  return lhs.ProducerOrder < rhs.ProducerOrder;
+                              }
+
+                              return lhs.SubmissionOrder < rhs.SubmissionOrder;
+                          });
+
+        for (auto& batch: DeferredStructuralBatches_) {
+            DeferredStructuralCommands_.insert(DeferredStructuralCommands_.end(),
+                                               std::make_move_iterator(batch.Commands.begin()),
+                                               std::make_move_iterator(batch.Commands.end()));
+        }
+        DeferredStructuralBatches_.clear();
         commands.swap(DeferredStructuralCommands_);
     }
 
@@ -298,6 +364,15 @@ void World::PushDeferredCommand(std::unique_ptr<IDeferredCommand> command) {
 
     std::scoped_lock lock{DeferredStructuralMutex_};
     DeferredStructuralCommands_.push_back(std::move(command));
+}
+
+void World::PushDeferredCommand(DeferredStructuralCommandBuffer& buffer, std::unique_ptr<IDeferredCommand> command) {
+    buffer.State_->Commands.push_back(std::move(command));
+}
+
+void World::AppendDeferredCommandBatch(DeferredCommandBatch batch) {
+    batch.SubmissionOrder = NextDeferredBatchSubmissionOrder_++;
+    DeferredStructuralBatches_.push_back(std::move(batch));
 }
 
 } // namespace NEcs

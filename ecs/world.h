@@ -25,11 +25,15 @@ class World {
 public:
     using SystemCallback = std::function<void(World&)>;
 
+    class DeferredStructuralCommandBuffer;
+
     Entity CreateEntity();
     void DestroyEntity(Entity entity);
 
     Entity DeferCreateEntity();
+    Entity DeferCreateEntity(DeferredStructuralCommandBuffer& buffer);
     void DeferDestroyEntity(Entity entity);
+    static void DeferDestroyEntity(DeferredStructuralCommandBuffer& buffer, Entity entity);
 
     [[nodiscard]] bool IsAlive(Entity entity) const noexcept;
     [[nodiscard]] std::size_t GetAliveEntityCount() const noexcept;
@@ -45,6 +49,14 @@ public:
     template<typename T, typename... TArgs>
     void DeferAddComponent(Entity entity, TArgs&&... args) {
         PushDeferredCommand(
+                std::make_unique<DeferredAddComponentCommand<T, std::decay_t<TArgs>...>>(entity,
+                                                                                         std::forward<TArgs>(args)...));
+    }
+
+    template<typename T, typename... TArgs>
+    static void DeferAddComponent(DeferredStructuralCommandBuffer& buffer, Entity entity, TArgs&&... args) {
+        PushDeferredCommand(
+                buffer,
                 std::make_unique<DeferredAddComponentCommand<T, std::decay_t<TArgs>...>>(entity,
                                                                                          std::forward<TArgs>(args)...));
     }
@@ -100,6 +112,11 @@ public:
         PushDeferredCommand(std::make_unique<DeferredRemoveComponentCommand<T>>(entity));
     }
 
+    template<typename T>
+    static void DeferRemoveComponent(DeferredStructuralCommandBuffer& buffer, Entity entity) {
+        PushDeferredCommand(buffer, std::make_unique<DeferredRemoveComponentCommand<T>>(entity));
+    }
+
     template<typename... TComponents, typename TCallback>
     void Query(TCallback&& callback) {
         std::vector<Entity> entities;
@@ -150,6 +167,9 @@ public:
 
     [[nodiscard]] const std::vector<SystemAccess>& GetSystemAccess(std::size_t index) const;
     [[nodiscard]] std::size_t GetSystemCount() const noexcept;
+    [[nodiscard]] static DeferredStructuralCommandBuffer
+    CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder);
+    void SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer);
     void RunSystems();
     void ApplyDeferredStructuralChanges();
 
@@ -167,6 +187,33 @@ private:
         virtual void Apply(World& world) = 0;
         [[nodiscard]] virtual std::uint32_t GetReservedEntityCount() const noexcept;
         virtual void RollbackReservation(World& world);
+    };
+
+public:
+    class DeferredStructuralCommandBuffer {
+    public:
+        DeferredStructuralCommandBuffer(DeferredStructuralCommandBuffer&&) noexcept;
+        DeferredStructuralCommandBuffer& operator=(DeferredStructuralCommandBuffer&&) noexcept;
+        ~DeferredStructuralCommandBuffer();
+
+        DeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer&) = delete;
+        DeferredStructuralCommandBuffer& operator=(const DeferredStructuralCommandBuffer&) = delete;
+
+    private:
+        friend class World;
+
+        struct State;
+
+        explicit DeferredStructuralCommandBuffer(std::uint32_t producerOrder);
+
+        std::unique_ptr<State> State_;
+    };
+
+private:
+    struct DeferredCommandBatch {
+        std::uint32_t ProducerOrder = 0;
+        std::uint64_t SubmissionOrder = 0;
+        std::vector<std::unique_ptr<IDeferredCommand>> Commands;
     };
 
     class DeferredCreateEntityCommand final: public IDeferredCommand {
@@ -309,15 +356,20 @@ private:
     void ValidateSystemIndex(std::size_t index) const;
     void ValidateStructuralWriteAllowed() const;
     void PushDeferredCommand(std::unique_ptr<IDeferredCommand> command);
+    static void PushDeferredCommand(DeferredStructuralCommandBuffer& buffer, std::unique_ptr<IDeferredCommand> command);
+    void AppendDeferredCommandBatch(DeferredCommandBatch batch);
+    Entity ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredCommand>>& commands);
 
     std::vector<EntityState> Entities_;
     std::vector<std::uint32_t> FreeEntityIndices_;
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> ComponentStorageByType_;
     std::mutex DeferredStructuralMutex_;
     std::vector<std::unique_ptr<IDeferredCommand>> DeferredStructuralCommands_;
+    std::vector<DeferredCommandBatch> DeferredStructuralBatches_;
     std::vector<std::unique_ptr<IDeferredCommand>> ActiveDeferredStructuralCommands_;
     std::uint32_t ReservedDeferredEntityCount_ = 0;
     std::uint32_t NextNewEntityGeneration_ = 0;
+    std::uint64_t NextDeferredBatchSubmissionOrder_ = 0;
     bool IsRunningSystems_ = false;
     bool IsCollectingSystemDeferredStructuralCommands_ = false;
     bool IsApplyingDeferredStructuralChanges_ = false;

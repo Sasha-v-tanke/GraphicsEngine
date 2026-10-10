@@ -364,22 +364,48 @@ TEST(EcsWorld, RejectsDirectStructuralWritesDuringSystemExecution) {
     EXPECT_FALSE(world.HasComponent<Velocity>(entity));
 }
 
-TEST(EcsWorld, CommitsDeferredCommandsInSystemOrder) {
+TEST(EcsWorld, MergesSubmittedProducerBuffersByProducerOrder) {
     NEcs::World world;
 
     const NEcs::Entity entity = world.CreateEntity();
     world.AddComponent<Position>(entity, 1, 2);
 
-    world.RegisterSystem({NEcs::Write<Position>()},
-                         [&](NEcs::World& systemWorld) { systemWorld.DeferRemoveComponent<Position>(entity); });
-    world.RegisterSystem({NEcs::Write<Position>()},
-                         [&](NEcs::World& systemWorld) { systemWorld.DeferAddComponent<Position>(entity, 9, 10); });
+    auto firstProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(0);
+    auto secondProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(1);
 
-    world.RunSystems();
+    NEcs::World::DeferRemoveComponent<Position>(firstProducer, entity);
+    NEcs::World::DeferAddComponent<Position>(secondProducer, entity, 9, 10);
+
+    world.SubmitDeferredStructuralCommands(std::move(secondProducer));
+    world.SubmitDeferredStructuralCommands(std::move(firstProducer));
+    world.ApplyDeferredStructuralChanges();
 
     ASSERT_TRUE(world.HasComponent<Position>(entity));
     EXPECT_EQ(world.GetComponent<Position>(entity).X, 9);
     EXPECT_EQ(world.GetComponent<Position>(entity).Y, 10);
+}
+
+TEST(EcsWorld, ProducerOrderDeterminesConflictingStructuralCommands) {
+    auto replay = [] {
+        NEcs::World world;
+        const NEcs::Entity entity = world.CreateEntity();
+        world.AddComponent<Position>(entity, 1, 2);
+
+        auto lowProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(10);
+        auto highProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(20);
+
+        NEcs::World::DeferAddComponent<Position>(lowProducer, entity, 3, 4);
+        NEcs::World::DeferRemoveComponent<Position>(highProducer, entity);
+
+        world.SubmitDeferredStructuralCommands(std::move(highProducer));
+        world.SubmitDeferredStructuralCommands(std::move(lowProducer));
+        world.ApplyDeferredStructuralChanges();
+
+        return world.HasComponent<Position>(entity);
+    };
+
+    EXPECT_EQ(replay(), replay());
+    EXPECT_FALSE(replay());
 }
 
 TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {
