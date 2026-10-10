@@ -468,7 +468,12 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                                                         },
                                         },
                                 .Buffer = {},
-                                .Image = {.ImageView = imageView, .ResourceVersion = 1},
+                                .Image =
+                                        {
+                                                .ImageView = imageView,
+                                                .ResourceVersion = 1,
+                                                .Usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                                        },
                                 .Sampler = {.Sampler = sampler, .ResourceVersion = 1},
                         },
                 };
@@ -516,6 +521,7 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                                         {
                                                 .Buffer = reinterpret_cast<VkBuffer>(1),
                                                 .ResourceVersion = 1,
+                                                .Usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                                 .BufferSizeBytes = 256,
                                                 .OffsetBytes = 1,
                                                 .SizeBytes = 64,
@@ -525,6 +531,25 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                 NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
                     (void)descriptors.Acquire({.Layout = bufferLayout, .Bindings = misalignedBuffer});
                 });
+
+                std::vector<NVulkan::VulkanResolvedMaterialBinding> wrongBufferUsage = misalignedBuffer;
+                wrongBufferUsage.front().Material.Buffer.OffsetBytes = 0;
+                wrongBufferUsage.front().Buffer.OffsetBytes = 0;
+                wrongBufferUsage.front().Buffer.Usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+                    (void)descriptors.Acquire({.Layout = bufferLayout, .Bindings = wrongBufferUsage});
+                });
+
+                std::vector<NVulkan::VulkanResolvedMaterialBinding> wrongImageLayout = bindings;
+                wrongImageLayout.front().Image.Layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+                    (void)descriptors.Acquire({.Layout = layout, .Bindings = wrongImageLayout});
+                });
+
+                std::vector<NVulkan::VulkanResolvedMaterialBinding> wrongImageUsage = bindings;
+                wrongImageUsage.front().Image.Usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                                   [&] { (void)descriptors.Acquire({.Layout = layout, .Bindings = wrongImageUsage}); });
 
                 std::vector<NVulkan::VulkanResolvedMaterialBinding> mismatchedBindings = bindings;
                 mismatchedBindings.front().Material.Binding = 1;

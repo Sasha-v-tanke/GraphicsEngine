@@ -22,6 +22,7 @@ struct VulkanDescriptorTelemetry {
 struct VulkanDescriptorBufferBinding {
     VkBuffer Buffer = VK_NULL_HANDLE;
     std::uint64_t ResourceVersion = 0;
+    VkBufferUsageFlags Usage = 0;
     std::uint64_t BufferSizeBytes = 0;
     std::uint64_t OffsetBytes = 0;
     std::uint64_t SizeBytes = 0;
@@ -30,6 +31,7 @@ struct VulkanDescriptorBufferBinding {
 struct VulkanDescriptorImageBinding {
     VkImageView ImageView = VK_NULL_HANDLE;
     std::uint64_t ResourceVersion = 0;
+    VkImageUsageFlags Usage = 0;
     VkImageLayout Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 };
 
@@ -99,9 +101,7 @@ public:
         return !m_inFlightCompletions.empty();
     }
 
-    [[nodiscard]] const VulkanDescriptorTelemetry& GetTelemetry() const noexcept {
-        return m_telemetry;
-    }
+    [[nodiscard]] VulkanDescriptorTelemetry GetTelemetry() const;
 
 private:
     struct DescriptorKey {

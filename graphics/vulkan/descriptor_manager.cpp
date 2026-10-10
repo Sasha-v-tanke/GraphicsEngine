@@ -260,6 +260,11 @@ void VulkanDescriptorManager::ReleaseCompleted(std::uint64_t completedValue) noe
                   [completedValue](std::uint64_t completion) { return completion <= completedValue; });
 }
 
+VulkanDescriptorTelemetry VulkanDescriptorManager::GetTelemetry() const {
+    const std::scoped_lock lock{m_mutex};
+    return m_telemetry;
+}
+
 VkDescriptorSetLayout
 VulkanDescriptorManager::GetOrCreateLayout(std::span<const NGraphics::MaterialBindingLayoutEntry> layout) {
     std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -311,7 +316,7 @@ VulkanDescriptorManager::AllocateSet(VkDescriptorSetLayout layout,
 }
 
 void VulkanDescriptorManager::ValidateBufferBinding(const VulkanResolvedMaterialBinding& binding) const {
-    if (binding.Buffer.Buffer == VK_NULL_HANDLE || binding.Buffer.ResourceVersion == 0 ||
+    if (binding.Buffer.Buffer == VK_NULL_HANDLE || binding.Buffer.ResourceVersion == 0 || binding.Buffer.Usage == 0 ||
         binding.Buffer.BufferSizeBytes == 0 || binding.Buffer.SizeBytes == 0 ||
         binding.Buffer.OffsetBytes > std::numeric_limits<std::uint64_t>::max() - binding.Buffer.SizeBytes ||
         binding.Buffer.OffsetBytes + binding.Buffer.SizeBytes > binding.Buffer.BufferSizeBytes ||
@@ -324,6 +329,12 @@ void VulkanDescriptorManager::ValidateBufferBinding(const VulkanResolvedMaterial
     const std::uint64_t alignment =
             isUniform ? m_limits.MinUniformBufferOffsetAlignment : m_limits.MinStorageBufferOffsetAlignment;
     const std::uint64_t maxRange = isUniform ? m_limits.MaxUniformBufferRange : m_limits.MaxStorageBufferRange;
+    const VkBufferUsageFlags requiredUsage =
+            isUniform ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    if ((binding.Buffer.Usage & requiredUsage) == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor buffer usage is incompatible");
+    }
 
     if (alignment == 0 || (binding.Buffer.OffsetBytes % alignment) != 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor buffer offset alignment is invalid");
@@ -341,7 +352,9 @@ void VulkanDescriptorManager::ValidateBinding(const VulkanResolvedMaterialBindin
         ValidateBufferBinding(binding);
         return;
     case NGraphics::EMaterialBindingType::SampledImage:
-        if (binding.Image.ImageView == VK_NULL_HANDLE || binding.Image.ResourceVersion == 0) {
+        if (binding.Image.ImageView == VK_NULL_HANDLE || binding.Image.ResourceVersion == 0 ||
+            (binding.Image.Usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0 ||
+            binding.Image.Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor image binding is invalid");
         }
         return;
@@ -352,6 +365,8 @@ void VulkanDescriptorManager::ValidateBinding(const VulkanResolvedMaterialBindin
         return;
     case NGraphics::EMaterialBindingType::CombinedImageSampler:
         if (binding.Image.ImageView == VK_NULL_HANDLE || binding.Image.ResourceVersion == 0 ||
+            (binding.Image.Usage & VK_IMAGE_USAGE_SAMPLED_BIT) == 0 ||
+            binding.Image.Layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ||
             binding.Sampler.Sampler == VK_NULL_HANDLE || binding.Sampler.ResourceVersion == 0) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor combined image sampler is invalid");
         }

@@ -146,6 +146,20 @@ Telemetry reports descriptor allocations, cache hits and misses. It is intended
 for backend diagnostics and future frame-resource tuning, not for public
 renderer API decisions.
 
+## Frame Contexts
+
+`VulkanFrameContextRing` owns one `VulkanFrameContext` per Engine frame slot.
+The ring size is exactly `MaxActiveFrames`; swapchain image indices are separate
+WSI values and do not select frame-local command state.
+
+Each context owns frame-local Vulkan command state for the graphics queue. A
+context can be acquired for a new frame only when its previous completion value
+has finished. Until then `TryAcquire()` returns no context, so callers apply
+backpressure instead of resetting command pools that may still be in flight.
+
+Shutdown is conservative: if any context is still in flight, the ring waits for
+the logical device to become idle before destroying command pools.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
