@@ -113,6 +113,39 @@ acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
 They do not record rendering commands or perform layout transitions; the future
 command/submission path owns those responsibilities.
 
+## Descriptor Manager
+
+`VulkanDescriptorManager` is backend-only descriptor infrastructure. It owns the
+descriptor pool, layout-specific set allocation and an immutable cache for
+material bindings resolved by the Vulkan backend. Public `Material` continues to
+store only backend-independent `ResourceIdentity` values and ranges; it never
+stores `VkDescriptorSet`, `VkDescriptorSetLayout` or native resource handles.
+
+Descriptor cache keys are built from the material binding layout, logical
+resource identities, resolved resource versions, descriptor-relevant concrete
+Vulkan handles, buffer ranges and image layout. A repeated compatible request
+returns the cached set instead of updating or freeing an in-flight descriptor
+set. A hot-reloaded resource version or recreated Vulkan representation receives
+a new descriptor set while old sets remain valid for already submitted work.
+
+Buffer bindings are checked against alignment and range limits captured from the
+selected `VkPhysicalDeviceProperties::limits` before `vkUpdateDescriptorSets()`.
+Descriptor requests are validated as a backend boundary: every write must match a
+declared layout binding, descriptor types must agree, duplicate slots are
+rejected and binding arrays remain unsupported until the public material contract
+adds them.
+
+`VulkanDescriptorManager` serializes access to its cache, descriptor pool,
+descriptor writes, telemetry and in-flight retention state. The current policy is
+a single backend-owned manager with internal host synchronization; future
+frame/worker arenas can replace this without changing public `Material`. The
+manager can retain descriptor use until a submission completion value is reported
+and refuses destruction while retained sets are still in flight.
+
+Telemetry reports descriptor allocations, cache hits and misses. It is intended
+for backend diagnostics and future frame-resource tuning, not for public
+renderer API decisions.
+
 ## Frame Contexts
 
 `VulkanFrameContextRing` owns one `VulkanFrameContext` per Engine frame slot.

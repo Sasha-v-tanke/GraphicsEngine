@@ -1,6 +1,7 @@
 MODULE(VulkanBackend)
 
 API(
+    descriptor_manager.h
     device.h
     frame_context.h
     instance.h
@@ -11,6 +12,7 @@ API(
 )
 
 SOURCES(
+    descriptor_manager.cpp
     device.cpp
     frame_context.cpp
     instance.cpp
