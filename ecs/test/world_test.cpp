@@ -1,3 +1,5 @@
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <GraphicsEngine/ecs/world.h>
@@ -28,6 +30,20 @@ struct ConstructOnly {
     ConstructOnly& operator=(ConstructOnly&&) = delete;
 
     int Value = 0;
+};
+
+struct Name {
+    explicit Name(std::string value)
+        : Value(std::move(value)) {
+    }
+
+    std::string Value;
+};
+
+struct ThrowingComponent {
+    ThrowingComponent() {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "throwing component");
+    }
 };
 
 } // namespace
@@ -226,4 +242,327 @@ TEST(EcsWorld, ConstQueryProvidesReadOnlyComponents) {
     });
 
     EXPECT_EQ(visited, 1);
+}
+
+TEST(EcsWorld, AppliesDeferredCreateAndAddAtExplicitCommitPoint) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.DeferCreateEntity();
+    world.DeferAddComponent<Position>(entity, 5, 7);
+
+    EXPECT_FALSE(world.IsAlive(entity));
+    EXPECT_EQ(world.GetAliveEntityCount(), 0U);
+
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.IsAlive(entity));
+    ASSERT_TRUE(world.HasComponent<Position>(entity));
+    EXPECT_EQ(world.GetComponent<Position>(entity).X, 5);
+    EXPECT_EQ(world.GetComponent<Position>(entity).Y, 7);
+}
+
+TEST(EcsWorld, DeferredCreateDoesNotMutateEntityStorageBeforeCommit) {
+    NEcs::World world;
+
+    const NEcs::Entity existing = world.CreateEntity();
+    world.AddComponent<Position>(existing, 1, 2);
+
+    const NEcs::Entity deferred = world.DeferCreateEntity();
+    std::vector<NEcs::Entity> visited;
+
+    world.Query<Position>([&](NEcs::Entity entity, Position&) { visited.push_back(entity); });
+
+    ASSERT_EQ(visited.size(), 1);
+    EXPECT_EQ(visited.front(), existing);
+    EXPECT_FALSE(world.IsAlive(deferred));
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(world.CreateEntity()); });
+
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(deferred));
+}
+
+TEST(EcsWorld, DeferredCreateReusesFreeEntitySlots) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.DestroyEntity(first);
+
+    const NEcs::Entity deferred = world.DeferCreateEntity();
+    EXPECT_EQ(deferred.Index, first.Index);
+    EXPECT_NE(deferred.Generation, first.Generation);
+    EXPECT_FALSE(world.IsAlive(deferred));
+
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(deferred));
+}
+
+TEST(EcsWorld, DeferredCreateCanMixFreeSlotReuseAndAppend) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.DestroyEntity(first);
+
+    const NEcs::Entity reused = world.DeferCreateEntity();
+    const NEcs::Entity appended = world.DeferCreateEntity();
+
+    EXPECT_EQ(reused.Index, first.Index);
+    EXPECT_EQ(appended.Index, first.Index + 1);
+
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(reused));
+    EXPECT_TRUE(world.IsAlive(appended));
+}
+
+TEST(EcsWorld, RunSystemsCommitsDeferredStructuralChangesAfterAllSystems) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.CreateEntity();
+    world.AddComponent<Position>(entity, 1, 2);
+
+    NEcs::Entity created;
+    int secondSystemVisits = 0;
+
+    world.RegisterSystem({NEcs::Write<Position>()}, [&](NEcs::World& systemWorld) {
+        systemWorld.Query<Position>([&](NEcs::Entity, Position&) {
+            created = systemWorld.DeferCreateEntity();
+            systemWorld.DeferAddComponent<Position>(created, 3, 4);
+        });
+    });
+
+    world.RegisterSystem({NEcs::Read<Position>()}, [&](NEcs::World& systemWorld) {
+        systemWorld.Query<Position>([&](NEcs::Entity, Position&) { ++secondSystemVisits; });
+    });
+
+    world.RunSystems();
+
+    EXPECT_EQ(secondSystemVisits, 1);
+    ASSERT_TRUE(world.IsAlive(created));
+    ASSERT_TRUE(world.HasComponent<Position>(created));
+    EXPECT_EQ(world.GetAliveEntityCount(), 2U);
+}
+
+TEST(EcsWorld, RejectsDirectStructuralWritesDuringSystemExecution) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.CreateEntity();
+    world.AddComponent<Position>(entity, 1, 2);
+
+    world.RegisterSystem({NEcs::Write<Position>()}, [&](NEcs::World& systemWorld) {
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(systemWorld.CreateEntity()); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { systemWorld.DestroyEntity(entity); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { systemWorld.AddComponent<Velocity>(entity, 3, 4); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { systemWorld.RemoveComponent<Position>(entity); });
+    });
+
+    world.RunSystems();
+
+    EXPECT_TRUE(world.IsAlive(entity));
+    EXPECT_TRUE(world.HasComponent<Position>(entity));
+    EXPECT_FALSE(world.HasComponent<Velocity>(entity));
+}
+
+TEST(EcsWorld, MergesSubmittedProducerBuffersByProducerOrder) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.CreateEntity();
+    world.AddComponent<Position>(entity, 1, 2);
+
+    auto firstProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(0);
+    auto secondProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(1);
+
+    NEcs::World::DeferRemoveComponent<Position>(firstProducer, entity);
+    NEcs::World::DeferAddComponent<Position>(secondProducer, entity, 9, 10);
+
+    world.SubmitDeferredStructuralCommands(std::move(secondProducer));
+    world.SubmitDeferredStructuralCommands(std::move(firstProducer));
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.HasComponent<Position>(entity));
+    EXPECT_EQ(world.GetComponent<Position>(entity).X, 9);
+    EXPECT_EQ(world.GetComponent<Position>(entity).Y, 10);
+}
+
+TEST(EcsWorld, ProducerOrderDeterminesConflictingStructuralCommands) {
+    auto replay = [] {
+        NEcs::World world;
+        const NEcs::Entity entity = world.CreateEntity();
+        world.AddComponent<Position>(entity, 1, 2);
+
+        auto lowProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(10);
+        auto highProducer = NEcs::World::CreateDeferredStructuralCommandBuffer(20);
+
+        NEcs::World::DeferAddComponent<Position>(lowProducer, entity, 3, 4);
+        NEcs::World::DeferRemoveComponent<Position>(highProducer, entity);
+
+        world.SubmitDeferredStructuralCommands(std::move(highProducer));
+        world.SubmitDeferredStructuralCommands(std::move(lowProducer));
+        world.ApplyDeferredStructuralChanges();
+
+        return world.HasComponent<Position>(entity);
+    };
+
+    EXPECT_EQ(replay(), replay());
+    EXPECT_FALSE(replay());
+}
+
+TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {
+    NEcs::World world;
+    NEcs::Entity deferred;
+
+    world.RegisterSystem({}, [&](NEcs::World& systemWorld) {
+        deferred = systemWorld.DeferCreateEntity();
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "test failure");
+    });
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.RunSystems(); });
+
+    EXPECT_FALSE(world.IsAlive(deferred));
+
+    const NEcs::Entity immediate = world.CreateEntity();
+    EXPECT_EQ(immediate.Index, deferred.Index);
+    EXPECT_NE(immediate.Generation, deferred.Generation);
+    EXPECT_TRUE(world.IsAlive(immediate));
+}
+
+TEST(EcsWorld, RollsBackDeferredFreeSlotReservationWithNewGeneration) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    world.DestroyEntity(first);
+
+    NEcs::Entity deferred;
+    world.RegisterSystem({}, [&](NEcs::World& systemWorld) {
+        deferred = systemWorld.DeferCreateEntity();
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "test failure");
+    });
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.RunSystems(); });
+
+    const NEcs::Entity immediate = world.CreateEntity();
+    EXPECT_EQ(immediate.Index, deferred.Index);
+    EXPECT_NE(immediate.Generation, deferred.Generation);
+    EXPECT_FALSE(world.IsAlive(deferred));
+    EXPECT_TRUE(world.IsAlive(immediate));
+}
+
+TEST(EcsWorld, RejectsExplicitDeferredCommitDuringSystemExecution) {
+    NEcs::World world;
+    const NEcs::Entity entity = world.CreateEntity();
+
+    world.RegisterSystem({}, [&](NEcs::World& systemWorld) {
+        systemWorld.DeferDestroyEntity(entity);
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { systemWorld.ApplyDeferredStructuralChanges(); });
+        EXPECT_TRUE(systemWorld.IsAlive(entity));
+    });
+
+    world.RunSystems();
+
+    EXPECT_FALSE(world.IsAlive(entity));
+}
+
+TEST(EcsWorld, AppliesDeferredStructuralChangesInOrder) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.CreateEntity();
+    world.AddComponent<Position>(entity, 1, 2);
+
+    world.DeferRemoveComponent<Position>(entity);
+    world.DeferAddComponent<Position>(entity, 9, 10);
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.HasComponent<Position>(entity));
+    EXPECT_EQ(world.GetComponent<Position>(entity).X, 9);
+    EXPECT_EQ(world.GetComponent<Position>(entity).Y, 10);
+
+    world.DeferDestroyEntity(entity);
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_FALSE(world.IsAlive(entity));
+    EXPECT_EQ(world.GetAliveEntityCount(), 0U);
+}
+
+TEST(EcsWorld, IgnoresDeferredAddForStaleEntityAndContinuesCommit) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.CreateEntity();
+    const NEcs::Entity second = world.CreateEntity();
+    world.AddComponent<Position>(first, 1, 2);
+
+    world.DeferDestroyEntity(first);
+    world.DeferAddComponent<Position>(first, 5, 6);
+    world.DeferAddComponent<Position>(second, 7, 8);
+
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_FALSE(world.IsAlive(first));
+    ASSERT_TRUE(world.HasComponent<Position>(second));
+    EXPECT_EQ(world.GetComponent<Position>(second).X, 7);
+    EXPECT_EQ(world.GetComponent<Position>(second).Y, 8);
+}
+
+TEST(EcsWorld, RecountsPendingDeferredCreatesAfterFailedCommit) {
+    NEcs::World world;
+
+    const NEcs::Entity first = world.DeferCreateEntity();
+    world.DeferAddComponent<ThrowingComponent>(first);
+    const NEcs::Entity second = world.DeferCreateEntity();
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.ApplyDeferredStructuralChanges(); });
+
+    ASSERT_TRUE(world.IsAlive(first));
+    EXPECT_FALSE(world.IsAlive(second));
+
+    const NEcs::Entity third = world.DeferCreateEntity();
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(second));
+    EXPECT_TRUE(world.IsAlive(third));
+    EXPECT_EQ(second.Index + 1, third.Index);
+}
+
+TEST(EcsWorld, ReplaysDeferredCommandsDeterministically) {
+    auto replay = [] {
+        NEcs::World world;
+        const NEcs::Entity entity = world.CreateEntity();
+        world.AddComponent<Position>(entity, 1, 2);
+
+        world.DeferRemoveComponent<Position>(entity);
+        world.DeferAddComponent<Position>(entity, 11, 12);
+        world.DeferRemoveComponent<Position>(entity);
+        world.ApplyDeferredStructuralChanges();
+
+        return world.HasComponent<Position>(entity);
+    };
+
+    EXPECT_EQ(replay(), replay());
+    EXPECT_FALSE(replay());
+}
+
+TEST(EcsWorld, DeferredAddSupportsConstructOnlyComponents) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.DeferCreateEntity();
+    world.DeferAddComponent<ConstructOnly>(entity, 42);
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.HasComponent<ConstructOnly>(entity));
+    EXPECT_EQ(world.GetComponent<ConstructOnly>(entity).Value, 42);
+}
+
+TEST(EcsWorld, DeferredAddCopiesLvalueArguments) {
+    NEcs::World world;
+
+    const NEcs::Entity entity = world.DeferCreateEntity();
+    std::string name = "player";
+    world.DeferAddComponent<Name>(entity, name);
+
+    EXPECT_EQ(name, "player");
+
+    world.ApplyDeferredStructuralChanges();
+
+    ASSERT_TRUE(world.HasComponent<Name>(entity));
+    EXPECT_EQ(world.GetComponent<Name>(entity).Value, "player");
 }
