@@ -506,14 +506,14 @@ TEST(EcsWorld, RejectsMutatingSubmittedProducerBuffer) {
     world.SubmitDeferredStructuralCommands(std::move(producer));
 
     const NEcs::Entity entity = world.CreateEntity();
-    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
-        NEcs::World::DeferAddComponent<Position>(producer, entity, 1, 2);
-    }); // NOLINT(bugprone-use-after-move)
-    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
-        NEcs::World::DeferRemoveComponent<Position>(producer, entity);
-    }); // NOLINT(bugprone-use-after-move)
+    // NOLINTNEXTLINE(bugprone-use-after-move)
     NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                       [&] { NEcs::World::DeferDestroyEntity(producer, entity); }); // NOLINT(bugprone-use-after-move)
+                       [&] { NEcs::World::DeferAddComponent<Position>(producer, entity, 1, 2); });
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                       [&] { NEcs::World::DeferRemoveComponent<Position>(producer, entity); });
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { NEcs::World::DeferDestroyEntity(producer, entity); });
 }
 
 TEST(EcsWorld, RejectsMutatingMovedFromProducerBuffer) {
@@ -523,9 +523,9 @@ TEST(EcsWorld, RejectsMutatingMovedFromProducerBuffer) {
     auto moved = std::move(producer);
 
     const NEcs::Entity entity = world.CreateEntity();
-    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
-        NEcs::World::DeferAddComponent<Position>(producer, entity, 1, 2);
-    }); // NOLINT(bugprone-use-after-move)
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                       [&] { NEcs::World::DeferAddComponent<Position>(producer, entity, 1, 2); });
 }
 
 TEST(EcsWorld, ProducerBufferCanOutliveWorld) {
