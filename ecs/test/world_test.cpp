@@ -1,3 +1,4 @@
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -425,6 +426,29 @@ TEST(EcsWorld, ProducerOrderSupportsOutOfOrderDeferredCreates) {
     EXPECT_TRUE(world.IsAlive(highEntity));
 }
 
+TEST(EcsWorld, AbandonedProducerBufferDoesNotReuseAnotherPendingAppendReservation) {
+    NEcs::World world;
+
+    NEcs::Entity kept;
+
+    {
+        auto abandoned = world.CreateDeferredStructuralCommandBuffer(10);
+        auto pending = world.CreateDeferredStructuralCommandBuffer(20);
+
+        static_cast<void>(world.DeferCreateEntity(abandoned));
+        kept = world.DeferCreateEntity(pending);
+
+        world.SubmitDeferredStructuralCommands(std::move(pending));
+    }
+
+    const NEcs::Entity replacement = world.DeferCreateEntity();
+    world.ApplyDeferredStructuralChanges();
+
+    EXPECT_TRUE(world.IsAlive(kept));
+    EXPECT_TRUE(world.IsAlive(replacement));
+    EXPECT_NE(kept.Index, replacement.Index);
+}
+
 TEST(EcsWorld, AbandonedProducerBufferRollsBackReservations) {
     NEcs::World world;
 
@@ -432,6 +456,19 @@ TEST(EcsWorld, AbandonedProducerBufferRollsBackReservations) {
         auto producer = world.CreateDeferredStructuralCommandBuffer(0);
         static_cast<void>(world.DeferCreateEntity(producer));
     }
+
+    const NEcs::Entity entity = world.CreateEntity();
+    EXPECT_TRUE(world.IsAlive(entity));
+}
+
+TEST(EcsWorld, MoveAssigningProducerBufferRollsBackPreviousReservations) {
+    NEcs::World world;
+
+    auto target = world.CreateDeferredStructuralCommandBuffer(0);
+    static_cast<void>(world.DeferCreateEntity(target));
+
+    auto source = world.CreateDeferredStructuralCommandBuffer(1);
+    target = std::move(source);
 
     const NEcs::Entity entity = world.CreateEntity();
     EXPECT_TRUE(world.IsAlive(entity));
@@ -446,6 +483,58 @@ TEST(EcsWorld, RejectsSubmittingProducerBufferToAnotherWorld) {
 
     NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
                        [&] { secondWorld.SubmitDeferredStructuralCommands(std::move(producer)); });
+}
+
+TEST(EcsWorld, RejectsDuplicateProducerOrders) {
+    NEcs::World world;
+
+    auto firstProducer = world.CreateDeferredStructuralCommandBuffer(10);
+    auto secondProducer = world.CreateDeferredStructuralCommandBuffer(10);
+
+    static_cast<void>(world.DeferCreateEntity(firstProducer));
+    static_cast<void>(world.DeferCreateEntity(secondProducer));
+
+    world.SubmitDeferredStructuralCommands(std::move(firstProducer));
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                       [&] { world.SubmitDeferredStructuralCommands(std::move(secondProducer)); });
+}
+
+TEST(EcsWorld, RejectsMutatingSubmittedProducerBuffer) {
+    NEcs::World world;
+
+    auto producer = world.CreateDeferredStructuralCommandBuffer(0);
+    world.SubmitDeferredStructuralCommands(std::move(producer));
+
+    const NEcs::Entity entity = world.CreateEntity();
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        NEcs::World::DeferAddComponent<Position>(producer, entity, 1, 2);
+    }); // NOLINT(bugprone-use-after-move)
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        NEcs::World::DeferRemoveComponent<Position>(producer, entity);
+    }); // NOLINT(bugprone-use-after-move)
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                       [&] { NEcs::World::DeferDestroyEntity(producer, entity); }); // NOLINT(bugprone-use-after-move)
+}
+
+TEST(EcsWorld, RejectsMutatingMovedFromProducerBuffer) {
+    NEcs::World world;
+
+    auto producer = world.CreateDeferredStructuralCommandBuffer(0);
+    auto moved = std::move(producer);
+
+    const NEcs::Entity entity = world.CreateEntity();
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        NEcs::World::DeferAddComponent<Position>(producer, entity, 1, 2);
+    }); // NOLINT(bugprone-use-after-move)
+}
+
+TEST(EcsWorld, ProducerBufferCanOutliveWorld) {
+    auto producer = std::make_unique<NEcs::World::DeferredStructuralCommandBuffer>([] {
+        NEcs::World world;
+        return world.CreateDeferredStructuralCommandBuffer(0);
+    }());
+
+    producer.reset();
 }
 
 TEST(EcsWorld, RollsBackDeferredCreateReservationWhenSystemFails) {

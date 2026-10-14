@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <tuple>
 #include <type_traits>
 #include <typeindex>
@@ -26,6 +27,9 @@ public:
     using SystemCallback = std::function<void(World&)>;
 
     class DeferredStructuralCommandBuffer;
+
+    World();
+    ~World();
 
     Entity CreateEntity();
     void DestroyEntity(Entity entity);
@@ -360,6 +364,10 @@ private:
     void AppendDeferredCommandBatch(DeferredCommandBatch batch);
     void RollbackDeferredStructuralCommands(std::vector<std::unique_ptr<IDeferredCommand>>& commands);
     Entity ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredCommand>>& commands);
+    [[nodiscard]] std::optional<std::uint32_t> FindPendingDeferredAppendGeneration(std::uint32_t index) const noexcept;
+    [[nodiscard]] bool HasPendingDeferredAppendReservation(std::uint32_t index) const noexcept;
+    void RemovePendingDeferredAppendReservation(std::uint32_t index);
+    [[nodiscard]] std::uint32_t FindNextDeferredAppendIndex() const noexcept;
 
     std::vector<EntityState> Entities_;
     std::vector<std::uint32_t> FreeEntityIndices_;
@@ -368,9 +376,12 @@ private:
     std::vector<std::unique_ptr<IDeferredCommand>> DeferredStructuralCommands_;
     std::vector<DeferredCommandBatch> DeferredStructuralBatches_;
     std::vector<std::unique_ptr<IDeferredCommand>> ActiveDeferredStructuralCommands_;
+    std::vector<Entity> PendingDeferredAppendEntities_;
+    std::uint32_t PendingDeferredEntityCreateCount_ = 0;
     std::uint32_t ReservedDeferredEntityCount_ = 0;
     std::uint32_t NextNewEntityGeneration_ = 0;
     std::uint64_t NextDeferredBatchSubmissionOrder_ = 0;
+    std::shared_ptr<bool> LifetimeToken_;
     bool IsRunningSystems_ = false;
     bool IsCollectingSystemDeferredStructuralCommands_ = false;
     bool IsApplyingDeferredStructuralChanges_ = false;

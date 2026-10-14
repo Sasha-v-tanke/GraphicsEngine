@@ -15,14 +15,24 @@ void World::IDeferredCommand::RollbackReservation(World& world) {
 
 struct World::DeferredStructuralCommandBuffer::State {
     World* Owner = nullptr;
+    std::weak_ptr<bool> OwnerLifetime;
     std::uint32_t ProducerOrder = 0;
     bool Submitted = false;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
 };
 
+World::World()
+    : LifetimeToken_(std::make_shared<bool>(true)) {
+}
+
+World::~World() {
+    LifetimeToken_.reset();
+}
+
 World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(World& owner, std::uint32_t producerOrder)
     : State_(std::make_unique<State>()) {
     State_->Owner = &owner;
+    State_->OwnerLifetime = owner.LifetimeToken_;
     State_->ProducerOrder = producerOrder;
 }
 
@@ -30,10 +40,19 @@ World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(Deferred
         default;
 
 World::DeferredStructuralCommandBuffer&
-World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffer&&) noexcept = default;
+World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffer&& other) noexcept {
+    if (this != &other) {
+        if (State_ != nullptr && State_->Owner != nullptr && !State_->OwnerLifetime.expired() && !State_->Submitted) {
+            State_->Owner->RollbackDeferredStructuralCommands(State_->Commands);
+        }
+        State_ = std::move(other.State_);
+    }
+
+    return *this;
+}
 
 World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() {
-    if (State_ != nullptr && State_->Owner != nullptr && !State_->Submitted) {
+    if (State_ != nullptr && State_->Owner != nullptr && !State_->OwnerLifetime.expired() && !State_->Submitted) {
         State_->Owner->RollbackDeferredStructuralCommands(State_->Commands);
     }
 }
@@ -41,7 +60,7 @@ World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() {
 Entity World::CreateEntity() {
     ValidateStructuralWriteAllowed();
 
-    if (ReservedDeferredEntityCount_ > 0) {
+    if (PendingDeferredEntityCreateCount_ > 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS deferred entity creates must be committed before immediate entity creation");
     }
@@ -88,12 +107,18 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
 
     while (Entity_.Index >= world.Entities_.size()) {
         const std::uint32_t index = static_cast<std::uint32_t>(world.Entities_.size());
-        const std::uint32_t generation = Entity_.Generation - (Entity_.Index - index);
+        const std::optional<std::uint32_t> generation = world.FindPendingDeferredAppendGeneration(index);
+        if (!generation.has_value() && index == Entity_.Index) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Deferred ECS entity create is no longer valid");
+        }
         world.Entities_.push_back({
-                .Generation = generation,
+                .Generation = generation.value_or(world.NextNewEntityGeneration_++),
                 .Alive = false,
-                .Reserved = true,
+                .Reserved = generation.has_value(),
         });
+        if (!generation.has_value()) {
+            world.FreeEntityIndices_.push_back(index);
+        }
     }
 
     auto& state = world.Entities_[Entity_.Index];
@@ -103,6 +128,8 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
 
     state.Alive = true;
     state.Reserved = false;
+    --world.PendingDeferredEntityCreateCount_;
+    world.RemovePendingDeferredAppendReservation(Entity_.Index);
 }
 
 std::uint32_t World::DeferredCreateEntityCommand::GetReservedEntityCount() const noexcept {
@@ -110,9 +137,13 @@ std::uint32_t World::DeferredCreateEntityCommand::GetReservedEntityCount() const
 }
 
 void World::DeferredCreateEntityCommand::RollbackReservation(World& world) {
+    --world.PendingDeferredEntityCreateCount_;
+
     if (ReusedFreeSlot_) {
         ++world.Entities_[Entity_.Index].Generation;
         world.FreeEntityIndices_.push_back(Entity_.Index);
+    } else {
+        world.RemovePendingDeferredAppendReservation(Entity_.Index);
     }
 }
 
@@ -163,13 +194,18 @@ Entity World::ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredC
         generation = Entities_[index].Generation;
         reusedFreeSlot = true;
     } else {
-        index = static_cast<std::uint32_t>(Entities_.size() + ReservedDeferredEntityCount_);
+        index = FindNextDeferredAppendIndex();
         generation = NextNewEntityGeneration_++;
+        PendingDeferredAppendEntities_.push_back({
+                .Index = index,
+                .Generation = generation,
+        });
     }
 
     if (!reusedFreeSlot) {
         ++ReservedDeferredEntityCount_;
     }
+    ++PendingDeferredEntityCreateCount_;
     entity = {
             .Index = index,
             .Generation = generation,
@@ -178,6 +214,40 @@ Entity World::ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredC
     commands.push_back(std::make_unique<DeferredCreateEntityCommand>(entity, reusedFreeSlot));
 
     return entity;
+}
+
+std::optional<std::uint32_t> World::FindPendingDeferredAppendGeneration(std::uint32_t index) const noexcept {
+    const auto iterator = std::ranges::find_if(PendingDeferredAppendEntities_,
+                                               [index](Entity entity) { return entity.Index == index; });
+
+    if (iterator == PendingDeferredAppendEntities_.end()) {
+        return std::nullopt;
+    }
+
+    return iterator->Generation;
+}
+
+bool World::HasPendingDeferredAppendReservation(std::uint32_t index) const noexcept {
+    return FindPendingDeferredAppendGeneration(index).has_value();
+}
+
+void World::RemovePendingDeferredAppendReservation(std::uint32_t index) {
+    const auto iterator = std::ranges::find_if(PendingDeferredAppendEntities_,
+                                               [index](Entity entity) { return entity.Index == index; });
+
+    if (iterator != PendingDeferredAppendEntities_.end()) {
+        PendingDeferredAppendEntities_.erase(iterator);
+    }
+}
+
+std::uint32_t World::FindNextDeferredAppendIndex() const noexcept {
+    std::uint32_t index = static_cast<std::uint32_t>(Entities_.size());
+
+    while (HasPendingDeferredAppendReservation(index)) {
+        ++index;
+    }
+
+    return index;
 }
 
 void World::DeferDestroyEntity(Entity entity) {
@@ -244,18 +314,26 @@ World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuf
 void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer) {
     ValidateDeferredStructuralCommandBuffer(buffer);
 
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    if (std::ranges::any_of(DeferredStructuralBatches_, [&](const DeferredCommandBatch& batch) {
+            return batch.ProducerOrder == buffer.State_->ProducerOrder;
+        })) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "ECS deferred command buffer producer order must be unique");
+    }
+
     DeferredCommandBatch batch{
             .ProducerOrder = buffer.State_->ProducerOrder,
             .Commands = std::move(buffer.State_->Commands),
     };
 
-    std::scoped_lock lock{DeferredStructuralMutex_};
     AppendDeferredCommandBatch(std::move(batch));
     buffer.State_->Submitted = true;
 }
 
 void World::RunSystems() {
-    for (auto& system: Systems_) {
+    for (std::size_t systemIndex = 0; systemIndex < Systems_.size(); ++systemIndex) {
+        auto& system = Systems_[systemIndex];
         ActiveDeferredStructuralCommands_.clear();
         IsCollectingSystemDeferredStructuralCommands_ = true;
         IsRunningSystems_ = true;
@@ -279,7 +357,7 @@ void World::RunSystems() {
         {
             std::scoped_lock lock{DeferredStructuralMutex_};
             AppendDeferredCommandBatch({
-                    .ProducerOrder = 0,
+                    .ProducerOrder = static_cast<std::uint32_t>(systemIndex),
                     .Commands = std::move(ActiveDeferredStructuralCommands_),
             });
         }
@@ -343,6 +421,8 @@ void World::ApplyDeferredStructuralChanges() {
     }
 
     IsApplyingDeferredStructuralChanges_ = false;
+    PendingDeferredEntityCreateCount_ = 0;
+    PendingDeferredAppendEntities_.clear();
     ReservedDeferredEntityCount_ = 0;
 }
 
@@ -366,7 +446,8 @@ void World::ValidateStructuralWriteAllowed() const {
 }
 
 void World::ValidateDeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer& buffer) const {
-    if (buffer.State_ == nullptr || buffer.State_->Owner != this || buffer.State_->Submitted) {
+    if (buffer.State_ == nullptr || buffer.State_->Owner != this || buffer.State_->OwnerLifetime.expired() ||
+        buffer.State_->Submitted) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                               "ECS deferred command buffer does not belong to world");
     }
@@ -384,6 +465,12 @@ void World::PushDeferredCommand(std::unique_ptr<IDeferredCommand> command) {
 }
 
 void World::PushDeferredCommand(DeferredStructuralCommandBuffer& buffer, std::unique_ptr<IDeferredCommand> command) {
+    if (buffer.State_ == nullptr || buffer.State_->Owner == nullptr || buffer.State_->OwnerLifetime.expired() ||
+        buffer.State_->Submitted) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "ECS deferred command buffer does not belong to world");
+    }
+
     buffer.State_->Commands.push_back(std::move(command));
 }
 
