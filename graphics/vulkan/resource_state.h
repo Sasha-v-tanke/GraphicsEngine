@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 #include <vulkan.h>
 
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
@@ -35,6 +36,23 @@ struct VulkanImageTransition {
 [[nodiscard]] VulkanImageState MakeVulkanImageState(EVulkanResourceUsage usage,
                                                     std::uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED);
 
+struct VulkanBufferState {
+    VkPipelineStageFlags2 StageMask = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 AccessMask = 0;
+    std::uint32_t QueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+};
+
+struct VulkanBufferTransition {
+    VkBuffer Buffer = VK_NULL_HANDLE;
+    VkDeviceSize Offset = 0;
+    VkDeviceSize Size = VK_WHOLE_SIZE;
+    EVulkanResourceUsage Usage = EVulkanResourceUsage::Undefined;
+    std::uint32_t QueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+};
+
+[[nodiscard]] VulkanBufferState MakeVulkanBufferState(EVulkanResourceUsage usage,
+                                                      std::uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED);
+
 class VulkanResourceStateTracker final: public NCommon::NonTransferable {
 public:
     void ImportImage(VkImage image, VkImageSubresourceRange subresourceRange, VulkanImageState state);
@@ -46,14 +64,21 @@ public:
 
     [[nodiscard]] std::optional<VkImageMemoryBarrier2> TransitionImage(const VulkanImageTransition& transition);
 
+    void ImportBuffer(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, VulkanBufferState state);
+
+    void ForgetBuffer(VkBuffer buffer) noexcept;
+
+    [[nodiscard]] std::optional<VulkanBufferState>
+    GetBufferState(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) const;
+
+    [[nodiscard]] std::optional<VkBufferMemoryBarrier2> TransitionBuffer(const VulkanBufferTransition& transition);
+
 private:
     struct ImageKey {
         VkImage Image = VK_NULL_HANDLE;
         VkImageAspectFlags AspectMask = 0;
-        std::uint32_t BaseMipLevel = 0;
-        std::uint32_t LevelCount = 0;
-        std::uint32_t BaseArrayLayer = 0;
-        std::uint32_t LayerCount = 0;
+        std::uint32_t MipLevel = 0;
+        std::uint32_t ArrayLayer = 0;
 
         [[nodiscard]] friend bool operator==(ImageKey left, ImageKey right) noexcept = default;
     };
@@ -63,9 +88,23 @@ private:
     };
 
     [[nodiscard]] static ImageKey MakeImageKey(VkImage image, VkImageSubresourceRange subresourceRange);
+    [[nodiscard]] static std::vector<ImageKey> MakeImageKeys(VkImage image, VkImageSubresourceRange subresourceRange);
+
+    struct BufferKey {
+        VkBuffer Buffer = VK_NULL_HANDLE;
+        VkDeviceSize Offset = 0;
+        VkDeviceSize Size = VK_WHOLE_SIZE;
+
+        [[nodiscard]] friend bool operator==(BufferKey left, BufferKey right) noexcept = default;
+    };
+
+    struct BufferKeyHash {
+        [[nodiscard]] std::size_t operator()(BufferKey key) const noexcept;
+    };
 
 private:
     std::unordered_map<ImageKey, VulkanImageState, ImageKeyHash> m_images;
+    std::unordered_map<BufferKey, VulkanBufferState, BufferKeyHash> m_buffers;
 };
 
 } // namespace NVulkan

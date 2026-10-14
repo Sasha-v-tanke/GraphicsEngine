@@ -14,6 +14,10 @@ VkImage ImageB() {
     return reinterpret_cast<VkImage>(0x2000);
 }
 
+VkBuffer BufferA() {
+    return reinterpret_cast<VkBuffer>(0x3000);
+}
+
 VkImageSubresourceRange ColorRange() {
     return {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -29,6 +33,16 @@ VkImageSubresourceRange ColorMipRange(std::uint32_t mipLevel) {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel = mipLevel,
             .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+    };
+}
+
+VkImageSubresourceRange ColorMipChainRange() {
+    return {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 2,
             .baseArrayLayer = 0,
             .layerCount = 1,
     };
@@ -84,22 +98,33 @@ TEST(VulkanResourceStateTracker, TracksImportedAndUntrackedImages) {
             .Image = ImageA(),
             .Usage = NVulkan::EVulkanResourceUsage::ColorAttachmentWrite,
             .SubresourceRange = ColorRange(),
-            .QueueFamilyIndex = 5,
     });
 
     ASSERT_TRUE(barrier.has_value());
     EXPECT_EQ(barrier->oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
     EXPECT_EQ(barrier->newLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     EXPECT_EQ(barrier->srcQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
-    EXPECT_EQ(barrier->dstQueueFamilyIndex, 5U);
+    EXPECT_EQ(barrier->dstQueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
 
     const std::optional<NVulkan::VulkanImageState> state = tracker.GetImageState(ImageA(), ColorRange());
     ASSERT_TRUE(state.has_value());
     EXPECT_EQ(state->Layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    EXPECT_EQ(state->QueueFamilyIndex, 5U);
+    EXPECT_EQ(state->QueueFamilyIndex, VK_QUEUE_FAMILY_IGNORED);
 
     tracker.ForgetImage(ImageA());
     EXPECT_FALSE(tracker.GetImageState(ImageA(), ColorRange()).has_value());
+}
+
+TEST(VulkanResourceStateTracker, RejectsUntrackedExplicitQueueFamilyTransition) {
+    NVulkan::VulkanResourceStateTracker tracker;
+
+    EXPECT_THROW((void)tracker.TransitionImage({
+                         .Image = ImageA(),
+                         .Usage = NVulkan::EVulkanResourceUsage::ColorAttachmentWrite,
+                         .SubresourceRange = ColorRange(),
+                         .QueueFamilyIndex = 5,
+                 }),
+                 NCommon::Exception);
 }
 
 TEST(VulkanResourceStateTracker, EmitsQueueFamilyOwnershipTransfer) {
@@ -151,6 +176,27 @@ TEST(VulkanResourceStateTracker, TracksStatePerSubresourceRange) {
     EXPECT_EQ(barrier->subresourceRange.baseMipLevel, 1U);
 }
 
+TEST(VulkanResourceStateTracker, ExpandsImportedImageRangesToSubresources) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportImage(ImageA(),
+                        ColorMipChainRange(),
+                        NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Undefined));
+
+    const std::optional<VkImageMemoryBarrier2> barrier = tracker.TransitionImage({
+            .Image = ImageA(),
+            .Usage = NVulkan::EVulkanResourceUsage::TransferWrite,
+            .SubresourceRange = ColorMipRange(1),
+    });
+
+    ASSERT_TRUE(barrier.has_value());
+    EXPECT_EQ(barrier->oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
+    EXPECT_EQ(barrier->newLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    EXPECT_EQ(barrier->subresourceRange.baseMipLevel, 1U);
+
+    const std::optional<NVulkan::VulkanImageState> wholeState = tracker.GetImageState(ImageA(), ColorMipChainRange());
+    EXPECT_FALSE(wholeState.has_value());
+}
+
 TEST(VulkanResourceStateTracker, EmitsBarrierForRepeatedWriteUsage) {
     NVulkan::VulkanResourceStateTracker tracker;
     tracker.ImportImage(ImageA(),
@@ -178,6 +224,69 @@ TEST(VulkanResourceStateTracker, RejectsNullImages) {
                          .Image = VK_NULL_HANDLE,
                          .Usage = NVulkan::EVulkanResourceUsage::Present,
                          .SubresourceRange = ColorRange(),
+                 }),
+                 NCommon::Exception);
+}
+
+TEST(VulkanResourceStateTracker, TracksBufferRanges) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportBuffer(BufferA(),
+                         64,
+                         128,
+                         NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
+
+    const std::optional<VkBufferMemoryBarrier2> barrier = tracker.TransitionBuffer({
+            .Buffer = BufferA(),
+            .Offset = 64,
+            .Size = 128,
+            .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+    });
+
+    ASSERT_TRUE(barrier.has_value());
+    EXPECT_EQ(barrier->buffer, BufferA());
+    EXPECT_EQ(barrier->offset, 64U);
+    EXPECT_EQ(barrier->size, 128U);
+    EXPECT_EQ(barrier->srcAccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    EXPECT_EQ(barrier->dstAccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    const std::optional<NVulkan::VulkanBufferState> state = tracker.GetBufferState(BufferA(), 64, 128);
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->AccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    tracker.ForgetBuffer(BufferA());
+    EXPECT_FALSE(tracker.GetBufferState(BufferA(), 64, 128).has_value());
+}
+
+TEST(VulkanResourceStateTracker, EmitsBufferBarrierForRepeatedWriteUsage) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportBuffer(BufferA(),
+                         0,
+                         VK_WHOLE_SIZE,
+                         NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
+
+    const std::optional<VkBufferMemoryBarrier2> barrier = tracker.TransitionBuffer({
+            .Buffer = BufferA(),
+            .Usage = NVulkan::EVulkanResourceUsage::TransferWrite,
+    });
+
+    ASSERT_TRUE(barrier.has_value());
+    EXPECT_EQ(barrier->srcAccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    EXPECT_EQ(barrier->dstAccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+}
+
+TEST(VulkanResourceStateTracker, RejectsInvalidResourceStateRequests) {
+    NVulkan::VulkanResourceStateTracker tracker;
+
+    EXPECT_THROW(tracker.ImportBuffer(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE, {}), NCommon::Exception);
+    EXPECT_THROW((void)tracker.TransitionBuffer({
+                         .Buffer = VK_NULL_HANDLE,
+                         .Usage = NVulkan::EVulkanResourceUsage::TransferRead,
+                 }),
+                 NCommon::Exception);
+    EXPECT_THROW((void)tracker.TransitionBuffer({
+                         .Buffer = BufferA(),
+                         .Usage = NVulkan::EVulkanResourceUsage::TransferRead,
+                         .QueueFamilyIndex = 4,
                  }),
                  NCommon::Exception);
 }
