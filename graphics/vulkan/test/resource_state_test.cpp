@@ -257,6 +257,38 @@ TEST(VulkanResourceStateTracker, TracksBufferRanges) {
     EXPECT_FALSE(tracker.GetBufferState(BufferA(), 64, 128).has_value());
 }
 
+TEST(VulkanResourceStateTracker, SplitsBufferRangesForSubrangeTransitions) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportBuffer(BufferA(),
+                         0,
+                         256,
+                         NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
+
+    const std::optional<VkBufferMemoryBarrier2> barrier = tracker.TransitionBuffer({
+            .Buffer = BufferA(),
+            .Offset = 64,
+            .Size = 128,
+            .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+    });
+
+    ASSERT_TRUE(barrier.has_value());
+    EXPECT_EQ(barrier->offset, 64U);
+    EXPECT_EQ(barrier->size, 128U);
+    EXPECT_EQ(barrier->srcAccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    EXPECT_EQ(barrier->dstAccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    const std::optional<NVulkan::VulkanBufferState> leading = tracker.GetBufferState(BufferA(), 0, 64);
+    ASSERT_TRUE(leading.has_value());
+    EXPECT_EQ(leading->AccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+
+    const std::optional<NVulkan::VulkanBufferState> middle = tracker.GetBufferState(BufferA(), 64, 128);
+    ASSERT_TRUE(middle.has_value());
+    EXPECT_EQ(middle->AccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    const std::optional<NVulkan::VulkanBufferState> whole = tracker.GetBufferState(BufferA(), 0, 256);
+    EXPECT_FALSE(whole.has_value());
+}
+
 TEST(VulkanResourceStateTracker, EmitsBufferBarrierForRepeatedWriteUsage) {
     NVulkan::VulkanResourceStateTracker tracker;
     tracker.ImportBuffer(BufferA(),

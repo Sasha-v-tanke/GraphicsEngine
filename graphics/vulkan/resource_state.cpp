@@ -1,7 +1,9 @@
 #include "resource_state.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <utility>
 
 #include <lib/common/error/error.h>
@@ -78,6 +80,111 @@ void ValidateInitialQueueFamily(TState state) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                               "Vulkan resource with explicit queue family requires imported initial state");
     }
+}
+
+VkDeviceSize RangeEnd(VkDeviceSize offset, VkDeviceSize size) noexcept {
+    if (size == VK_WHOLE_SIZE) {
+        return std::numeric_limits<VkDeviceSize>::max();
+    }
+    return offset + size;
+}
+
+bool RangesOverlap(VkDeviceSize leftOffset,
+                   VkDeviceSize leftSize,
+                   VkDeviceSize rightOffset,
+                   VkDeviceSize rightSize) noexcept {
+    return leftOffset < RangeEnd(rightOffset, rightSize) && rightOffset < RangeEnd(leftOffset, leftSize);
+}
+
+bool StateEquals(VulkanBufferState left, VulkanBufferState right) noexcept {
+    return left.StageMask == right.StageMask && left.AccessMask == right.AccessMask &&
+           left.QueueFamilyIndex == right.QueueFamilyIndex;
+}
+
+std::optional<VulkanBufferState>
+FindBufferRangeSource(const std::vector<VulkanResourceStateTracker::BufferRangeState>& ranges,
+                      VkBuffer buffer,
+                      VkDeviceSize offset,
+                      VkDeviceSize size,
+                      bool throwOnMixedState) {
+    std::optional<VulkanBufferState> source;
+    VkDeviceSize coveredOffset = offset;
+    const VkDeviceSize requestedEnd = RangeEnd(offset, size);
+
+    while (coveredOffset < requestedEnd) {
+        bool found = false;
+        for (const VulkanResourceStateTracker::BufferRangeState& range: ranges) {
+            if (range.Buffer != buffer || range.Offset > coveredOffset ||
+                coveredOffset >= RangeEnd(range.Offset, range.Size)) {
+                continue;
+            }
+
+            if (!source.has_value()) {
+                source = range.State;
+            } else if (!StateEquals(*source, range.State)) {
+                if (!throwOnMixedState) {
+                    return std::nullopt;
+                }
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                      "Vulkan buffer transition range has mixed tracked states");
+            }
+
+            coveredOffset = std::min(RangeEnd(range.Offset, range.Size), requestedEnd);
+            found = true;
+            break;
+        }
+
+        if (!found) {
+            return std::nullopt;
+        }
+    }
+
+    return source;
+}
+
+void ReplaceBufferRange(std::vector<VulkanResourceStateTracker::BufferRangeState>& ranges,
+                        VkBuffer buffer,
+                        VkDeviceSize offset,
+                        VkDeviceSize size,
+                        VulkanBufferState state) {
+    const VkDeviceSize replacementEnd = RangeEnd(offset, size);
+    std::vector<VulkanResourceStateTracker::BufferRangeState> replacement;
+    replacement.reserve(ranges.size() + 2);
+
+    for (const VulkanResourceStateTracker::BufferRangeState& range: ranges) {
+        if (range.Buffer != buffer || !RangesOverlap(range.Offset, range.Size, offset, size)) {
+            replacement.push_back(range);
+            continue;
+        }
+
+        if (range.Offset < offset) {
+            replacement.push_back({
+                    .Buffer = range.Buffer,
+                    .Offset = range.Offset,
+                    .Size = offset - range.Offset,
+                    .State = range.State,
+            });
+        }
+
+        const VkDeviceSize rangeEnd = RangeEnd(range.Offset, range.Size);
+        if (replacementEnd < rangeEnd) {
+            replacement.push_back({
+                    .Buffer = range.Buffer,
+                    .Offset = replacementEnd,
+                    .Size = rangeEnd == std::numeric_limits<VkDeviceSize>::max() ? VK_WHOLE_SIZE
+                                                                                 : rangeEnd - replacementEnd,
+                    .State = range.State,
+            });
+        }
+    }
+
+    replacement.push_back({
+            .Buffer = buffer,
+            .Offset = offset,
+            .Size = size,
+            .State = state,
+    });
+    ranges = std::move(replacement);
 }
 
 } // namespace
@@ -278,12 +385,12 @@ void VulkanResourceStateTracker::ImportBuffer(VkBuffer buffer,
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer state import requires a buffer");
     }
 
-    m_buffers[{.Buffer = buffer, .Offset = offset, .Size = size}] = state;
+    ReplaceBufferRange(m_buffers, buffer, offset, size, state);
 }
 
 void VulkanResourceStateTracker::ForgetBuffer(VkBuffer buffer) noexcept {
     for (auto it = m_buffers.begin(); it != m_buffers.end();) {
-        if (it->first.Buffer == buffer) {
+        if (it->Buffer == buffer) {
             it = m_buffers.erase(it);
         } else {
             ++it;
@@ -293,12 +400,7 @@ void VulkanResourceStateTracker::ForgetBuffer(VkBuffer buffer) noexcept {
 
 std::optional<VulkanBufferState>
 VulkanResourceStateTracker::GetBufferState(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size) const {
-    const auto it = m_buffers.find({.Buffer = buffer, .Offset = offset, .Size = size});
-    if (it == m_buffers.end()) {
-        return std::nullopt;
-    }
-
-    return it->second;
+    return FindBufferRangeSource(m_buffers, buffer, offset, size, false);
 }
 
 std::optional<VkBufferMemoryBarrier2>
@@ -307,16 +409,17 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer transition requires a buffer");
     }
 
-    const BufferKey key = {
-            .Buffer = transition.Buffer,
-            .Offset = transition.Offset,
-            .Size = transition.Size,
-    };
     const VulkanBufferState destination = MakeVulkanBufferState(transition.Usage, transition.QueueFamilyIndex);
-    const auto it = m_buffers.find(key);
-    if (it == m_buffers.end()) {
+    const std::optional<VulkanBufferState> source =
+            FindBufferRangeSource(m_buffers, transition.Buffer, transition.Offset, transition.Size, true);
+    if (!source.has_value()) {
         ValidateInitialQueueFamily(destination);
-        m_buffers.emplace(key, destination);
+        m_buffers.push_back({
+                .Buffer = transition.Buffer,
+                .Offset = transition.Offset,
+                .Size = transition.Size,
+                .State = destination,
+        });
         return MakeBufferBarrier(transition.Buffer,
                                  transition.Offset,
                                  transition.Size,
@@ -324,14 +427,13 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
                                  destination);
     }
 
-    const VulkanBufferState source = it->second;
-    it->second = destination;
+    ReplaceBufferRange(m_buffers, transition.Buffer, transition.Offset, transition.Size, destination);
 
-    if (!RequiresBarrier(source, destination)) {
+    if (!RequiresBarrier(*source, destination)) {
         return std::nullopt;
     }
 
-    return MakeBufferBarrier(transition.Buffer, transition.Offset, transition.Size, source, destination);
+    return MakeBufferBarrier(transition.Buffer, transition.Offset, transition.Size, *source, destination);
 }
 
 std::size_t VulkanResourceStateTracker::ImageKeyHash::operator()(ImageKey key) const noexcept {
@@ -374,13 +476,6 @@ VulkanResourceStateTracker::MakeImageKeys(VkImage image, VkImageSubresourceRange
         }
     }
     return keys;
-}
-
-std::size_t VulkanResourceStateTracker::BufferKeyHash::operator()(BufferKey key) const noexcept {
-    std::size_t hash = std::hash<VkBuffer>{}(key.Buffer);
-    hash ^= std::hash<VkDeviceSize>{}(key.Offset) + 0x9E3779B9U + (hash << 6U) + (hash >> 2U);
-    hash ^= std::hash<VkDeviceSize>{}(key.Size) + 0x9E3779B9U + (hash << 6U) + (hash >> 2U);
-    return hash;
 }
 
 } // namespace NVulkan

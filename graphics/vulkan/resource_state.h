@@ -73,6 +73,13 @@ public:
 
     [[nodiscard]] std::optional<VkBufferMemoryBarrier2> TransitionBuffer(const VulkanBufferTransition& transition);
 
+    struct BufferRangeState {
+        VkBuffer Buffer = VK_NULL_HANDLE;
+        VkDeviceSize Offset = 0;
+        VkDeviceSize Size = VK_WHOLE_SIZE;
+        VulkanBufferState State;
+    };
+
 private:
     struct ImageKey {
         VkImage Image = VK_NULL_HANDLE;
@@ -90,21 +97,8 @@ private:
     [[nodiscard]] static ImageKey MakeImageKey(VkImage image, VkImageSubresourceRange subresourceRange);
     [[nodiscard]] static std::vector<ImageKey> MakeImageKeys(VkImage image, VkImageSubresourceRange subresourceRange);
 
-    struct BufferKey {
-        VkBuffer Buffer = VK_NULL_HANDLE;
-        VkDeviceSize Offset = 0;
-        VkDeviceSize Size = VK_WHOLE_SIZE;
-
-        [[nodiscard]] friend bool operator==(BufferKey left, BufferKey right) noexcept = default;
-    };
-
-    struct BufferKeyHash {
-        [[nodiscard]] std::size_t operator()(BufferKey key) const noexcept;
-    };
-
-private:
     std::unordered_map<ImageKey, VulkanImageState, ImageKeyHash> m_images;
-    std::unordered_map<BufferKey, VulkanBufferState, BufferKeyHash> m_buffers;
+    std::vector<BufferRangeState> m_buffers;
 };
 
 } // namespace NVulkan
