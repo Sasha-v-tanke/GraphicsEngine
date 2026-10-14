@@ -307,19 +307,37 @@ TEST(VulkanResourceStateTracker, EmitsBufferBarrierForRepeatedWriteUsage) {
 }
 
 TEST(VulkanResourceStateTracker, RejectsPartiallyTrackedBufferTransitions) {
-    NVulkan::VulkanResourceStateTracker tracker;
-    tracker.ImportBuffer(BufferA(),
-                         0,
-                         128,
-                         NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
+    {
+        NVulkan::VulkanResourceStateTracker tracker;
+        tracker.ImportBuffer(BufferA(),
+                             0,
+                             64,
+                             NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
 
-    EXPECT_THROW((void)tracker.TransitionBuffer({
-                         .Buffer = BufferA(),
-                         .Offset = 64,
-                         .Size = 128,
-                         .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
-                 }),
-                 NCommon::Exception);
+        EXPECT_THROW((void)tracker.TransitionBuffer({
+                             .Buffer = BufferA(),
+                             .Offset = 0,
+                             .Size = 128,
+                             .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+                     }),
+                     NCommon::Exception);
+    }
+
+    {
+        NVulkan::VulkanResourceStateTracker tracker;
+        tracker.ImportBuffer(BufferA(),
+                             64,
+                             64,
+                             NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
+
+        EXPECT_THROW((void)tracker.TransitionBuffer({
+                             .Buffer = BufferA(),
+                             .Offset = 0,
+                             .Size = 128,
+                             .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+                     }),
+                     NCommon::Exception);
+    }
 }
 
 TEST(VulkanResourceStateTracker, RejectsInvalidResourceStateRequests) {
