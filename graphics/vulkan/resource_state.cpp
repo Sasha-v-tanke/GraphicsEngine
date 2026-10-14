@@ -69,8 +69,7 @@ bool RequiresBarrier(VulkanImageState source, VulkanImageState destination) noex
 }
 
 bool RequiresBarrier(VulkanBufferState source, VulkanBufferState destination) noexcept {
-    return (HasWriteAccess(source.AccessMask) && HasWriteAccess(destination.AccessMask)) ||
-           source.StageMask != destination.StageMask || source.AccessMask != destination.AccessMask ||
+    return HasWriteAccess(source.AccessMask) || HasWriteAccess(destination.AccessMask) ||
            source.QueueFamilyIndex != destination.QueueFamilyIndex;
 }
 
