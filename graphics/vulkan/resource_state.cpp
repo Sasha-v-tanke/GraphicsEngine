@@ -101,6 +101,18 @@ bool StateEquals(VulkanBufferState left, VulkanBufferState right) noexcept {
            left.QueueFamilyIndex == right.QueueFamilyIndex;
 }
 
+bool HasBufferRangeOverlap(const std::vector<VulkanResourceStateTracker::BufferRangeState>& ranges,
+                           VkBuffer buffer,
+                           VkDeviceSize offset,
+                           VkDeviceSize size) noexcept {
+    for (const VulkanResourceStateTracker::BufferRangeState& range: ranges) {
+        if (range.Buffer == buffer && RangesOverlap(range.Offset, range.Size, offset, size)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::optional<VulkanBufferState>
 FindBufferRangeSource(const std::vector<VulkanResourceStateTracker::BufferRangeState>& ranges,
                       VkBuffer buffer,
@@ -413,6 +425,11 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
     const std::optional<VulkanBufferState> source =
             FindBufferRangeSource(m_buffers, transition.Buffer, transition.Offset, transition.Size, true);
     if (!source.has_value()) {
+        if (HasBufferRangeOverlap(m_buffers, transition.Buffer, transition.Offset, transition.Size)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                  "Vulkan buffer transition range is only partially tracked");
+        }
+
         ValidateInitialQueueFamily(destination);
         m_buffers.push_back({
                 .Buffer = transition.Buffer,

@@ -306,6 +306,22 @@ TEST(VulkanResourceStateTracker, EmitsBufferBarrierForRepeatedWriteUsage) {
     EXPECT_EQ(barrier->dstAccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
+TEST(VulkanResourceStateTracker, RejectsPartiallyTrackedBufferTransitions) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportBuffer(BufferA(),
+                         0,
+                         128,
+                         NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
+
+    EXPECT_THROW((void)tracker.TransitionBuffer({
+                         .Buffer = BufferA(),
+                         .Offset = 64,
+                         .Size = 128,
+                         .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+                 }),
+                 NCommon::Exception);
+}
+
 TEST(VulkanResourceStateTracker, RejectsInvalidResourceStateRequests) {
     NVulkan::VulkanResourceStateTracker tracker;
 
