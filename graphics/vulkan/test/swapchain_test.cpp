@@ -189,7 +189,15 @@ void RecordPresentTransition(VkCommandBuffer commandBuffer, VkImage image) {
     ASSERT_EQ(vkBeginCommandBuffer(commandBuffer, &beginInfo), VK_SUCCESS);
 
     NVulkan::VulkanResourceStateTracker tracker;
-    tracker.ImportImage(image, NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Undefined));
+    tracker.ImportImage(image,
+                        {
+                                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = 1,
+                                .baseArrayLayer = 0,
+                                .layerCount = 1,
+                        },
+                        NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Undefined));
     const std::optional<VkImageMemoryBarrier2> barrier = tracker.TransitionImage({
             .Image = image,
             .Usage = NVulkan::EVulkanResourceUsage::Present,

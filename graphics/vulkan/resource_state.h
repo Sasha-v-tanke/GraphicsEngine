@@ -37,16 +37,35 @@ struct VulkanImageTransition {
 
 class VulkanResourceStateTracker final: public NCommon::NonTransferable {
 public:
-    void ImportImage(VkImage image, VulkanImageState state);
+    void ImportImage(VkImage image, VkImageSubresourceRange subresourceRange, VulkanImageState state);
 
     void ForgetImage(VkImage image) noexcept;
 
-    [[nodiscard]] std::optional<VulkanImageState> GetImageState(VkImage image) const;
+    [[nodiscard]] std::optional<VulkanImageState> GetImageState(VkImage image,
+                                                                VkImageSubresourceRange subresourceRange) const;
 
     [[nodiscard]] std::optional<VkImageMemoryBarrier2> TransitionImage(const VulkanImageTransition& transition);
 
 private:
-    std::unordered_map<VkImage, VulkanImageState> m_images;
+    struct ImageKey {
+        VkImage Image = VK_NULL_HANDLE;
+        VkImageAspectFlags AspectMask = 0;
+        std::uint32_t BaseMipLevel = 0;
+        std::uint32_t LevelCount = 0;
+        std::uint32_t BaseArrayLayer = 0;
+        std::uint32_t LayerCount = 0;
+
+        [[nodiscard]] friend bool operator==(ImageKey left, ImageKey right) noexcept = default;
+    };
+
+    struct ImageKeyHash {
+        [[nodiscard]] std::size_t operator()(ImageKey key) const noexcept;
+    };
+
+    [[nodiscard]] static ImageKey MakeImageKey(VkImage image, VkImageSubresourceRange subresourceRange);
+
+private:
+    std::unordered_map<ImageKey, VulkanImageState, ImageKeyHash> m_images;
 };
 
 } // namespace NVulkan
