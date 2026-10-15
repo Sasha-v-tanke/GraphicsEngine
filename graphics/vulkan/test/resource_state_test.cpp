@@ -169,6 +169,59 @@ TEST(VulkanResourceStateTracker, EmitsQueueFamilyOwnershipTransfer) {
     EXPECT_EQ(barrier->dstAccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
 
+TEST(VulkanResourceStateTracker, PreservesExplicitQueueFamilyWhenTransitionOmitsIt) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportImage(ImageA(),
+                        ColorRange(),
+                        NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::TransferWrite, 2));
+    tracker.ImportBuffer(BufferA(),
+                         0,
+                         VK_WHOLE_SIZE,
+                         NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite, 2));
+
+    const std::optional<VkImageMemoryBarrier2> imageBarrier = tracker.TransitionImage({
+            .Image = ImageA(),
+            .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+            .SubresourceRange = ColorRange(),
+    });
+    ASSERT_TRUE(imageBarrier.has_value());
+    EXPECT_EQ(imageBarrier->srcQueueFamilyIndex, 2U);
+    EXPECT_EQ(imageBarrier->dstQueueFamilyIndex, 2U);
+
+    const std::optional<VkBufferMemoryBarrier2> bufferBarrier = tracker.TransitionBuffer({
+            .Buffer = BufferA(),
+            .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+    });
+    ASSERT_TRUE(bufferBarrier.has_value());
+    EXPECT_EQ(bufferBarrier->srcQueueFamilyIndex, 2U);
+    EXPECT_EQ(bufferBarrier->dstQueueFamilyIndex, 2U);
+}
+
+TEST(VulkanResourceStateTracker, RejectsOwnershipTransferWithoutImportedSourceQueueFamily) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportImage(ImageA(),
+                        ColorRange(),
+                        NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::TransferWrite));
+    tracker.ImportBuffer(BufferA(),
+                         0,
+                         VK_WHOLE_SIZE,
+                         NVulkan::MakeVulkanBufferState(NVulkan::EVulkanResourceUsage::TransferWrite));
+
+    EXPECT_THROW((void)tracker.TransitionImage({
+                         .Image = ImageA(),
+                         .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+                         .SubresourceRange = ColorRange(),
+                         .QueueFamilyIndex = 2,
+                 }),
+                 NCommon::Exception);
+    EXPECT_THROW((void)tracker.TransitionBuffer({
+                         .Buffer = BufferA(),
+                         .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+                         .QueueFamilyIndex = 2,
+                 }),
+                 NCommon::Exception);
+}
+
 TEST(VulkanResourceStateTracker, TracksStatePerSubresourceRange) {
     NVulkan::VulkanResourceStateTracker tracker;
     tracker.ImportImage(ImageA(),

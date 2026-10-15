@@ -97,6 +97,22 @@ void ValidateInitialQueueFamily(TState state) {
     }
 }
 
+template<class TState>
+TState ResolveQueueFamily(TState source, TState destination) {
+    if (source.QueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        if (destination.QueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                  "Vulkan ownership transfer requires an imported source queue family");
+        }
+        return destination;
+    }
+
+    if (destination.QueueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        destination.QueueFamilyIndex = source.QueueFamilyIndex;
+    }
+    return destination;
+}
+
 VkDeviceSize RangeEnd(VkDeviceSize offset, VkDeviceSize size) noexcept {
     if (size == VK_WHOLE_SIZE) {
         return std::numeric_limits<VkDeviceSize>::max();
@@ -355,7 +371,7 @@ VulkanResourceStateTracker::TransitionImage(const VulkanImageTransition& transit
     }
 
     const std::vector<ImageKey> keys = MakeImageKeys(transition.Image, transition.SubresourceRange);
-    const VulkanImageState destination = MakeVulkanImageState(transition.Usage, transition.QueueFamilyIndex);
+    VulkanImageState destination = MakeVulkanImageState(transition.Usage, transition.QueueFamilyIndex);
     std::optional<VulkanImageState> source;
     bool hasUntrackedSubresource = false;
     for (const ImageKey key: keys) {
@@ -392,6 +408,8 @@ VulkanResourceStateTracker::TransitionImage(const VulkanImageTransition& transit
                                 destination,
                                 transition.SubresourceRange);
     }
+
+    destination = ResolveQueueFamily(*source, destination);
 
     if (!RequiresBarrier(*source, destination)) {
         for (const ImageKey key: keys) {
@@ -439,7 +457,7 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer transition requires a buffer");
     }
 
-    const VulkanBufferState destination = MakeVulkanBufferState(transition.Usage, transition.QueueFamilyIndex);
+    VulkanBufferState destination = MakeVulkanBufferState(transition.Usage, transition.QueueFamilyIndex);
     const std::optional<VulkanBufferState> source =
             FindBufferRangeSource(m_buffers, transition.Buffer, transition.Offset, transition.Size, true);
     if (!source.has_value()) {
@@ -457,6 +475,8 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
         });
         return std::nullopt;
     }
+
+    destination = ResolveQueueFamily(*source, destination);
 
     if (!RequiresBarrier(*source, destination)) {
         ReplaceBufferRange(m_buffers,
