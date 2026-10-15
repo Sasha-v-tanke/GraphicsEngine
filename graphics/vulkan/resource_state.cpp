@@ -63,8 +63,7 @@ bool HasWriteAccess(VkAccessFlags2 accessMask) noexcept {
 }
 
 bool RequiresBarrier(VulkanImageState source, VulkanImageState destination) noexcept {
-    return (HasWriteAccess(source.AccessMask) && HasWriteAccess(destination.AccessMask)) ||
-           source.StageMask != destination.StageMask || source.AccessMask != destination.AccessMask ||
+    return HasWriteAccess(source.AccessMask) || HasWriteAccess(destination.AccessMask) ||
            source.Layout != destination.Layout || source.QueueFamilyIndex != destination.QueueFamilyIndex;
 }
 
@@ -77,6 +76,15 @@ VulkanBufferState MergeReadStates(VulkanBufferState source, VulkanBufferState de
     return {
             .StageMask = source.StageMask | destination.StageMask,
             .AccessMask = source.AccessMask | destination.AccessMask,
+            .QueueFamilyIndex = destination.QueueFamilyIndex,
+    };
+}
+
+VulkanImageState MergeReadStates(VulkanImageState source, VulkanImageState destination) noexcept {
+    return {
+            .StageMask = source.StageMask | destination.StageMask,
+            .AccessMask = source.AccessMask | destination.AccessMask,
+            .Layout = destination.Layout,
             .QueueFamilyIndex = destination.QueueFamilyIndex,
     };
 }
@@ -385,12 +393,15 @@ VulkanResourceStateTracker::TransitionImage(const VulkanImageTransition& transit
                                 transition.SubresourceRange);
     }
 
-    for (const ImageKey key: keys) {
-        m_images[key] = destination;
+    if (!RequiresBarrier(*source, destination)) {
+        for (const ImageKey key: keys) {
+            m_images[key] = MergeReadStates(*source, destination);
+        }
+        return std::nullopt;
     }
 
-    if (!RequiresBarrier(*source, destination)) {
-        return std::nullopt;
+    for (const ImageKey key: keys) {
+        m_images[key] = destination;
     }
 
     return MakeImageBarrier(transition.Image, *source, destination, transition.SubresourceRange);

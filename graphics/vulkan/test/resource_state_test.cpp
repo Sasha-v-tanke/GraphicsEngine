@@ -254,6 +254,40 @@ TEST(VulkanResourceStateTracker, EmitsBarrierForRepeatedWriteUsage) {
     EXPECT_EQ(barrier->dstAccessMask, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 }
 
+TEST(VulkanResourceStateTracker, SkipsImageBarrierForReadOnlyUsageChange) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportImage(ImageA(),
+                        ColorRange(),
+                        {
+                                .StageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                                .AccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                                .Layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                .QueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        });
+
+    const std::optional<VkImageMemoryBarrier2> barrier = tracker.TransitionImage({
+            .Image = ImageA(),
+            .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+            .SubresourceRange = ColorRange(),
+    });
+    EXPECT_FALSE(barrier.has_value());
+
+    const std::optional<NVulkan::VulkanImageState> state = tracker.GetImageState(ImageA(), ColorRange());
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state->StageMask, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    EXPECT_EQ(state->AccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    const std::optional<VkImageMemoryBarrier2> writeBarrier = tracker.TransitionImage({
+            .Image = ImageA(),
+            .Usage = NVulkan::EVulkanResourceUsage::TransferWrite,
+            .SubresourceRange = ColorRange(),
+    });
+    ASSERT_TRUE(writeBarrier.has_value());
+    EXPECT_EQ(writeBarrier->srcStageMask,
+              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    EXPECT_EQ(writeBarrier->srcAccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
 TEST(VulkanResourceStateTracker, RejectsNullImages) {
     NVulkan::VulkanResourceStateTracker tracker;
 
