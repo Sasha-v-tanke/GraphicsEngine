@@ -33,8 +33,10 @@ System callbacks may mutate existing components directly. Structural writes
 use the deferred structural APIs instead. `RunSystems()` collects deferred
 commands and applies the queue after all currently registered systems complete.
 Parallel producers should collect commands in `DeferredStructuralCommandBuffer`
-instances, submit those buffers after their join point, and use stable
-`producerOrder` values as the deterministic merge policy. Callers that manage
+instances. Before workers start, callers declare every producer and its maximum
+entity-create count with `BeginDeferredStructuralPhase()`. The world reserves
+those identities in stable `producerOrder`, so worker completion order cannot
+change entity identity. Buffers are submitted after the join point. Callers that manage
 their own phases can use `ApplyDeferredStructuralChanges()` as an explicit
 structural commit point. Parallel conflict detection is a later feature; this
 core keeps mutation rules explicit and predictable.

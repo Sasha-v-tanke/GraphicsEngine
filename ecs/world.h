@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <typeindex>
@@ -25,6 +26,11 @@ namespace NEcs {
 class World {
 public:
     using SystemCallback = std::function<void(World&)>;
+
+    struct DeferredProducer {
+        std::uint32_t Order = 0;
+        std::uint32_t EntityCreateCount = 0;
+    };
 
     class DeferredStructuralCommandBuffer;
 
@@ -168,9 +174,11 @@ public:
     }
 
     void RegisterSystem(SystemAccessList access, SystemCallback callback);
+    void RegisterSystem(SystemAccessList access, SystemCallback callback, std::uint32_t structuralOrder);
 
     [[nodiscard]] const std::vector<SystemAccess>& GetSystemAccess(std::size_t index) const;
     [[nodiscard]] std::size_t GetSystemCount() const noexcept;
+    void BeginDeferredStructuralPhase(std::vector<DeferredProducer> producers);
     [[nodiscard]] DeferredStructuralCommandBuffer CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder);
     void SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer);
     void RunSystems();
@@ -181,6 +189,11 @@ private:
         std::uint32_t Generation = 0;
         bool Alive = false;
         bool Reserved = false;
+    };
+
+    struct DeferredEntityReservation {
+        Entity Identity;
+        bool ReusesFreeSlot = false;
     };
 
     class IDeferredCommand {
@@ -214,6 +227,12 @@ public:
 
 private:
     struct DeferredCommandBatch {
+        enum class ESource : std::uint8_t {
+            SYSTEM,
+            EXTERNAL,
+        };
+
+        ESource Source = ESource::EXTERNAL;
         std::uint32_t ProducerOrder = 0;
         std::uint64_t SubmissionOrder = 0;
         std::vector<std::unique_ptr<IDeferredCommand>> Commands;
@@ -359,11 +378,16 @@ private:
     void ValidateSystemIndex(std::size_t index) const;
     void ValidateStructuralWriteAllowed() const;
     void ValidateDeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer& buffer) const;
+    void ValidateSystemDeferredCommandCollectionLocked() const;
     void PushDeferredCommand(std::unique_ptr<IDeferredCommand> command);
     static void PushDeferredCommand(DeferredStructuralCommandBuffer& buffer, std::unique_ptr<IDeferredCommand> command);
     void AppendDeferredCommandBatch(DeferredCommandBatch batch);
     void RollbackDeferredStructuralCommands(std::vector<std::unique_ptr<IDeferredCommand>>& commands);
+    void ReleaseDeferredEntityReservationLocked(const DeferredEntityReservation& reservation);
+    void ReleaseUnusedDeferredEntityReservationsLocked(std::vector<DeferredEntityReservation>& reservations,
+                                                       std::size_t firstUnused);
     Entity ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredCommand>>& commands);
+    [[nodiscard]] DeferredEntityReservation ReserveDeferredEntityLocked();
     [[nodiscard]] std::optional<std::uint32_t> FindPendingDeferredAppendGeneration(std::uint32_t index) const noexcept;
     [[nodiscard]] bool HasPendingDeferredAppendReservation(std::uint32_t index) const noexcept;
     void RemovePendingDeferredAppendReservation(std::uint32_t index);
@@ -377,6 +401,7 @@ private:
     std::vector<DeferredCommandBatch> DeferredStructuralBatches_;
     std::vector<std::unique_ptr<IDeferredCommand>> ActiveDeferredStructuralCommands_;
     std::vector<Entity> PendingDeferredAppendEntities_;
+    std::unordered_map<std::uint32_t, std::vector<DeferredEntityReservation>> PlannedDeferredEntityReservations_;
     std::uint32_t PendingDeferredEntityCreateCount_ = 0;
     std::uint32_t ReservedDeferredEntityCount_ = 0;
     std::uint32_t NextNewEntityGeneration_ = 0;
@@ -385,10 +410,13 @@ private:
     bool IsRunningSystems_ = false;
     bool IsCollectingSystemDeferredStructuralCommands_ = false;
     bool IsApplyingDeferredStructuralChanges_ = false;
+    std::optional<std::thread::id> ActiveSystemThreadId_;
+    std::optional<std::uint32_t> ActiveSystemStructuralOrder_;
 
     struct RegisteredSystem {
         SystemAccessList Access;
         SystemCallback Callback;
+        std::optional<std::uint32_t> StructuralOrder;
     };
 
     std::vector<RegisteredSystem> Systems_;
