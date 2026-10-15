@@ -428,13 +428,16 @@ VulkanBufferAllocation CreateVulkanBuffer(VulkanMemoryAllocator& allocator,
 }
 
 VulkanBufferAllocation CreateVulkanStagingBuffer(VulkanMemoryAllocator& allocator, std::uint64_t sizeBytes) {
-    return CreateVulkanBuffer(allocator,
-                              NGraphics::BufferDescriptor{
-                                      .SizeBytes = sizeBytes,
-                                      .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::TransferSource),
-                                      .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuWrite),
-                                      .Lifetime = NGraphics::EBufferLifetime::FrameLocal,
-                              });
+    VulkanBufferAllocation staging =
+            CreateVulkanBuffer(allocator,
+                               NGraphics::BufferDescriptor{
+                                       .SizeBytes = sizeBytes,
+                                       .Usage = NGraphics::BufferUsage(NGraphics::EBufferUsage::TransferSource),
+                                       .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuWrite),
+                                       .Lifetime = NGraphics::EBufferLifetime::FrameLocal,
+                               });
+    allocator.GetResourceStates().ForgetBuffer(staging.GetBuffer());
+    return staging;
 }
 
 VulkanImageAllocation CreateVulkanImage(VulkanMemoryAllocator& allocator,

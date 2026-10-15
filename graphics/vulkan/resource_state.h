@@ -82,6 +82,8 @@ public:
 
     [[nodiscard]] std::optional<VkBufferMemoryBarrier2> TransitionBuffer(const VulkanBufferTransition& transition);
 
+    [[nodiscard]] std::vector<VkBufferMemoryBarrier2> TransitionBufferRanges(const VulkanBufferTransition& transition);
+
     struct BufferRangeState {
         VkBuffer Buffer = VK_NULL_HANDLE;
         VkDeviceSize Offset = 0;

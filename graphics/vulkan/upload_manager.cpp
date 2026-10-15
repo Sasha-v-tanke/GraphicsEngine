@@ -220,14 +220,13 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
             .dstOffset = destinationOffsetBytes,
             .size = bytes.size(),
     };
-    if (const std::optional<VkBufferMemoryBarrier2> barrier = m_resourceStates.TransitionBuffer({
-                .Buffer = destination.GetBuffer(),
-                .Offset = 0,
-                .Size = destination.GetSizeBytes(),
-                .Usage = EVulkanResourceUsage::TransferWrite,
-        });
-        barrier.has_value()) {
-        RecordVulkanResourceBarrier(commandBuffer, *barrier);
+    for (const VkBufferMemoryBarrier2& barrier: m_resourceStates.TransitionBufferRanges({
+                 .Buffer = destination.GetBuffer(),
+                 .Offset = destinationOffsetBytes,
+                 .Size = bytes.size(),
+                 .Usage = EVulkanResourceUsage::TransferWrite,
+         })) {
+        RecordVulkanResourceBarrier(commandBuffer, barrier);
     }
     vkCmdCopyBuffer(commandBuffer, staging.GetBuffer(), destination.GetBuffer(), 1, &copyRegion);
 
