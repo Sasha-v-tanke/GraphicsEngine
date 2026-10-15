@@ -138,6 +138,30 @@ void EndCommandBuffer(VkCommandBuffer commandBuffer) {
     }
 }
 
+class VulkanCommandBufferGuard final {
+public:
+    VulkanCommandBufferGuard(VkDevice device, VkCommandPool commandPool, VkCommandBuffer commandBuffer) noexcept
+        : m_device(device)
+        , m_commandPool(commandPool)
+        , m_commandBuffer(commandBuffer) {
+    }
+
+    ~VulkanCommandBufferGuard() {
+        if (m_commandBuffer != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(m_device, m_commandPool, 1, &m_commandBuffer);
+        }
+    }
+
+    void Release() noexcept {
+        m_commandBuffer = VK_NULL_HANDLE;
+    }
+
+private:
+    VkDevice m_device = VK_NULL_HANDLE;
+    VkCommandPool m_commandPool = VK_NULL_HANDLE;
+    VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
+};
+
 } // namespace
 
 VulkanUploadManager::VulkanUploadManager(const VulkanDevice& device,
@@ -180,7 +204,9 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
     staging.Flush(0, bytes.size());
     staging.Unmap();
 
+    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
     const VkCommandBuffer commandBuffer = AllocateCommandBuffer();
+    VulkanCommandBufferGuard commandBufferGuard{m_handle, m_commandPool, commandBuffer};
     BeginCommandBuffer(commandBuffer);
     VulkanResourceStateTracker::Transaction stateTransaction = m_resourceStates.BeginTransaction();
 
@@ -191,8 +217,8 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
     };
     if (const std::optional<VkBufferMemoryBarrier2> barrier = m_resourceStates.TransitionBuffer({
                 .Buffer = destination.GetBuffer(),
-                .Offset = destinationOffsetBytes,
-                .Size = bytes.size(),
+                .Offset = 0,
+                .Size = destination.GetSizeBytes(),
                 .Usage = EVulkanResourceUsage::TransferWrite,
         });
         barrier.has_value()) {
@@ -208,17 +234,22 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
             .commandBuffer = commandBuffer,
             .deviceMask = 0,
     };
-    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
-    const VulkanQueueCompletion completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
-            .CommandBuffers = {commandBufferInfo},
-    });
-    stateTransaction.Commit();
-
     m_pendingUploads.push_back(PendingUpload{
-            .Completion = completion,
             .Staging = std::move(staging),
             .CommandBuffer = commandBuffer,
     });
+    VulkanQueueCompletion completion{};
+    try {
+        completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
+                .CommandBuffers = {commandBufferInfo},
+        });
+    } catch (...) {
+        m_pendingUploads.pop_back();
+        throw;
+    }
+    m_pendingUploads.back().Completion = completion;
+    stateTransaction.Commit();
+    commandBufferGuard.Release();
 
     return completion;
 }
@@ -244,7 +275,9 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
             .baseArrayLayer = 0,
             .layerCount = 1,
     };
+    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
     const VkCommandBuffer commandBuffer = AllocateCommandBuffer();
+    VulkanCommandBufferGuard commandBufferGuard{m_handle, m_commandPool, commandBuffer};
     BeginCommandBuffer(commandBuffer);
     VulkanResourceStateTracker::Transaction stateTransaction = m_resourceStates.BeginTransaction();
     if (const std::optional<VkImageMemoryBarrier2> barrier = m_resourceStates.TransitionImage({
@@ -297,17 +330,22 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
             .commandBuffer = commandBuffer,
             .deviceMask = 0,
     };
-    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
-    const VulkanQueueCompletion completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
-            .CommandBuffers = {commandBufferInfo},
-    });
-    stateTransaction.Commit();
-
     m_pendingUploads.push_back(PendingUpload{
-            .Completion = completion,
             .Staging = std::move(staging),
             .CommandBuffer = commandBuffer,
     });
+    VulkanQueueCompletion completion{};
+    try {
+        completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
+                .CommandBuffers = {commandBufferInfo},
+        });
+    } catch (...) {
+        m_pendingUploads.pop_back();
+        throw;
+    }
+    m_pendingUploads.back().Completion = completion;
+    stateTransaction.Commit();
+    commandBufferGuard.Release();
 
     return completion;
 }

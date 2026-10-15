@@ -425,6 +425,44 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         destinations.clear();
         EXPECT_FALSE(resourceStates.GetBufferState(destroyedBuffer, 0, bytes.size()).has_value());
 
+        NVulkan::VulkanBufferAllocation partialDestination = NVulkan::CreateVulkanBuffer(
+                memory,
+                {
+                        .SizeBytes = 8,
+                        .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                        .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
+                });
+        const std::array<std::byte, 4> firstPartialBytes{
+                std::byte{0x01},
+                std::byte{0x02},
+                std::byte{0x03},
+                std::byte{0x04},
+        };
+        const std::array<std::byte, 4> secondPartialBytes{
+                std::byte{0x05},
+                std::byte{0x06},
+                std::byte{0x07},
+                std::byte{0x08},
+        };
+        (void)uploads.UploadBuffer(partialDestination, firstPartialBytes, 0);
+        const NVulkan::VulkanQueueCompletion partialCompletion =
+                uploads.UploadBuffer(partialDestination, secondPartialBytes, 2);
+        submissions.Wait(partialCompletion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+
+        const std::array<std::byte, 6> expectedPartialBytes{
+                std::byte{0x01},
+                std::byte{0x02},
+                std::byte{0x05},
+                std::byte{0x06},
+                std::byte{0x07},
+                std::byte{0x08},
+        };
+        void* mappedPartialDestination = partialDestination.Map();
+        partialDestination.Invalidate(0, expectedPartialBytes.size());
+        EXPECT_EQ(std::memcmp(mappedPartialDestination, expectedPartialBytes.data(), expectedPartialBytes.size()), 0);
+        partialDestination.Unmap();
+
         NVulkan::VulkanImageAllocation image = NVulkan::CreateVulkanImage(
                 memory,
                 {

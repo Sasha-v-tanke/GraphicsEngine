@@ -364,12 +364,17 @@ VulkanBufferAllocation CreateVulkanBuffer(VulkanMemoryAllocator& allocator,
                               GetVkResultName(result));
     }
 
-    return VulkanBufferAllocation{allocator.GetHandle(),
-                                  allocator.GetResourceStates(),
-                                  buffer,
-                                  allocation,
-                                  descriptor.SizeBytes,
-                                  usage};
+    VulkanBufferAllocation bufferAllocation{allocator.GetHandle(),
+                                            allocator.GetResourceStates(),
+                                            buffer,
+                                            allocation,
+                                            descriptor.SizeBytes,
+                                            usage};
+    allocator.GetResourceStates().ImportBuffer(buffer,
+                                               0,
+                                               descriptor.SizeBytes,
+                                               MakeVulkanBufferState(EVulkanResourceUsage::Undefined));
+    return bufferAllocation;
 }
 
 VulkanBufferAllocation CreateVulkanStagingBuffer(VulkanMemoryAllocator& allocator, std::uint64_t sizeBytes) {
