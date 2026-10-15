@@ -230,6 +230,18 @@ TEST(VulkanResourceStateTracker, RejectsNullImages) {
 
 TEST(VulkanResourceStateTracker, TracksBufferRanges) {
     NVulkan::VulkanResourceStateTracker tracker;
+    const std::optional<VkBufferMemoryBarrier2> initialBarrier = tracker.TransitionBuffer({
+            .Buffer = BufferA(),
+            .Offset = 64,
+            .Size = 128,
+            .Usage = NVulkan::EVulkanResourceUsage::TransferRead,
+    });
+    EXPECT_FALSE(initialBarrier.has_value());
+
+    const std::optional<NVulkan::VulkanBufferState> initialState = tracker.GetBufferState(BufferA(), 64, 128);
+    ASSERT_TRUE(initialState.has_value());
+    EXPECT_EQ(initialState->AccessMask, VK_ACCESS_2_TRANSFER_READ_BIT);
+
     tracker.ImportBuffer(BufferA(),
                          64,
                          128,

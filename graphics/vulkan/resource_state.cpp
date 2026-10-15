@@ -444,11 +444,7 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
                 .Size = transition.Size,
                 .State = destination,
         });
-        return MakeBufferBarrier(transition.Buffer,
-                                 transition.Offset,
-                                 transition.Size,
-                                 MakeVulkanBufferState(EVulkanResourceUsage::Undefined),
-                                 destination);
+        return std::nullopt;
     }
 
     if (!RequiresBarrier(*source, destination)) {
