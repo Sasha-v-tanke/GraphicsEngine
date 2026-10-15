@@ -102,6 +102,7 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
         }
 
         state.Alive = true;
+        --world.PendingDeferredEntityCreateCount_;
         return;
     }
 
