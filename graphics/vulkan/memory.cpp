@@ -55,6 +55,56 @@ std::string_view GetVkResultName(VkResult result) {
     return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 }
 
+class VulkanBufferAllocationGuard final {
+public:
+    VulkanBufferAllocationGuard(VmaAllocator allocator, VkBuffer buffer, VmaAllocation allocation) noexcept
+        : m_allocator(allocator)
+        , m_buffer(buffer)
+        , m_allocation(allocation) {
+    }
+
+    ~VulkanBufferAllocationGuard() {
+        if (m_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(m_allocator, m_buffer, m_allocation);
+        }
+    }
+
+    void Release() noexcept {
+        m_buffer = VK_NULL_HANDLE;
+        m_allocation = VK_NULL_HANDLE;
+    }
+
+private:
+    VmaAllocator m_allocator = VK_NULL_HANDLE;
+    VkBuffer m_buffer = VK_NULL_HANDLE;
+    VmaAllocation m_allocation = VK_NULL_HANDLE;
+};
+
+class VulkanImageAllocationGuard final {
+public:
+    VulkanImageAllocationGuard(VmaAllocator allocator, VkImage image, VmaAllocation allocation) noexcept
+        : m_allocator(allocator)
+        , m_image(image)
+        , m_allocation(allocation) {
+    }
+
+    ~VulkanImageAllocationGuard() {
+        if (m_image != VK_NULL_HANDLE) {
+            vmaDestroyImage(m_allocator, m_image, m_allocation);
+        }
+    }
+
+    void Release() noexcept {
+        m_image = VK_NULL_HANDLE;
+        m_allocation = VK_NULL_HANDLE;
+    }
+
+private:
+    VmaAllocator m_allocator = VK_NULL_HANDLE;
+    VkImage m_image = VK_NULL_HANDLE;
+    VmaAllocation m_allocation = VK_NULL_HANDLE;
+};
+
 } // namespace
 
 VulkanMemoryAllocator::VulkanMemoryAllocator(VkInstance instance,
@@ -414,12 +464,14 @@ VulkanBufferAllocation CreateVulkanBuffer(VulkanMemoryAllocator& allocator,
                               GetVkResultName(result));
     }
 
+    VulkanBufferAllocationGuard allocationGuard{allocator.GetHandle(), buffer, allocation};
     VulkanBufferAllocation bufferAllocation{allocator.GetHandle(),
                                             allocator.GetResourceStates(),
                                             buffer,
                                             allocation,
                                             descriptor.SizeBytes,
                                             usage};
+    allocationGuard.Release();
     allocator.GetResourceStates().ImportBuffer(buffer,
                                                0,
                                                descriptor.SizeBytes,
@@ -487,12 +539,15 @@ VulkanImageAllocation CreateVulkanImage(VulkanMemoryAllocator& allocator,
                               GetVkResultName(result));
     }
 
-    return VulkanImageAllocation{allocator.GetHandle(),
-                                 allocator.GetResourceStates(),
-                                 image,
-                                 allocation,
-                                 descriptor,
-                                 usage};
+    VulkanImageAllocationGuard allocationGuard{allocator.GetHandle(), image, allocation};
+    VulkanImageAllocation imageAllocation{allocator.GetHandle(),
+                                          allocator.GetResourceStates(),
+                                          image,
+                                          allocation,
+                                          descriptor,
+                                          usage};
+    allocationGuard.Release();
+    return imageAllocation;
 }
 
 } // namespace NVulkan
