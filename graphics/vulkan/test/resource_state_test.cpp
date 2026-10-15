@@ -509,10 +509,24 @@ TEST(VulkanResourceStateTracker, RejectsPartiallyTrackedBufferTransitions) {
 TEST(VulkanResourceStateTracker, RejectsInvalidResourceStateRequests) {
     NVulkan::VulkanResourceStateTracker tracker;
 
+    tracker.ImportImage(ImageA(),
+                        ColorRange(),
+                        NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::TransferWrite));
     EXPECT_THROW(tracker.ImportBuffer(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE, {}), NCommon::Exception);
+    EXPECT_THROW((void)tracker.TransitionImage({
+                         .Image = ImageA(),
+                         .Usage = NVulkan::EVulkanResourceUsage::Undefined,
+                         .SubresourceRange = ColorRange(),
+                 }),
+                 NCommon::Exception);
     EXPECT_THROW((void)tracker.TransitionBuffer({
                          .Buffer = VK_NULL_HANDLE,
                          .Usage = NVulkan::EVulkanResourceUsage::TransferRead,
+                 }),
+                 NCommon::Exception);
+    EXPECT_THROW((void)tracker.TransitionBuffer({
+                         .Buffer = BufferA(),
+                         .Usage = NVulkan::EVulkanResourceUsage::Undefined,
                  }),
                  NCommon::Exception);
     EXPECT_THROW((void)tracker.TransitionBuffer({

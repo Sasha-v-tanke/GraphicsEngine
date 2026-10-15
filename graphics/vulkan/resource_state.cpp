@@ -113,6 +113,13 @@ TState ResolveQueueFamily(TState source, TState destination) {
     return destination;
 }
 
+void ValidateTransitionUsage(EVulkanResourceUsage usage) {
+    if (usage == EVulkanResourceUsage::Undefined) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "Vulkan resource transition requires a defined destination usage");
+    }
+}
+
 VkDeviceSize RangeEnd(VkDeviceSize offset, VkDeviceSize size) noexcept {
     if (size == VK_WHOLE_SIZE) {
         return std::numeric_limits<VkDeviceSize>::max();
@@ -369,6 +376,7 @@ VulkanResourceStateTracker::TransitionImage(const VulkanImageTransition& transit
     if (transition.Image == VK_NULL_HANDLE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan image transition requires an image");
     }
+    ValidateTransitionUsage(transition.Usage);
 
     const std::vector<ImageKey> keys = MakeImageKeys(transition.Image, transition.SubresourceRange);
     VulkanImageState destination = MakeVulkanImageState(transition.Usage, transition.QueueFamilyIndex);
@@ -456,6 +464,7 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
     if (transition.Buffer == VK_NULL_HANDLE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer transition requires a buffer");
     }
+    ValidateTransitionUsage(transition.Usage);
 
     VulkanBufferState destination = MakeVulkanBufferState(transition.Usage, transition.QueueFamilyIndex);
     const std::optional<VulkanBufferState> source =
