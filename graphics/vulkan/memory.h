@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vulkan.h>
 
@@ -48,7 +49,7 @@ public:
                            VkBuffer buffer,
                            VmaAllocation allocation,
                            std::uint64_t sizeBytes,
-                           VkBufferUsageFlags usage) noexcept;
+                           VkBufferUsageFlags usage);
     VulkanBufferAllocation(VulkanBufferAllocation&& other) noexcept;
     VulkanBufferAllocation& operator=(VulkanBufferAllocation&& other) noexcept;
     ~VulkanBufferAllocation();
@@ -63,12 +64,16 @@ public:
     void Invalidate(std::uint64_t offsetBytes, std::uint64_t sizeBytes);
     void Unmap() noexcept;
 
+    [[nodiscard]] std::shared_ptr<void> GetRetentionToken() const noexcept;
+
 private:
+    struct Lifetime;
+
     void Reset() noexcept;
 
 private:
     VmaAllocator m_allocator = VK_NULL_HANDLE;
-    VulkanResourceStateTracker* m_resourceStates = nullptr;
+    std::shared_ptr<Lifetime> m_lifetime;
     VkBuffer m_buffer = VK_NULL_HANDLE;
     VmaAllocation m_allocation = VK_NULL_HANDLE;
     std::uint64_t m_sizeBytes = 0;
@@ -84,7 +89,7 @@ public:
                           VkImage image,
                           VmaAllocation allocation,
                           const NGraphics::ImageDescriptor& descriptor,
-                          VkImageUsageFlags usage) noexcept;
+                          VkImageUsageFlags usage);
     VulkanImageAllocation(VulkanImageAllocation&& other) noexcept;
     VulkanImageAllocation& operator=(VulkanImageAllocation&& other) noexcept;
     ~VulkanImageAllocation();
@@ -94,12 +99,16 @@ public:
     [[nodiscard]] VkImageUsageFlags GetUsage() const noexcept;
     [[nodiscard]] bool IsValid() const noexcept;
 
+    [[nodiscard]] std::shared_ptr<void> GetRetentionToken() const noexcept;
+
 private:
+    struct Lifetime;
+
     void Reset() noexcept;
 
 private:
     VmaAllocator m_allocator = VK_NULL_HANDLE;
-    VulkanResourceStateTracker* m_resourceStates = nullptr;
+    std::shared_ptr<Lifetime> m_lifetime;
     VkImage m_image = VK_NULL_HANDLE;
     VmaAllocation m_allocation = VK_NULL_HANDLE;
     NGraphics::ImageDescriptor m_descriptor;

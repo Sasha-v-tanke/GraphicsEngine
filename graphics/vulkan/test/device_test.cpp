@@ -425,6 +425,21 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         destinations.clear();
         EXPECT_FALSE(resourceStates.GetBufferState(destroyedBuffer, 0, bytes.size()).has_value());
 
+        std::optional<NVulkan::VulkanBufferAllocation> retainedDestination = NVulkan::CreateVulkanBuffer(
+                memory,
+                {
+                        .SizeBytes = bytes.size(),
+                        .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                        .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+                });
+        const VkBuffer retainedBuffer = retainedDestination->GetBuffer();
+        const NVulkan::VulkanQueueCompletion retainedCompletion = uploads.UploadBuffer(*retainedDestination, bytes);
+        retainedDestination.reset();
+        EXPECT_TRUE(resourceStates.GetBufferState(retainedBuffer, 0, bytes.size()).has_value());
+        submissions.Wait(retainedCompletion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+        EXPECT_FALSE(resourceStates.GetBufferState(retainedBuffer, 0, bytes.size()).has_value());
+
         NVulkan::VulkanBufferAllocation partialDestination = NVulkan::CreateVulkanBuffer(
                 memory,
                 {

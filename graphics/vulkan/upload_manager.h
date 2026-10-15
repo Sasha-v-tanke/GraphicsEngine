@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 #include <vulkan.h>
@@ -21,7 +22,7 @@ public:
                         VulkanSubmissionManager& submissions,
                         VulkanResourceStateTracker& resourceStates);
 
-    ~VulkanUploadManager();
+    ~VulkanUploadManager() noexcept;
 
     [[nodiscard]] VulkanQueueCompletion UploadBuffer(VulkanBufferAllocation& destination,
                                                      std::span<const std::byte> bytes,
@@ -41,6 +42,7 @@ private:
         VulkanQueueCompletion Completion;
         VulkanBufferAllocation Staging;
         VkCommandBuffer CommandBuffer = VK_NULL_HANDLE;
+        std::shared_ptr<void> Destination;
     };
 
     [[nodiscard]] VkCommandPool CreateCommandPool() const;

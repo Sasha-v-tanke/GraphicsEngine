@@ -115,14 +115,40 @@ VulkanResourceStateTracker& VulkanMemoryAllocator::GetResourceStates() const noe
     return m_resourceStates;
 }
 
+struct VulkanBufferAllocation::Lifetime {
+    VmaAllocator Allocator = VK_NULL_HANDLE;
+    VulkanResourceStateTracker* ResourceStates = nullptr;
+    VkBuffer Buffer = VK_NULL_HANDLE;
+    VmaAllocation Allocation = VK_NULL_HANDLE;
+
+    Lifetime(VmaAllocator allocator,
+             VulkanResourceStateTracker& resourceStates,
+             VkBuffer buffer,
+             VmaAllocation allocation) noexcept
+        : Allocator(allocator)
+        , ResourceStates(&resourceStates)
+        , Buffer(buffer)
+        , Allocation(allocation) {
+    }
+
+    Lifetime(const Lifetime&) = delete;
+
+    ~Lifetime() {
+        if (Allocator != VK_NULL_HANDLE && Buffer != VK_NULL_HANDLE) {
+            ResourceStates->ForgetBuffer(Buffer);
+            vmaDestroyBuffer(Allocator, Buffer, Allocation);
+        }
+    }
+};
+
 VulkanBufferAllocation::VulkanBufferAllocation(VmaAllocator allocator,
                                                VulkanResourceStateTracker& resourceStates,
                                                VkBuffer buffer,
                                                VmaAllocation allocation,
                                                std::uint64_t sizeBytes,
-                                               VkBufferUsageFlags usage) noexcept
+                                               VkBufferUsageFlags usage)
     : m_allocator(allocator)
-    , m_resourceStates(&resourceStates)
+    , m_lifetime(std::make_shared<Lifetime>(allocator, resourceStates, buffer, allocation))
     , m_buffer(buffer)
     , m_allocation(allocation)
     , m_sizeBytes(sizeBytes)
@@ -131,7 +157,7 @@ VulkanBufferAllocation::VulkanBufferAllocation(VmaAllocator allocator,
 
 VulkanBufferAllocation::VulkanBufferAllocation(VulkanBufferAllocation&& other) noexcept
     : m_allocator(std::exchange(other.m_allocator, VK_NULL_HANDLE))
-    , m_resourceStates(std::exchange(other.m_resourceStates, nullptr))
+    , m_lifetime(std::move(other.m_lifetime))
     , m_buffer(std::exchange(other.m_buffer, VK_NULL_HANDLE))
     , m_allocation(std::exchange(other.m_allocation, VK_NULL_HANDLE))
     , m_sizeBytes(std::exchange(other.m_sizeBytes, 0))
@@ -143,7 +169,7 @@ VulkanBufferAllocation& VulkanBufferAllocation::operator=(VulkanBufferAllocation
     if (this != &other) {
         Reset();
         m_allocator = std::exchange(other.m_allocator, VK_NULL_HANDLE);
-        m_resourceStates = std::exchange(other.m_resourceStates, nullptr);
+        m_lifetime = std::move(other.m_lifetime);
         m_buffer = std::exchange(other.m_buffer, VK_NULL_HANDLE);
         m_allocation = std::exchange(other.m_allocation, VK_NULL_HANDLE);
         m_sizeBytes = std::exchange(other.m_sizeBytes, 0);
@@ -239,30 +265,55 @@ void VulkanBufferAllocation::Unmap() noexcept {
     }
 }
 
+std::shared_ptr<void> VulkanBufferAllocation::GetRetentionToken() const noexcept {
+    return m_lifetime;
+}
+
 void VulkanBufferAllocation::Reset() noexcept {
     Unmap();
 
-    if (m_allocator != VK_NULL_HANDLE && m_buffer != VK_NULL_HANDLE) {
-        m_resourceStates->ForgetBuffer(m_buffer);
-        vmaDestroyBuffer(m_allocator, m_buffer, m_allocation);
-    }
-
     m_allocator = VK_NULL_HANDLE;
-    m_resourceStates = nullptr;
+    m_lifetime.reset();
     m_buffer = VK_NULL_HANDLE;
     m_allocation = VK_NULL_HANDLE;
     m_sizeBytes = 0;
     m_usage = 0;
 }
 
+struct VulkanImageAllocation::Lifetime {
+    VmaAllocator Allocator = VK_NULL_HANDLE;
+    VulkanResourceStateTracker* ResourceStates = nullptr;
+    VkImage Image = VK_NULL_HANDLE;
+    VmaAllocation Allocation = VK_NULL_HANDLE;
+
+    Lifetime(VmaAllocator allocator,
+             VulkanResourceStateTracker& resourceStates,
+             VkImage image,
+             VmaAllocation allocation) noexcept
+        : Allocator(allocator)
+        , ResourceStates(&resourceStates)
+        , Image(image)
+        , Allocation(allocation) {
+    }
+
+    Lifetime(const Lifetime&) = delete;
+
+    ~Lifetime() {
+        if (Allocator != VK_NULL_HANDLE && Image != VK_NULL_HANDLE) {
+            ResourceStates->ForgetImage(Image);
+            vmaDestroyImage(Allocator, Image, Allocation);
+        }
+    }
+};
+
 VulkanImageAllocation::VulkanImageAllocation(VmaAllocator allocator,
                                              VulkanResourceStateTracker& resourceStates,
                                              VkImage image,
                                              VmaAllocation allocation,
                                              const NGraphics::ImageDescriptor& descriptor,
-                                             VkImageUsageFlags usage) noexcept
+                                             VkImageUsageFlags usage)
     : m_allocator(allocator)
-    , m_resourceStates(&resourceStates)
+    , m_lifetime(std::make_shared<Lifetime>(allocator, resourceStates, image, allocation))
     , m_image(image)
     , m_allocation(allocation)
     , m_descriptor(descriptor)
@@ -271,7 +322,7 @@ VulkanImageAllocation::VulkanImageAllocation(VmaAllocator allocator,
 
 VulkanImageAllocation::VulkanImageAllocation(VulkanImageAllocation&& other) noexcept
     : m_allocator(std::exchange(other.m_allocator, VK_NULL_HANDLE))
-    , m_resourceStates(std::exchange(other.m_resourceStates, nullptr))
+    , m_lifetime(std::move(other.m_lifetime))
     , m_image(std::exchange(other.m_image, VK_NULL_HANDLE))
     , m_allocation(std::exchange(other.m_allocation, VK_NULL_HANDLE))
     , m_descriptor(other.m_descriptor)
@@ -282,7 +333,7 @@ VulkanImageAllocation& VulkanImageAllocation::operator=(VulkanImageAllocation&& 
     if (this != &other) {
         Reset();
         m_allocator = std::exchange(other.m_allocator, VK_NULL_HANDLE);
-        m_resourceStates = std::exchange(other.m_resourceStates, nullptr);
+        m_lifetime = std::move(other.m_lifetime);
         m_image = std::exchange(other.m_image, VK_NULL_HANDLE);
         m_allocation = std::exchange(other.m_allocation, VK_NULL_HANDLE);
         m_descriptor = other.m_descriptor;
@@ -312,14 +363,13 @@ bool VulkanImageAllocation::IsValid() const noexcept {
     return m_allocator != VK_NULL_HANDLE && m_image != VK_NULL_HANDLE && m_allocation != VK_NULL_HANDLE;
 }
 
-void VulkanImageAllocation::Reset() noexcept {
-    if (m_allocator != VK_NULL_HANDLE && m_image != VK_NULL_HANDLE) {
-        m_resourceStates->ForgetImage(m_image);
-        vmaDestroyImage(m_allocator, m_image, m_allocation);
-    }
+std::shared_ptr<void> VulkanImageAllocation::GetRetentionToken() const noexcept {
+    return m_lifetime;
+}
 
+void VulkanImageAllocation::Reset() noexcept {
     m_allocator = VK_NULL_HANDLE;
-    m_resourceStates = nullptr;
+    m_lifetime.reset();
     m_image = VK_NULL_HANDLE;
     m_allocation = VK_NULL_HANDLE;
     m_descriptor = {};

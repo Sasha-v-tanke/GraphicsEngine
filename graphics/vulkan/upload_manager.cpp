@@ -179,12 +179,17 @@ VulkanUploadManager::VulkanUploadManager(const VulkanDevice& device,
     }
 }
 
-VulkanUploadManager::~VulkanUploadManager() {
-    for (const PendingUpload& upload: m_pendingUploads) {
-        m_submissions.Wait(upload.Completion, std::numeric_limits<std::uint64_t>::max());
+VulkanUploadManager::~VulkanUploadManager() noexcept {
+    try {
+        for (const PendingUpload& upload: m_pendingUploads) {
+            m_submissions.Wait(upload.Completion, std::numeric_limits<std::uint64_t>::max());
+        }
+
+        ReleaseCompleted();
+    } catch (...) {
     }
 
-    ReleaseCompleted();
+    m_pendingUploads.clear();
 
     if (m_commandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(m_handle, m_commandPool, nullptr);
@@ -237,6 +242,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
     m_pendingUploads.push_back(PendingUpload{
             .Staging = std::move(staging),
             .CommandBuffer = commandBuffer,
+            .Destination = destination.GetRetentionToken(),
     });
     VulkanQueueCompletion completion{};
     try {
@@ -333,6 +339,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
     m_pendingUploads.push_back(PendingUpload{
             .Staging = std::move(staging),
             .CommandBuffer = commandBuffer,
+            .Destination = destination.GetRetentionToken(),
     });
     VulkanQueueCompletion completion{};
     try {
