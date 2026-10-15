@@ -8,6 +8,7 @@
 
 #include <GraphicsEngine/graphics/vulkan/device.h>
 #include <GraphicsEngine/graphics/vulkan/memory.h>
+#include <GraphicsEngine/graphics/vulkan/resource_state.h>
 #include <GraphicsEngine/graphics/vulkan/submission_manager.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 
@@ -17,7 +18,8 @@ class VulkanUploadManager final: public NCommon::NonTransferable {
 public:
     VulkanUploadManager(const VulkanDevice& device,
                         VulkanMemoryAllocator& memoryAllocator,
-                        VulkanSubmissionManager& submissions);
+                        VulkanSubmissionManager& submissions,
+                        VulkanResourceStateTracker& resourceStates);
 
     ~VulkanUploadManager();
 
@@ -28,7 +30,7 @@ public:
     [[nodiscard]] VulkanQueueCompletion
     UploadImage(VulkanImageAllocation& destination,
                 std::span<const std::byte> bytes,
-                VkImageLayout finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                EVulkanResourceUsage finalUsage = EVulkanResourceUsage::ShaderSampledRead);
 
     void ReleaseCompleted();
 
@@ -48,6 +50,7 @@ private:
     const VulkanDevice& m_device;
     VulkanMemoryAllocator& m_memoryAllocator;
     VulkanSubmissionManager& m_submissions;
+    VulkanResourceStateTracker& m_resourceStates;
     VkDevice m_handle = VK_NULL_HANDLE;
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
     std::vector<PendingUpload> m_pendingUploads;

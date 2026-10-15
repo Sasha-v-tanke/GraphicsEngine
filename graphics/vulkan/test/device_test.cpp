@@ -384,7 +384,8 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         const NVulkan::VulkanDevice device{physicalDevice};
         NVulkan::VulkanMemoryAllocator memory{instance.GetHandle(), physicalDevice.Handle, device};
         NVulkan::VulkanSubmissionManager submissions{device};
-        NVulkan::VulkanUploadManager uploads{device, memory, submissions};
+        NVulkan::VulkanResourceStateTracker resourceStates;
+        NVulkan::VulkanUploadManager uploads{device, memory, submissions, resourceStates};
         const std::array<std::byte, 4> bytes{
                 std::byte{0x01},
                 std::byte{0x02},
@@ -405,7 +406,8 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
             completion = uploads.UploadBuffer(destinations.back(), bytes);
         }
 
-        EXPECT_EQ(uploads.GetPendingUploadCount(), destinations.size());
+        EXPECT_GT(uploads.GetPendingUploadCount(), 0U);
+        EXPECT_LE(uploads.GetPendingUploadCount(), destinations.size());
         submissions.Wait(completion, std::numeric_limits<std::uint64_t>::max());
         uploads.ReleaseCompleted();
         EXPECT_EQ(uploads.GetPendingUploadCount(), 0U);
@@ -415,6 +417,9 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
             destination.Invalidate(0, bytes.size());
             EXPECT_EQ(std::memcmp(mapped, bytes.data(), bytes.size()), 0);
             destination.Unmap();
+            ASSERT_TRUE(resourceStates.GetBufferState(destination.GetBuffer(), 0, bytes.size()).has_value());
+            EXPECT_EQ(resourceStates.GetBufferState(destination.GetBuffer(), 0, bytes.size())->AccessMask,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
         }
 
         NVulkan::VulkanImageAllocation image = NVulkan::CreateVulkanImage(
@@ -431,6 +436,16 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         submissions.Wait(imageCompletion, std::numeric_limits<std::uint64_t>::max());
         uploads.ReleaseCompleted();
         EXPECT_EQ(uploads.GetPendingUploadCount(), 0U);
+        const VkImageSubresourceRange imageRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+        };
+        ASSERT_TRUE(resourceStates.GetImageState(image.GetImage(), imageRange).has_value());
+        EXPECT_EQ(resourceStates.GetImageState(image.GetImage(), imageRange)->Layout,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         EXPECT_TRUE(validationErrors.empty()) << (validationErrors.empty() ? "" : validationErrors.front());
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {

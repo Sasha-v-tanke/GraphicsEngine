@@ -91,7 +91,7 @@ void ValidateUploadRange(const VulkanBufferAllocation& destination,
 
 void ValidateImageUpload(const VulkanImageAllocation& destination,
                          std::span<const std::byte> bytes,
-                         VkImageLayout finalLayout) {
+                         EVulkanResourceUsage finalUsage) {
     if (!destination.IsValid()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan upload destination image is invalid");
     }
@@ -101,11 +101,7 @@ void ValidateImageUpload(const VulkanImageAllocation& destination,
                               "Vulkan upload destination image requires transfer-destination usage");
     }
 
-    if (finalLayout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && finalLayout != VK_IMAGE_LAYOUT_GENERAL) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan image upload final layout is unsupported");
-    }
-
-    if (finalLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+    if (finalUsage != EVulkanResourceUsage::ShaderSampledRead ||
         (destination.GetUsage() & VK_IMAGE_USAGE_SAMPLED_BIT) == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan sampled image upload requires sampled usage");
     }
@@ -115,75 +111,6 @@ void ValidateImageUpload(const VulkanImageAllocation& destination,
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                               "Vulkan image upload payload size does not match image extent");
     }
-}
-
-void TransitionImage(VkCommandBuffer commandBuffer,
-                     VkImage image,
-                     VkImageAspectFlags aspectMask,
-                     VkImageLayout oldLayout,
-                     VkPipelineStageFlags2 sourceStage,
-                     VkAccessFlags2 sourceAccess,
-                     VkImageLayout newLayout,
-                     VkPipelineStageFlags2 destinationStage,
-                     VkAccessFlags2 destinationAccess) {
-    const VkImageMemoryBarrier2 barrier{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = sourceStage,
-            .srcAccessMask = sourceAccess,
-            .dstStageMask = destinationStage,
-            .dstAccessMask = destinationAccess,
-            .oldLayout = oldLayout,
-            .newLayout = newLayout,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange =
-                    {
-                            .aspectMask = aspectMask,
-                            .baseMipLevel = 0,
-                            .levelCount = 1,
-                            .baseArrayLayer = 0,
-                            .layerCount = 1,
-                    },
-    };
-    const VkDependencyInfo dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext = nullptr,
-            .dependencyFlags = 0,
-            .memoryBarrierCount = 0,
-            .pMemoryBarriers = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers = nullptr,
-            .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &barrier,
-    };
-
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
-}
-
-void SynchronizeBufferUpload(VkCommandBuffer commandBuffer) {
-    const VkMemoryBarrier2 barrier{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-            .pNext = nullptr,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-    };
-    const VkDependencyInfo dependency{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext = nullptr,
-            .dependencyFlags = 0,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &barrier,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers = nullptr,
-            .imageMemoryBarrierCount = 0,
-            .pImageMemoryBarriers = nullptr,
-    };
-
-    vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
 void BeginCommandBuffer(VkCommandBuffer commandBuffer) {
@@ -215,10 +142,12 @@ void EndCommandBuffer(VkCommandBuffer commandBuffer) {
 
 VulkanUploadManager::VulkanUploadManager(const VulkanDevice& device,
                                          VulkanMemoryAllocator& memoryAllocator,
-                                         VulkanSubmissionManager& submissions)
+                                         VulkanSubmissionManager& submissions,
+                                         VulkanResourceStateTracker& resourceStates)
     : m_device(device)
     , m_memoryAllocator(memoryAllocator)
     , m_submissions(submissions)
+    , m_resourceStates(resourceStates)
     , m_handle(device.GetHandle())
     , m_commandPool(CreateCommandPool()) {
     if (m_handle == VK_NULL_HANDLE) {
@@ -259,8 +188,16 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
             .dstOffset = destinationOffsetBytes,
             .size = bytes.size(),
     };
+    if (const std::optional<VkBufferMemoryBarrier2> barrier = m_resourceStates.TransitionBuffer({
+                .Buffer = destination.GetBuffer(),
+                .Offset = destinationOffsetBytes,
+                .Size = bytes.size(),
+                .Usage = EVulkanResourceUsage::TransferWrite,
+        });
+        barrier.has_value()) {
+        RecordVulkanResourceBarrier(commandBuffer, *barrier);
+    }
     vkCmdCopyBuffer(commandBuffer, staging.GetBuffer(), destination.GetBuffer(), 1, &copyRegion);
-    SynchronizeBufferUpload(commandBuffer);
 
     EndCommandBuffer(commandBuffer);
 
@@ -286,8 +223,8 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
 
 VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& destination,
                                                        std::span<const std::byte> bytes,
-                                                       VkImageLayout finalLayout) {
-    ValidateImageUpload(destination, bytes, finalLayout);
+                                                       EVulkanResourceUsage finalUsage) {
+    ValidateImageUpload(destination, bytes, finalUsage);
     ReleaseCompleted();
 
     VulkanBufferAllocation staging = CreateVulkanStagingBuffer(m_memoryAllocator, bytes.size());
@@ -298,17 +235,23 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
 
     const NGraphics::ImageDescriptor& descriptor = destination.GetDescriptor();
     const VkImageAspectFlags aspectMask = GetImageAspect(descriptor.Format);
+    const VkImageSubresourceRange subresourceRange{
+            .aspectMask = aspectMask,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+    };
     const VkCommandBuffer commandBuffer = AllocateCommandBuffer();
     BeginCommandBuffer(commandBuffer);
-    TransitionImage(commandBuffer,
-                    destination.GetImage(),
-                    aspectMask,
-                    VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_PIPELINE_STAGE_2_NONE,
-                    VK_ACCESS_2_NONE,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    if (const std::optional<VkImageMemoryBarrier2> barrier = m_resourceStates.TransitionImage({
+                .Image = destination.GetImage(),
+                .Usage = EVulkanResourceUsage::TransferWrite,
+                .SubresourceRange = subresourceRange,
+        });
+        barrier.has_value()) {
+        RecordVulkanResourceBarrier(commandBuffer, *barrier);
+    }
 
     const VkBufferImageCopy copyRegion{
             .bufferOffset = 0,
@@ -335,15 +278,14 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1,
                            &copyRegion);
-    TransitionImage(commandBuffer,
-                    destination.GetImage(),
-                    aspectMask,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                    finalLayout,
-                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    if (const std::optional<VkImageMemoryBarrier2> barrier = m_resourceStates.TransitionImage({
+                .Image = destination.GetImage(),
+                .Usage = finalUsage,
+                .SubresourceRange = subresourceRange,
+        });
+        barrier.has_value()) {
+        RecordVulkanResourceBarrier(commandBuffer, *barrier);
+    }
     EndCommandBuffer(commandBuffer);
 
     const VkCommandBufferSubmitInfo commandBufferInfo{

@@ -326,6 +326,36 @@ VulkanBufferState MakeVulkanBufferState(EVulkanResourceUsage usage, std::uint32_
     GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unknown Vulkan buffer usage");
 }
 
+void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrier2& barrier) {
+    const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
+void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkBufferMemoryBarrier2& barrier) {
+    const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &barrier,
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
 void VulkanResourceStateTracker::ImportImage(VkImage image,
                                              VkImageSubresourceRange subresourceRange,
                                              VulkanImageState state) {

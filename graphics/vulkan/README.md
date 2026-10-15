@@ -100,10 +100,12 @@ owned until the exact timeline completion is observed; `ReleaseCompleted()`
 returns only completed uploads. Steady-state upload does not call
 `vkDeviceWaitIdle`; shutdown waits only when pending upload work remains.
 
-Image uploads centralize the Synchronization2 transitions from undefined to
-transfer-destination layout and then to the requested shader-read or general
-layout. The current manager is a serial baseline. Persistent staging arenas and
-batched submissions belong to FEATURE-0069.
+Uploads use `VulkanResourceStateTracker` for transfer state transitions. The
+caller shares that tracker with subsequent consumers, so the tracker records
+the post-upload buffer state and image shader-read state instead of leaving
+hidden layouts or broad synchronization barriers in the upload path. The
+current manager is a serial baseline. Persistent staging arenas and batched
+submissions belong to FEATURE-0069.
 
 ## Swapchain
 

@@ -53,6 +53,10 @@ struct VulkanBufferTransition {
 [[nodiscard]] VulkanBufferState MakeVulkanBufferState(EVulkanResourceUsage usage,
                                                       std::uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED);
 
+void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrier2& barrier);
+
+void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkBufferMemoryBarrier2& barrier);
+
 class VulkanResourceStateTracker final: public NCommon::NonTransferable {
 public:
     void ImportImage(VkImage image, VkImageSubresourceRange subresourceRange, VulkanImageState state);
