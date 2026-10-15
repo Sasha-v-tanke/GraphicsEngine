@@ -322,7 +322,17 @@ TEST(VulkanResourceStateTracker, SkipsBufferBarrierForReadOnlyUsageChange) {
 
     const std::optional<NVulkan::VulkanBufferState> state = tracker.GetBufferState(BufferA(), 0, VK_WHOLE_SIZE);
     ASSERT_TRUE(state.has_value());
-    EXPECT_EQ(state->AccessMask, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    EXPECT_EQ(state->StageMask, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    EXPECT_EQ(state->AccessMask, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    const std::optional<VkBufferMemoryBarrier2> writeBarrier = tracker.TransitionBuffer({
+            .Buffer = BufferA(),
+            .Usage = NVulkan::EVulkanResourceUsage::TransferWrite,
+    });
+
+    ASSERT_TRUE(writeBarrier.has_value());
+    EXPECT_EQ(writeBarrier->srcStageMask, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+    EXPECT_EQ(writeBarrier->srcAccessMask, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
 
 TEST(VulkanResourceStateTracker, RejectsPartiallyTrackedBufferTransitions) {

@@ -73,6 +73,14 @@ bool RequiresBarrier(VulkanBufferState source, VulkanBufferState destination) no
            source.QueueFamilyIndex != destination.QueueFamilyIndex;
 }
 
+VulkanBufferState MergeReadStates(VulkanBufferState source, VulkanBufferState destination) noexcept {
+    return {
+            .StageMask = source.StageMask | destination.StageMask,
+            .AccessMask = source.AccessMask | destination.AccessMask,
+            .QueueFamilyIndex = destination.QueueFamilyIndex,
+    };
+}
+
 template<class TState>
 void ValidateInitialQueueFamily(TState state) {
     if (state.QueueFamilyIndex != VK_QUEUE_FAMILY_IGNORED) {
@@ -443,12 +451,16 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
                                  destination);
     }
 
-    ReplaceBufferRange(m_buffers, transition.Buffer, transition.Offset, transition.Size, destination);
-
     if (!RequiresBarrier(*source, destination)) {
+        ReplaceBufferRange(m_buffers,
+                           transition.Buffer,
+                           transition.Offset,
+                           transition.Size,
+                           MergeReadStates(*source, destination));
         return std::nullopt;
     }
 
+    ReplaceBufferRange(m_buffers, transition.Buffer, transition.Offset, transition.Size, destination);
     return MakeBufferBarrier(transition.Buffer, transition.Offset, transition.Size, *source, destination);
 }
 
