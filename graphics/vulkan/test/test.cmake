@@ -1,5 +1,9 @@
 TEST_MODULE(VulkanBackend)
 
+PRIVATE_DEPENDS(
+    VulkanMemoryAllocator
+)
+
 SOURCES(
     device_test.cpp
     frame_context_test.cpp

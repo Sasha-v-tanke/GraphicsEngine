@@ -52,6 +52,8 @@ public:
     [[nodiscard]] bool IsValid() const noexcept;
 
     [[nodiscard]] void* Map();
+    void Flush(std::uint64_t offsetBytes, std::uint64_t sizeBytes);
+    void Invalidate(std::uint64_t offsetBytes, std::uint64_t sizeBytes);
     void Unmap() noexcept;
 
 private:

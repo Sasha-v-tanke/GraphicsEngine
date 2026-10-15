@@ -1,7 +1,10 @@
+#include <array>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <spawn.h>
 #include <string>
@@ -22,8 +25,11 @@ extern char** environ;
 #include <graphics/vulkan/device.h>
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/instance.h>
+#include <graphics/vulkan/memory.h>
 #include <graphics/vulkan/physical_device.h>
 #include <graphics/vulkan/resource_conversion.h>
+#include <graphics/vulkan/submission_manager.h>
+#include <graphics/vulkan/upload_manager.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <tests/common/test_error.h>
@@ -351,6 +357,80 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
 
 TEST(VulkanDevice, CreatesAndDestroysDeviceAndPublishesCapabilities) {
     RunSpawnedSmoke("VulkanDeviceChild.DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilities");
+}
+
+TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{MakeWindowConfig()};
+        std::vector<std::string> validationErrors;
+
+        NVulkan::VulkanInstanceConfig instanceConfig;
+        instanceConfig.ApplicationName = "GraphicsEngine Vulkan Upload Test";
+        instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
+        instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
+        instanceConfig.EnableDebugUtils = true;
+        instanceConfig.DebugMessageHandler = [&validationErrors](const NVulkan::VulkanDebugMessage& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                validationErrors.push_back(message.Message);
+            }
+        };
+
+        NVulkan::VulkanInstance instance{instanceConfig};
+        const NVulkan::NGlfw::VulkanSurface surface{instance, window};
+        const NVulkan::VulkanPhysicalDeviceSelection physicalDevice =
+                NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
+        const NVulkan::VulkanDevice device{physicalDevice};
+        NVulkan::VulkanMemoryAllocator memory{instance.GetHandle(), physicalDevice.Handle, device};
+        NVulkan::VulkanSubmissionManager submissions{device};
+        NVulkan::VulkanUploadManager uploads{device, memory, submissions};
+        NVulkan::VulkanBufferAllocation destination = NVulkan::CreateVulkanBuffer(
+                memory,
+                {
+                        .SizeBytes = 4,
+                        .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                        .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+                });
+        const std::array<std::byte, 4> bytes{
+                std::byte{0x01},
+                std::byte{0x02},
+                std::byte{0x03},
+                std::byte{0x04},
+        };
+
+        const NVulkan::VulkanQueueCompletion completion = uploads.UploadBuffer(destination, bytes);
+
+        EXPECT_EQ(uploads.GetPendingUploadCount(), 1U);
+        submissions.Wait(completion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+        EXPECT_EQ(uploads.GetPendingUploadCount(), 0U);
+
+        NVulkan::VulkanImageAllocation image = NVulkan::CreateVulkanImage(
+                memory,
+                {
+                        .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                        .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                        .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+                        .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+                });
+        const NVulkan::VulkanQueueCompletion imageCompletion = uploads.UploadImage(image, bytes);
+
+        EXPECT_EQ(uploads.GetPendingUploadCount(), 1U);
+        submissions.Wait(imageCompletion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+        EXPECT_EQ(uploads.GetPendingUploadCount(), 0U);
+        EXPECT_TRUE(validationErrors.empty()) << (validationErrors.empty() ? "" : validationErrors.front());
+    } catch (const NCommon::Exception& exception) {
+        if (IsEnvironmentFailure(exception)) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+
+        throw;
+    }
+}
+
+TEST(VulkanUploadManager, RetainsStagingUntilTimelineCompletion) {
+    RunSpawnedSmoke("VulkanUploadManagerChild.DISABLED_RetainsStagingUntilTimelineCompletion");
 }
 
 } // namespace

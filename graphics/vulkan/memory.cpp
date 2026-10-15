@@ -72,6 +72,10 @@ VulkanMemoryAllocator::VulkanMemoryAllocator(VkInstance instance,
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan memory allocator requires a device");
     }
 
+    const VmaVulkanFunctions functions{
+            .vkGetInstanceProcAddr = vkGetInstanceProcAddr,
+            .vkGetDeviceProcAddr = vkGetDeviceProcAddr,
+    };
     const VmaAllocatorCreateInfo createInfo{
             .flags = 0,
             .physicalDevice = physicalDevice,
@@ -80,7 +84,7 @@ VulkanMemoryAllocator::VulkanMemoryAllocator(VkInstance instance,
             .pAllocationCallbacks = nullptr,
             .pDeviceMemoryCallbacks = nullptr,
             .pHeapSizeLimit = nullptr,
-            .pVulkanFunctions = nullptr,
+            .pVulkanFunctions = &functions,
             .instance = instance,
             .vulkanApiVersion = VK_API_VERSION_1_3,
             .pTypeExternalMemoryHandleTypes = nullptr,
@@ -180,6 +184,42 @@ void* VulkanBufferAllocation::Map() {
     m_mapped = true;
 
     return data;
+}
+
+void VulkanBufferAllocation::Flush(std::uint64_t offsetBytes, std::uint64_t sizeBytes) {
+    if (!m_mapped) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Vulkan buffer allocation must be mapped before flushing");
+    }
+
+    if (offsetBytes > m_sizeBytes || sizeBytes > m_sizeBytes - offsetBytes) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer flush range is out of bounds");
+    }
+
+    const VkResult result = vmaFlushAllocation(m_allocator, m_allocation, offsetBytes, sizeBytes);
+    if (result != VK_SUCCESS) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Failed to flush Vulkan buffer allocation: {}",
+                              GetVkResultName(result));
+    }
+}
+
+void VulkanBufferAllocation::Invalidate(std::uint64_t offsetBytes, std::uint64_t sizeBytes) {
+    if (!m_mapped) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Vulkan buffer allocation must be mapped before invalidating");
+    }
+
+    if (offsetBytes > m_sizeBytes || sizeBytes > m_sizeBytes - offsetBytes) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer invalidate range is out of bounds");
+    }
+
+    const VkResult result = vmaInvalidateAllocation(m_allocator, m_allocation, offsetBytes, sizeBytes);
+    if (result != VK_SUCCESS) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Failed to invalidate Vulkan buffer allocation: {}",
+                              GetVkResultName(result));
+    }
 }
 
 void VulkanBufferAllocation::Unmap() noexcept {

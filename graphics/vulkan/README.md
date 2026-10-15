@@ -87,6 +87,24 @@ host-synchronization boundary.
 device snapshot. The current public capability surface maps Vulkan presentation
 support, timeline semaphore support and the backend frame-in-flight policy.
 
+## Memory And Uploads
+
+Vulkan memory allocation is internal to the backend and uses VMA. Buffer and
+image allocation wrappers own both the Vulkan object and its VMA allocation, so
+partially constructed resources do not escape and destruction is paired.
+
+`VulkanUploadManager` stages buffer and 2D color-image payloads in host-visible
+VMA allocations. Upload command buffers use the graphics queue and the existing
+timeline submission manager. Staging buffers and their command buffers remain
+owned until the exact timeline completion is observed; `ReleaseCompleted()`
+returns only completed uploads. Steady-state upload does not call
+`vkDeviceWaitIdle`; shutdown waits only when pending upload work remains.
+
+Image uploads centralize the Synchronization2 transitions from undefined to
+transfer-destination layout and then to the requested shader-read or general
+layout. The current manager is a serial baseline. Persistent staging arenas and
+batched submissions belong to FEATURE-0069.
+
 ## Swapchain
 
 `VulkanSwapchain` owns one `VkSwapchainKHR` for one `VkSurfaceKHR` and the
