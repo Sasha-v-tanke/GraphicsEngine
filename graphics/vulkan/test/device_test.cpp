@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <spawn.h>
@@ -384,26 +385,37 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         NVulkan::VulkanMemoryAllocator memory{instance.GetHandle(), physicalDevice.Handle, device};
         NVulkan::VulkanSubmissionManager submissions{device};
         NVulkan::VulkanUploadManager uploads{device, memory, submissions};
-        NVulkan::VulkanBufferAllocation destination = NVulkan::CreateVulkanBuffer(
-                memory,
-                {
-                        .SizeBytes = 4,
-                        .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
-                        .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
-                });
         const std::array<std::byte, 4> bytes{
                 std::byte{0x01},
                 std::byte{0x02},
                 std::byte{0x03},
                 std::byte{0x04},
         };
+        std::vector<NVulkan::VulkanBufferAllocation> destinations;
+        destinations.reserve(32);
+        NVulkan::VulkanQueueCompletion completion{};
+        for (std::size_t index = 0; index < 32; ++index) {
+            destinations.emplace_back(NVulkan::CreateVulkanBuffer(
+                    memory,
+                    {
+                            .SizeBytes = bytes.size(),
+                            .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
+                    }));
+            completion = uploads.UploadBuffer(destinations.back(), bytes);
+        }
 
-        const NVulkan::VulkanQueueCompletion completion = uploads.UploadBuffer(destination, bytes);
-
-        EXPECT_EQ(uploads.GetPendingUploadCount(), 1U);
+        EXPECT_EQ(uploads.GetPendingUploadCount(), destinations.size());
         submissions.Wait(completion, std::numeric_limits<std::uint64_t>::max());
         uploads.ReleaseCompleted();
         EXPECT_EQ(uploads.GetPendingUploadCount(), 0U);
+
+        for (NVulkan::VulkanBufferAllocation& destination: destinations) {
+            void* mapped = destination.Map();
+            destination.Invalidate(0, bytes.size());
+            EXPECT_EQ(std::memcmp(mapped, bytes.data(), bytes.size()), 0);
+            destination.Unmap();
+        }
 
         NVulkan::VulkanImageAllocation image = NVulkan::CreateVulkanImage(
                 memory,

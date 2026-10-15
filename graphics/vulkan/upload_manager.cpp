@@ -162,6 +162,30 @@ void TransitionImage(VkCommandBuffer commandBuffer,
     vkCmdPipelineBarrier2(commandBuffer, &dependency);
 }
 
+void SynchronizeBufferUpload(VkCommandBuffer commandBuffer) {
+    const VkMemoryBarrier2 barrier{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+    };
+    const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 1,
+            .pMemoryBarriers = &barrier,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
+    };
+
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
 void BeginCommandBuffer(VkCommandBuffer commandBuffer) {
     const VkCommandBufferBeginInfo beginInfo{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -236,6 +260,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
             .size = bytes.size(),
     };
     vkCmdCopyBuffer(commandBuffer, staging.GetBuffer(), destination.GetBuffer(), 1, &copyRegion);
+    SynchronizeBufferUpload(commandBuffer);
 
     EndCommandBuffer(commandBuffer);
 
@@ -245,6 +270,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
             .commandBuffer = commandBuffer,
             .deviceMask = 0,
     };
+    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
     const VulkanQueueCompletion completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
             .CommandBuffers = {commandBufferInfo},
     });
@@ -317,7 +343,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
                     VK_ACCESS_2_TRANSFER_WRITE_BIT,
                     finalLayout,
                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    VK_ACCESS_2_MEMORY_READ_BIT);
+                    VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     EndCommandBuffer(commandBuffer);
 
     const VkCommandBufferSubmitInfo commandBufferInfo{
@@ -326,6 +352,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
             .commandBuffer = commandBuffer,
             .deviceMask = 0,
     };
+    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
     const VulkanQueueCompletion completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
             .CommandBuffers = {commandBufferInfo},
     });
