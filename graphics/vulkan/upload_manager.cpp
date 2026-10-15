@@ -182,6 +182,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
 
     const VkCommandBuffer commandBuffer = AllocateCommandBuffer();
     BeginCommandBuffer(commandBuffer);
+    VulkanResourceStateTracker::Transaction stateTransaction = m_resourceStates.BeginTransaction();
 
     const VkBufferCopy copyRegion{
             .srcOffset = 0,
@@ -211,6 +212,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& 
     const VulkanQueueCompletion completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
             .CommandBuffers = {commandBufferInfo},
     });
+    stateTransaction.Commit();
 
     m_pendingUploads.push_back(PendingUpload{
             .Completion = completion,
@@ -244,6 +246,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
     };
     const VkCommandBuffer commandBuffer = AllocateCommandBuffer();
     BeginCommandBuffer(commandBuffer);
+    VulkanResourceStateTracker::Transaction stateTransaction = m_resourceStates.BeginTransaction();
     if (const std::optional<VkImageMemoryBarrier2> barrier = m_resourceStates.TransitionImage({
                 .Image = destination.GetImage(),
                 .Usage = EVulkanResourceUsage::TransferWrite,
@@ -298,6 +301,7 @@ VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& de
     const VulkanQueueCompletion completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
             .CommandBuffers = {commandBufferInfo},
     });
+    stateTransaction.Commit();
 
     m_pendingUploads.push_back(PendingUpload{
             .Completion = completion,

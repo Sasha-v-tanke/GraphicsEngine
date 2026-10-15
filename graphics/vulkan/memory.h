@@ -6,6 +6,7 @@
 
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/image.h>
+#include <GraphicsEngine/graphics/vulkan/resource_state.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 
@@ -24,20 +25,26 @@ class VulkanDevice;
 
 class VulkanMemoryAllocator final: public NCommon::NonTransferable {
 public:
-    VulkanMemoryAllocator(VkInstance instance, VkPhysicalDevice physicalDevice, const VulkanDevice& device);
+    VulkanMemoryAllocator(VkInstance instance,
+                          VkPhysicalDevice physicalDevice,
+                          const VulkanDevice& device,
+                          VulkanResourceStateTracker& resourceStates);
 
     ~VulkanMemoryAllocator();
 
     [[nodiscard]] VmaAllocator GetHandle() const noexcept;
+    [[nodiscard]] VulkanResourceStateTracker& GetResourceStates() const noexcept;
 
 private:
     VmaAllocator m_allocator = VK_NULL_HANDLE;
+    VulkanResourceStateTracker& m_resourceStates;
 };
 
 class VulkanBufferAllocation final: public NCommon::NonCopyable {
 public:
     VulkanBufferAllocation() = default;
     VulkanBufferAllocation(VmaAllocator allocator,
+                           VulkanResourceStateTracker& resourceStates,
                            VkBuffer buffer,
                            VmaAllocation allocation,
                            std::uint64_t sizeBytes,
@@ -61,6 +68,7 @@ private:
 
 private:
     VmaAllocator m_allocator = VK_NULL_HANDLE;
+    VulkanResourceStateTracker* m_resourceStates = nullptr;
     VkBuffer m_buffer = VK_NULL_HANDLE;
     VmaAllocation m_allocation = VK_NULL_HANDLE;
     std::uint64_t m_sizeBytes = 0;
@@ -72,6 +80,7 @@ class VulkanImageAllocation final: public NCommon::NonCopyable {
 public:
     VulkanImageAllocation() = default;
     VulkanImageAllocation(VmaAllocator allocator,
+                          VulkanResourceStateTracker& resourceStates,
                           VkImage image,
                           VmaAllocation allocation,
                           const NGraphics::ImageDescriptor& descriptor,
@@ -90,6 +99,7 @@ private:
 
 private:
     VmaAllocator m_allocator = VK_NULL_HANDLE;
+    VulkanResourceStateTracker* m_resourceStates = nullptr;
     VkImage m_image = VK_NULL_HANDLE;
     VmaAllocation m_allocation = VK_NULL_HANDLE;
     NGraphics::ImageDescriptor m_descriptor;

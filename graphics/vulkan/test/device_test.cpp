@@ -382,9 +382,9 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         const NVulkan::VulkanPhysicalDeviceSelection physicalDevice =
                 NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
         const NVulkan::VulkanDevice device{physicalDevice};
-        NVulkan::VulkanMemoryAllocator memory{instance.GetHandle(), physicalDevice.Handle, device};
-        NVulkan::VulkanSubmissionManager submissions{device};
         NVulkan::VulkanResourceStateTracker resourceStates;
+        NVulkan::VulkanMemoryAllocator memory{instance.GetHandle(), physicalDevice.Handle, device, resourceStates};
+        NVulkan::VulkanSubmissionManager submissions{device};
         NVulkan::VulkanUploadManager uploads{device, memory, submissions, resourceStates};
         const std::array<std::byte, 4> bytes{
                 std::byte{0x01},
@@ -421,6 +421,9 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
             EXPECT_EQ(resourceStates.GetBufferState(destination.GetBuffer(), 0, bytes.size())->AccessMask,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT);
         }
+        const VkBuffer destroyedBuffer = destinations.front().GetBuffer();
+        destinations.clear();
+        EXPECT_FALSE(resourceStates.GetBufferState(destroyedBuffer, 0, bytes.size()).has_value());
 
         NVulkan::VulkanImageAllocation image = NVulkan::CreateVulkanImage(
                 memory,
@@ -446,6 +449,9 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         ASSERT_TRUE(resourceStates.GetImageState(image.GetImage(), imageRange).has_value());
         EXPECT_EQ(resourceStates.GetImageState(image.GetImage(), imageRange)->Layout,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const VkImage destroyedImage = image.GetImage();
+        image = {};
+        EXPECT_FALSE(resourceStates.GetImageState(destroyedImage, imageRange).has_value());
         EXPECT_TRUE(validationErrors.empty()) << (validationErrors.empty() ? "" : validationErrors.front());
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {

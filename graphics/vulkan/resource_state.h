@@ -6,6 +6,7 @@
 #include <vector>
 #include <vulkan.h>
 
+#include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 
 namespace NVulkan {
@@ -59,6 +60,10 @@ void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkBufferMe
 
 class VulkanResourceStateTracker final: public NCommon::NonTransferable {
 public:
+    class Transaction;
+
+    [[nodiscard]] Transaction BeginTransaction();
+
     void ImportImage(VkImage image, VkImageSubresourceRange subresourceRange, VulkanImageState state);
 
     void ForgetImage(VkImage image) noexcept;
@@ -101,6 +106,24 @@ private:
     [[nodiscard]] static ImageKey MakeImageKey(VkImage image, VkImageSubresourceRange subresourceRange);
     [[nodiscard]] static std::vector<ImageKey> MakeImageKeys(VkImage image, VkImageSubresourceRange subresourceRange);
 
+    std::unordered_map<ImageKey, VulkanImageState, ImageKeyHash> m_images;
+    std::vector<BufferRangeState> m_buffers;
+};
+
+class VulkanResourceStateTracker::Transaction final: public NCommon::NonCopyable {
+public:
+    explicit Transaction(VulkanResourceStateTracker& tracker);
+    Transaction(Transaction&& other) noexcept;
+    Transaction& operator=(Transaction&& other) noexcept;
+    ~Transaction();
+
+    void Commit() noexcept;
+
+private:
+    void Rollback() noexcept;
+
+private:
+    VulkanResourceStateTracker* m_tracker = nullptr;
     std::unordered_map<ImageKey, VulkanImageState, ImageKeyHash> m_images;
     std::vector<BufferRangeState> m_buffers;
 };

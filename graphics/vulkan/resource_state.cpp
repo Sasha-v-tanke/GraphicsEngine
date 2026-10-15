@@ -326,6 +326,10 @@ VulkanBufferState MakeVulkanBufferState(EVulkanResourceUsage usage, std::uint32_
     GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unknown Vulkan buffer usage");
 }
 
+VulkanResourceStateTracker::Transaction VulkanResourceStateTracker::BeginTransaction() {
+    return Transaction{*this};
+}
+
 void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrier2& barrier) {
     const VkDependencyInfo dependency{
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -365,6 +369,45 @@ void VulkanResourceStateTracker::ImportImage(VkImage image,
 
     for (const ImageKey key: MakeImageKeys(image, subresourceRange)) {
         m_images[key] = state;
+    }
+}
+
+VulkanResourceStateTracker::Transaction::Transaction(VulkanResourceStateTracker& tracker)
+    : m_tracker(&tracker)
+    , m_images(tracker.m_images)
+    , m_buffers(tracker.m_buffers) {
+}
+
+VulkanResourceStateTracker::Transaction::Transaction(Transaction&& other) noexcept
+    : m_tracker(std::exchange(other.m_tracker, nullptr))
+    , m_images(std::move(other.m_images))
+    , m_buffers(std::move(other.m_buffers)) {
+}
+
+VulkanResourceStateTracker::Transaction&
+VulkanResourceStateTracker::Transaction::operator=(Transaction&& other) noexcept {
+    if (this != &other) {
+        Rollback();
+        m_tracker = std::exchange(other.m_tracker, nullptr);
+        m_images = std::move(other.m_images);
+        m_buffers = std::move(other.m_buffers);
+    }
+    return *this;
+}
+
+VulkanResourceStateTracker::Transaction::~Transaction() {
+    Rollback();
+}
+
+void VulkanResourceStateTracker::Transaction::Commit() noexcept {
+    m_tracker = nullptr;
+}
+
+void VulkanResourceStateTracker::Transaction::Rollback() noexcept {
+    if (m_tracker != nullptr) {
+        m_tracker->m_images.swap(m_images);
+        m_tracker->m_buffers.swap(m_buffers);
+        m_tracker = nullptr;
     }
 }
 

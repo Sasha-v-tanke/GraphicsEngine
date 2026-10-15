@@ -59,7 +59,9 @@ std::string_view GetVkResultName(VkResult result) {
 
 VulkanMemoryAllocator::VulkanMemoryAllocator(VkInstance instance,
                                              VkPhysicalDevice physicalDevice,
-                                             const VulkanDevice& device) {
+                                             const VulkanDevice& device,
+                                             VulkanResourceStateTracker& resourceStates)
+    : m_resourceStates(resourceStates) {
     if (instance == VK_NULL_HANDLE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan memory allocator requires an instance");
     }
@@ -109,12 +111,18 @@ VmaAllocator VulkanMemoryAllocator::GetHandle() const noexcept {
     return m_allocator;
 }
 
+VulkanResourceStateTracker& VulkanMemoryAllocator::GetResourceStates() const noexcept {
+    return m_resourceStates;
+}
+
 VulkanBufferAllocation::VulkanBufferAllocation(VmaAllocator allocator,
+                                               VulkanResourceStateTracker& resourceStates,
                                                VkBuffer buffer,
                                                VmaAllocation allocation,
                                                std::uint64_t sizeBytes,
                                                VkBufferUsageFlags usage) noexcept
     : m_allocator(allocator)
+    , m_resourceStates(&resourceStates)
     , m_buffer(buffer)
     , m_allocation(allocation)
     , m_sizeBytes(sizeBytes)
@@ -123,6 +131,7 @@ VulkanBufferAllocation::VulkanBufferAllocation(VmaAllocator allocator,
 
 VulkanBufferAllocation::VulkanBufferAllocation(VulkanBufferAllocation&& other) noexcept
     : m_allocator(std::exchange(other.m_allocator, VK_NULL_HANDLE))
+    , m_resourceStates(std::exchange(other.m_resourceStates, nullptr))
     , m_buffer(std::exchange(other.m_buffer, VK_NULL_HANDLE))
     , m_allocation(std::exchange(other.m_allocation, VK_NULL_HANDLE))
     , m_sizeBytes(std::exchange(other.m_sizeBytes, 0))
@@ -134,6 +143,7 @@ VulkanBufferAllocation& VulkanBufferAllocation::operator=(VulkanBufferAllocation
     if (this != &other) {
         Reset();
         m_allocator = std::exchange(other.m_allocator, VK_NULL_HANDLE);
+        m_resourceStates = std::exchange(other.m_resourceStates, nullptr);
         m_buffer = std::exchange(other.m_buffer, VK_NULL_HANDLE);
         m_allocation = std::exchange(other.m_allocation, VK_NULL_HANDLE);
         m_sizeBytes = std::exchange(other.m_sizeBytes, 0);
@@ -233,10 +243,12 @@ void VulkanBufferAllocation::Reset() noexcept {
     Unmap();
 
     if (m_allocator != VK_NULL_HANDLE && m_buffer != VK_NULL_HANDLE) {
+        m_resourceStates->ForgetBuffer(m_buffer);
         vmaDestroyBuffer(m_allocator, m_buffer, m_allocation);
     }
 
     m_allocator = VK_NULL_HANDLE;
+    m_resourceStates = nullptr;
     m_buffer = VK_NULL_HANDLE;
     m_allocation = VK_NULL_HANDLE;
     m_sizeBytes = 0;
@@ -244,11 +256,13 @@ void VulkanBufferAllocation::Reset() noexcept {
 }
 
 VulkanImageAllocation::VulkanImageAllocation(VmaAllocator allocator,
+                                             VulkanResourceStateTracker& resourceStates,
                                              VkImage image,
                                              VmaAllocation allocation,
                                              const NGraphics::ImageDescriptor& descriptor,
                                              VkImageUsageFlags usage) noexcept
     : m_allocator(allocator)
+    , m_resourceStates(&resourceStates)
     , m_image(image)
     , m_allocation(allocation)
     , m_descriptor(descriptor)
@@ -257,6 +271,7 @@ VulkanImageAllocation::VulkanImageAllocation(VmaAllocator allocator,
 
 VulkanImageAllocation::VulkanImageAllocation(VulkanImageAllocation&& other) noexcept
     : m_allocator(std::exchange(other.m_allocator, VK_NULL_HANDLE))
+    , m_resourceStates(std::exchange(other.m_resourceStates, nullptr))
     , m_image(std::exchange(other.m_image, VK_NULL_HANDLE))
     , m_allocation(std::exchange(other.m_allocation, VK_NULL_HANDLE))
     , m_descriptor(other.m_descriptor)
@@ -267,6 +282,7 @@ VulkanImageAllocation& VulkanImageAllocation::operator=(VulkanImageAllocation&& 
     if (this != &other) {
         Reset();
         m_allocator = std::exchange(other.m_allocator, VK_NULL_HANDLE);
+        m_resourceStates = std::exchange(other.m_resourceStates, nullptr);
         m_image = std::exchange(other.m_image, VK_NULL_HANDLE);
         m_allocation = std::exchange(other.m_allocation, VK_NULL_HANDLE);
         m_descriptor = other.m_descriptor;
@@ -298,10 +314,12 @@ bool VulkanImageAllocation::IsValid() const noexcept {
 
 void VulkanImageAllocation::Reset() noexcept {
     if (m_allocator != VK_NULL_HANDLE && m_image != VK_NULL_HANDLE) {
+        m_resourceStates->ForgetImage(m_image);
         vmaDestroyImage(m_allocator, m_image, m_allocation);
     }
 
     m_allocator = VK_NULL_HANDLE;
+    m_resourceStates = nullptr;
     m_image = VK_NULL_HANDLE;
     m_allocation = VK_NULL_HANDLE;
     m_descriptor = {};
@@ -346,7 +364,12 @@ VulkanBufferAllocation CreateVulkanBuffer(VulkanMemoryAllocator& allocator,
                               GetVkResultName(result));
     }
 
-    return VulkanBufferAllocation{allocator.GetHandle(), buffer, allocation, descriptor.SizeBytes, usage};
+    return VulkanBufferAllocation{allocator.GetHandle(),
+                                  allocator.GetResourceStates(),
+                                  buffer,
+                                  allocation,
+                                  descriptor.SizeBytes,
+                                  usage};
 }
 
 VulkanBufferAllocation CreateVulkanStagingBuffer(VulkanMemoryAllocator& allocator, std::uint64_t sizeBytes) {
@@ -406,7 +429,12 @@ VulkanImageAllocation CreateVulkanImage(VulkanMemoryAllocator& allocator,
                               GetVkResultName(result));
     }
 
-    return VulkanImageAllocation{allocator.GetHandle(), image, allocation, descriptor, usage};
+    return VulkanImageAllocation{allocator.GetHandle(),
+                                 allocator.GetResourceStates(),
+                                 image,
+                                 allocation,
+                                 descriptor,
+                                 usage};
 }
 
 } // namespace NVulkan
