@@ -48,6 +48,26 @@ VkImageSubresourceRange ColorMipChainRange() {
     };
 }
 
+VkImageSubresourceRange DepthStencilRange() {
+    return {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+    };
+}
+
+VkImageSubresourceRange DepthRange() {
+    return {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+    };
+}
+
 TEST(VulkanResourceStateTracker, ConvertsSemanticImageUsages) {
     const NVulkan::VulkanImageState present = NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Present, 7);
     EXPECT_EQ(present.StageMask, VK_PIPELINE_STAGE_2_NONE);
@@ -195,6 +215,24 @@ TEST(VulkanResourceStateTracker, ExpandsImportedImageRangesToSubresources) {
 
     const std::optional<NVulkan::VulkanImageState> wholeState = tracker.GetImageState(ImageA(), ColorMipChainRange());
     EXPECT_FALSE(wholeState.has_value());
+}
+
+TEST(VulkanResourceStateTracker, SplitsImageAspectMasksIntoSubresources) {
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportImage(ImageA(),
+                        DepthStencilRange(),
+                        NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::TransferWrite));
+
+    const std::optional<VkImageMemoryBarrier2> barrier = tracker.TransitionImage({
+            .Image = ImageA(),
+            .Usage = NVulkan::EVulkanResourceUsage::ShaderSampledRead,
+            .SubresourceRange = DepthRange(),
+    });
+
+    ASSERT_TRUE(barrier.has_value());
+    EXPECT_EQ(barrier->oldLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    EXPECT_EQ(barrier->srcAccessMask, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    EXPECT_EQ(barrier->subresourceRange.aspectMask, VK_IMAGE_ASPECT_DEPTH_BIT);
 }
 
 TEST(VulkanResourceStateTracker, EmitsBarrierForRepeatedWriteUsage) {

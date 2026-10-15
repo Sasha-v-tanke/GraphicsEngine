@@ -482,21 +482,26 @@ std::vector<VulkanResourceStateTracker::ImageKey>
 VulkanResourceStateTracker::MakeImageKeys(VkImage image, VkImageSubresourceRange subresourceRange) {
     if (subresourceRange.levelCount == VK_REMAINING_MIP_LEVELS ||
         subresourceRange.layerCount == VK_REMAINING_ARRAY_LAYERS || subresourceRange.levelCount == 0 ||
-        subresourceRange.layerCount == 0) {
+        subresourceRange.layerCount == 0 || subresourceRange.aspectMask == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                               "Vulkan image state tracking requires explicit non-empty subresource ranges");
     }
 
     std::vector<ImageKey> keys;
-    keys.reserve(subresourceRange.levelCount * subresourceRange.layerCount);
-    for (std::uint32_t mip = 0; mip < subresourceRange.levelCount; ++mip) {
-        for (std::uint32_t layer = 0; layer < subresourceRange.layerCount; ++layer) {
-            keys.push_back({
-                    .Image = image,
-                    .AspectMask = subresourceRange.aspectMask,
-                    .MipLevel = subresourceRange.baseMipLevel + mip,
-                    .ArrayLayer = subresourceRange.baseArrayLayer + layer,
-            });
+    VkImageAspectFlags remainingAspects = subresourceRange.aspectMask;
+    while (remainingAspects != 0) {
+        const VkImageAspectFlags aspect = remainingAspects & (0U - remainingAspects);
+        remainingAspects &= ~aspect;
+
+        for (std::uint32_t mip = 0; mip < subresourceRange.levelCount; ++mip) {
+            for (std::uint32_t layer = 0; layer < subresourceRange.layerCount; ++layer) {
+                keys.push_back({
+                        .Image = image,
+                        .AspectMask = aspect,
+                        .MipLevel = subresourceRange.baseMipLevel + mip,
+                        .ArrayLayer = subresourceRange.baseArrayLayer + layer,
+                });
+            }
         }
     }
     return keys;
