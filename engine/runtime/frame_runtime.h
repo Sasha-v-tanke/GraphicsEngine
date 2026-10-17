@@ -1,5 +1,6 @@
 #pragma once
 
+#include <future>
 #include <memory>
 #include <memory_resource>
 
@@ -43,6 +44,11 @@ public:
     }
 
     virtual void Draw(const FrameContext& frame) = 0;
+
+    [[nodiscard]] virtual std::shared_future<void> SubmitFrame(const FrameContext& frame) {
+        Draw(frame);
+        return {};
+    }
 };
 
 [[nodiscard]] std::unique_ptr<IFrameRuntime> MakeDefaultFrameRuntime();
