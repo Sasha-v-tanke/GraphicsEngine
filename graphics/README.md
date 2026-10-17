@@ -37,3 +37,7 @@ pipeline cache mechanics remain backend-local.
 
 Pipeline destruction accepts an optional `CompletionPoint`, so a backend can defer physical destruction until all
 submitted GPU users are complete.
+
+Backend pipeline IDs must be nonzero and unique among live pipelines. A repeated live ID is a backend contract
+violation: creation fails without destroying the already registered object. Unpublished objects with a fresh ID
+are destroyed if registry publication throws.

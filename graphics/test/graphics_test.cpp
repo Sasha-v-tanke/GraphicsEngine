@@ -1276,7 +1276,7 @@ TEST_F(GraphicsTest, RejectsForeignAndStaleGraphicsPipelineHandles) {
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graphics.GetGraphicsPipelineDescriptor(pipeline); });
 }
 
-TEST_F(GraphicsTest, RollsBackBackendPipelineWhenPublicationFails) {
+TEST_F(GraphicsTest, RejectsDuplicateBackendPipelineWithoutDestroyingRegisteredObject) {
     NGraphics::Graphics graphics = CreateGraphics();
     const NGraphics::GraphicsPipelineHandle first =
             graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources));
@@ -1286,10 +1286,13 @@ TEST_F(GraphicsTest, RollsBackBackendPipelineWhenPublicationFails) {
     ExpectError(NCommon::EError::INVALID_STATE,
                 [&] { (void)graphics.CreateGraphicsPipeline(MakeGraphicsPipelineDescriptor(m_resources)); });
 
+    EXPECT_TRUE(m_state.DestroyedGraphicsPipelines.empty());
+    EXPECT_EQ(graphics.GetGraphicsPipelineDescriptor(first), MakeGraphicsPipelineDescriptor(m_resources));
+
+    graphics.DestroyGraphicsPipeline(first);
     ASSERT_EQ(m_state.DestroyedGraphicsPipelines.size(), 1U);
     EXPECT_EQ(m_state.DestroyedGraphicsPipelines[0].first, first.GetValue());
     EXPECT_FALSE(m_state.DestroyedGraphicsPipelines[0].second.has_value());
-    EXPECT_EQ(graphics.GetGraphicsPipelineDescriptor(first), MakeGraphicsPipelineDescriptor(m_resources));
 }
 
 TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredGraphicsPipelineDestruction) {

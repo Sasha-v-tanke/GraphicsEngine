@@ -322,6 +322,10 @@ GraphicsPipelineHandle Graphics::CreateGraphicsPipeline(const GraphicsPipelineDe
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned invalid pipeline handle");
     }
 
+    if (m_graphicsPipelines.contains(value)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned duplicate pipeline handle");
+    }
+
     BackendObjectCreationGuard creationGuard{
             *m_backend,
             value,
