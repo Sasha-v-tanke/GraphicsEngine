@@ -84,7 +84,7 @@ public:
         : m_device(device) {
     }
     ~ShaderModules() {
-        for (const VkShaderModule module: Handles) {
+        for (VkShaderModule module: Handles) {
             vkDestroyShaderModule(m_device, module, nullptr);
         }
     }
@@ -220,6 +220,8 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
         const auto& words = shader.GetArtifact()->GetWords();
         const VkShaderModuleCreateInfo moduleInfo{
                 .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
                 .codeSize = words.size() * sizeof(std::uint32_t),
                 .pCode = words.data(),
         };
@@ -228,14 +230,18 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
         modules.Handles.push_back(module);
         stages.push_back({
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
                 .stage = shader.GetArtifact()->GetStage() == NResources::EShaderStage::VERTEX
                                ? VK_SHADER_STAGE_VERTEX_BIT
                                : VK_SHADER_STAGE_FRAGMENT_BIT,
                 .module = module,
                 .pName = shader.GetEntryPoint().c_str(),
+                .pSpecializationInfo = nullptr,
         });
     }
     std::vector<VkVertexInputBindingDescription> bindings;
+    bindings.reserve(descriptor.VertexLayout.Bindings.size());
     for (const auto& binding: descriptor.VertexLayout.Bindings) {
         bindings.push_back({binding.Binding,
                             binding.StrideBytes,
@@ -243,11 +249,14 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
                                                                                      : VK_VERTEX_INPUT_RATE_INSTANCE});
     }
     std::vector<VkVertexInputAttributeDescription> attributes;
+    attributes.reserve(descriptor.VertexLayout.Attributes.size());
     for (const auto& attribute: descriptor.VertexLayout.Attributes) {
         attributes.push_back({attribute.Location, attribute.Binding, Format(attribute.Format), attribute.OffsetBytes});
     }
     const VkPipelineVertexInputStateCreateInfo vertexInput{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
             .vertexBindingDescriptionCount = static_cast<std::uint32_t>(bindings.size()),
             .pVertexBindingDescriptions = bindings.data(),
             .vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size()),
@@ -255,20 +264,31 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
     };
     const VkPipelineInputAssemblyStateCreateInfo assembly{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
             .topology = Convert(descriptor.Topology,
                                 std::array{VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                                            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
                                            VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
                                            VK_PRIMITIVE_TOPOLOGY_LINE_STRIP,
                                            VK_PRIMITIVE_TOPOLOGY_POINT_LIST}),
+            .primitiveRestartEnable = VK_FALSE,
     };
     const VkPipelineViewportStateCreateInfo viewport{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
             .viewportCount = 1,
+            .pViewports = nullptr,
             .scissorCount = 1,
+            .pScissors = nullptr,
     };
     const VkPipelineRasterizationStateCreateInfo raster{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthClampEnable = VK_FALSE,
+            .rasterizerDiscardEnable = VK_FALSE,
             .polygonMode = VK_POLYGON_MODE_FILL,
             .cullMode = Convert(descriptor.RasterState.CullMode,
                                 std::array<VkCullModeFlags, 4>{VK_CULL_MODE_NONE,
@@ -278,14 +298,27 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
             .frontFace = descriptor.RasterState.FrontFace == NGraphics::EFrontFace::COUNTER_CLOCKWISE
                                ? VK_FRONT_FACE_COUNTER_CLOCKWISE
                                : VK_FRONT_FACE_CLOCKWISE,
+            .depthBiasEnable = VK_FALSE,
+            .depthBiasConstantFactor = 0.0F,
+            .depthBiasClamp = 0.0F,
+            .depthBiasSlopeFactor = 0.0F,
             .lineWidth = 1.0F,
     };
     const VkPipelineMultisampleStateCreateInfo multisample{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
             .rasterizationSamples = static_cast<VkSampleCountFlagBits>(descriptor.Samples),
+            .sampleShadingEnable = VK_FALSE,
+            .minSampleShading = 0.0F,
+            .pSampleMask = nullptr,
+            .alphaToCoverageEnable = VK_FALSE,
+            .alphaToOneEnable = VK_FALSE,
     };
     const VkPipelineDepthStencilStateCreateInfo depth{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
             .depthTestEnable = descriptor.DepthState.TestEnabled,
             .depthWriteEnable = descriptor.DepthState.WriteEnabled,
             .depthCompareOp = Convert(descriptor.DepthState.CompareOperation,
@@ -297,9 +330,17 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
                                                  VK_COMPARE_OP_NOT_EQUAL,
                                                  VK_COMPARE_OP_GREATER_OR_EQUAL,
                                                  VK_COMPARE_OP_ALWAYS}),
+            .depthBoundsTestEnable = VK_FALSE,
+            .stencilTestEnable = VK_FALSE,
+            .front = {},
+            .back = {},
+            .minDepthBounds = 0.0F,
+            .maxDepthBounds = 1.0F,
     };
     std::vector<VkPipelineColorBlendAttachmentState> blendAttachments;
     std::vector<VkFormat> colorFormats;
+    blendAttachments.reserve(descriptor.ColorAttachmentFormats.size());
+    colorFormats.reserve(descriptor.ColorAttachmentFormats.size());
     for (std::size_t i = 0; i < descriptor.ColorAttachmentFormats.size(); ++i) {
         colorFormats.push_back(Format(descriptor.ColorAttachmentFormats[i]));
         const auto blend = descriptor.ColorBlendAttachments.empty() ? NGraphics::BlendAttachmentDescriptor{}
@@ -315,17 +356,26 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
     }
     const VkPipelineColorBlendStateCreateInfo blend{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .logicOpEnable = VK_FALSE,
+            .logicOp = VK_LOGIC_OP_COPY,
             .attachmentCount = static_cast<std::uint32_t>(blendAttachments.size()),
             .pAttachments = blendAttachments.data(),
+            .blendConstants = {},
     };
     const std::array dynamicStates{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
             .dynamicStateCount = static_cast<std::uint32_t>(dynamicStates.size()),
             .pDynamicStates = dynamicStates.data(),
     };
     const VkPipelineRenderingCreateInfo rendering{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .pNext = nullptr,
+            .viewMask = 0,
             .colorAttachmentCount = static_cast<std::uint32_t>(colorFormats.size()),
             .pColorAttachmentFormats = colorFormats.data(),
             .depthAttachmentFormat = Format(descriptor.DepthAttachmentFormat),
@@ -333,15 +383,25 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
                                              ? VK_FORMAT_D24_UNORM_S8_UINT
                                              : VK_FORMAT_UNDEFINED,
     };
-    const VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    const VkPipelineLayoutCreateInfo layoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .setLayoutCount = 0,
+            .pSetLayouts = nullptr,
+            .pushConstantRangeCount = 0,
+            .pPushConstantRanges = nullptr,
+    };
     CheckResult(vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &m_layout), "vkCreatePipelineLayout");
     const VkGraphicsPipelineCreateInfo pipelineInfo{
             .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
             .pNext = &rendering,
+            .flags = 0,
             .stageCount = static_cast<std::uint32_t>(stages.size()),
             .pStages = stages.data(),
             .pVertexInputState = &vertexInput,
             .pInputAssemblyState = &assembly,
+            .pTessellationState = nullptr,
             .pViewportState = &viewport,
             .pRasterizationState = &raster,
             .pMultisampleState = &multisample,
@@ -349,6 +409,10 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
             .pColorBlendState = &blend,
             .pDynamicState = &dynamic,
             .layout = m_layout,
+            .renderPass = VK_NULL_HANDLE,
+            .subpass = 0,
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1,
     };
     const VkResult result = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_pipeline);
     if (result != VK_SUCCESS) {

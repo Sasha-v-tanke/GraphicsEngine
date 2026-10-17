@@ -1248,6 +1248,7 @@ TEST_F(GraphicsTest, DestroysGraphicsPipelineAfterCompletionPoint) {
     const NGraphics::CompletionPoint completion = graphics.SubmitFrame({
             .FrameIndex = 11,
             .RequiresPresentation = false,
+            .ResourceUseRecords = {},
     });
 
     graphics.DestroyGraphicsPipeline(pipeline, completion);
@@ -1304,6 +1305,7 @@ TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredGraphicsPipelineDestruct
     const NGraphics::CompletionPoint otherCompletion = other.SubmitFrame({
             .FrameIndex = 1,
             .RequiresPresentation = false,
+            .ResourceUseRecords = {},
     });
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,

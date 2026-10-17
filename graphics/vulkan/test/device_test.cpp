@@ -297,8 +297,14 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
             NGraphics::GraphicsPipelineDescriptor pipelineDescriptor{
                     .Shaders = {makeShader(NResources::EShaderStage::VERTEX, "vertex", NTest::VertexShaderWords),
                                 makeShader(NResources::EShaderStage::FRAGMENT, "fragment", NTest::FragmentShaderWords)},
+                    .VertexLayout = {},
+                    .Topology = NGraphics::EPrimitiveTopology::TRIANGLE_LIST,
+                    .RasterState = {},
+                    .DepthState = {},
                     .ColorAttachmentFormats = {NGraphics::EPixelFormat::RGBA8_UNORM},
                     .ColorBlendAttachments = {{}},
+                    .DepthAttachmentFormat = NGraphics::EPixelFormat::UNDEFINED,
+                    .Samples = NGraphics::ESampleCount::X1,
             };
             for (int iteration = 0; iteration < 3; ++iteration) {
                 const NVulkan::VulkanGraphicsPipeline pipeline{device, physicalDevice, pipelineDescriptor};
