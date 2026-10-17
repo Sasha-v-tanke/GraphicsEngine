@@ -12,6 +12,8 @@ API(
 )
 
 SOURCES(
+    graphics_pipeline.h
+    graphics_pipeline.cpp
     device.cpp
     frame_context.cpp
     instance.cpp
