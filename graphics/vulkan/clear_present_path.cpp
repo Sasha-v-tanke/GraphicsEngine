@@ -97,7 +97,8 @@ VulkanClearPresentPath::VulkanClearPresentPath(const VulkanDevice& device,
     , m_swapchain(swapchain)
     , m_submissions(device)
     , m_frames(device, maxActiveFrames)
-    , m_frameResources(maxActiveFrames) {
+    , m_frameResources(maxActiveFrames)
+    , m_presentResources(swapchain.GetImages().size()) {
 }
 
 VulkanClearPresentPath::~VulkanClearPresentPath() {
@@ -107,6 +108,10 @@ VulkanClearPresentPath::~VulkanClearPresentPath() {
 }
 
 EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameIndex, VkClearColorValue clearColor) {
+    if (m_failed) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Vulkan clear/present path requires shutdown after failure");
+    }
     if (m_swapchain.IsSuspended()) {
         return EVulkanClearPresentStatus::SUSPENDED;
     }
@@ -125,7 +130,8 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
     bool submitted = false;
     try {
         FrameResources& resources = GetFrameResources(*context);
-        const VulkanSwapchainAcquireResult acquired = m_swapchain.AcquireNextImage(resources.ImageAvailable);
+        const VulkanSwapchainAcquireResult acquired =
+                m_swapchain.AcquireNextImage(resources.ImageAvailable, VK_NULL_HANDLE, 0);
         if (acquired.Status == EVulkanSwapchainAcquireStatus::OUT_OF_DATE) {
             m_frames.ReleaseAcquired(acquire);
             return EVulkanClearPresentStatus::OUT_OF_DATE;
@@ -140,11 +146,18 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
             return EVulkanClearPresentStatus::NOT_READY;
         }
 
+        std::unique_ptr<FrameResources>& presentResources = m_presentResources[acquired.ImageIndex];
+        if (presentResources == nullptr) {
+            auto created = std::make_unique<FrameResources>();
+            created->Device = m_device.GetHandle();
+            created->PresentReady = CreateSemaphore(m_device.GetHandle());
+            presentResources = std::move(created);
+        }
         RecordClear(resources.CommandBuffer, m_swapchain.GetImages()[acquired.ImageIndex].Handle, clearColor);
         const VkSemaphoreSubmitInfo waitSemaphore{
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                 .semaphore = resources.ImageAvailable,
-                .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .stageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
         };
         const VkCommandBufferSubmitInfo commandBuffer{
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -152,7 +165,7 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
         };
         const VkSemaphoreSubmitInfo signalSemaphore{
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                .semaphore = resources.PresentReady,
+                .semaphore = presentResources->PresentReady,
                 .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         };
         const VulkanQueueCompletion completion = m_submissions.SubmitGraphics({
@@ -169,10 +182,11 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
 
         const VulkanLockedQueue presentQueue = m_device.LockPresentQueue();
         const EVulkanSwapchainPresentStatus present =
-                m_swapchain.Present(presentQueue, acquired.ImageIndex, {resources.PresentReady});
+                m_swapchain.Present(presentQueue, acquired.ImageIndex, {presentResources->PresentReady});
         return present == EVulkanSwapchainPresentStatus::OUT_OF_DATE ? EVulkanClearPresentStatus::OUT_OF_DATE
                                                                      : EVulkanClearPresentStatus::PRESENTED;
     } catch (...) {
+        m_failed = true;
         if (!submitted) {
             m_frames.ReleaseAcquired(acquire);
         }
@@ -196,7 +210,6 @@ VulkanClearPresentPath::FrameResources& VulkanClearPresentPath::GetFrameResource
         resources->Device = m_device.GetHandle();
         resources->CommandBuffer = AllocateCommandBuffer(m_device.GetHandle(), context.GetCommandPool());
         resources->ImageAvailable = CreateSemaphore(m_device.GetHandle());
-        resources->PresentReady = CreateSemaphore(m_device.GetHandle());
     }
     return *resources;
 }
@@ -216,7 +229,7 @@ void VulkanClearPresentPath::RecordClear(VkCommandBuffer commandBuffer,
     }
 
     VulkanResourceStateTracker tracker;
-    tracker.ImportImage(image, ColorRange(), MakeVulkanImageState(EVulkanResourceUsage::Present));
+    tracker.ImportImage(image, ColorRange(), MakeVulkanImageState(EVulkanResourceUsage::Undefined));
     const std::optional<VkImageMemoryBarrier2> colorBarrier = tracker.TransitionImage({
             .Image = image,
             .Usage = EVulkanResourceUsage::TransferWrite,

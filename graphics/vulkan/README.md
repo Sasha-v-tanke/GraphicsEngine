@@ -168,16 +168,20 @@ completion by querying the returned timeline value instead of using frame number
 
 `VulkanClearPresentPath` is the MVP-2 command path. For each logical frame it:
 
-- acquires a swapchain image with a frame-local binary semaphore;
-- transitions the image from present to transfer-write, clears it, then
+- polls acquisition of a swapchain image with a frame-local binary semaphore;
+- discards the previous image contents from undefined layout to transfer-write, clears it, then
   transitions it back to present;
 - submits that command buffer with the acquire semaphore and signals a
-  present-ready binary semaphore plus the backend timeline;
+  per-image present-ready binary semaphore plus the backend timeline;
 - presents without waiting for a fence.
 
 Frame slots are selected from the logical frame index, independently of WSI
 image indices and present timing. `PollCompletedFrames()` non-blockingly emits
 completed frame events in submission order; it never waits on the worker path.
+The acquire wait covers transfer commands. Present semaphores are reused only
+after acquiring their image again, independently of frame-slot timeline completion.
+A recording, submission or presentation failure makes the path terminal; destroy
+it before retrying. Shutdown drains device work before destroying synchronization resources.
 
 ## Resource State Tracking
 

@@ -513,11 +513,17 @@ TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
         NWindow::WindowRuntime runtime;
         NWindow::Window window{MakeWindowConfig()};
 
+        std::vector<std::string> validationErrors;
         NVulkan::VulkanInstanceConfig instanceConfig;
         instanceConfig.ApplicationName = "GraphicsEngineVulkanClearPresentPathTest";
         instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
-        instanceConfig.ValidationMode = NVulkan::EValidationMode::EnabledIfAvailable;
+        instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
         instanceConfig.EnableDebugUtils = true;
+        instanceConfig.DebugMessageHandler = [&validationErrors](const NVulkan::VulkanDebugMessage& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                validationErrors.push_back(message.Message);
+            }
+        };
 
         NVulkan::VulkanInstance instance{instanceConfig};
         const NVulkan::NGlfw::VulkanSurface surface{instance, window};
@@ -525,36 +531,42 @@ TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
                 NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
         const NVulkan::VulkanDevice device{physicalDevice};
         NVulkan::VulkanSwapchain swapchain{device, physicalDevice, surface.GetHandle(), window.GetFramebufferSize()};
-        NVulkan::VulkanClearPresentPath path{device, swapchain, 2};
+        for (const std::size_t activeSlots: {1U, 3U}) {
+            NVulkan::VulkanClearPresentPath path{device, swapchain, activeSlots};
 
-        std::uint64_t frameIndex = 0;
-        std::vector<NVulkan::VulkanFrameCompletionEvent> completedFrames;
-        for (std::size_t attempts = 0; frameIndex < 6 && attempts < 600; ++attempts) {
-            const NVulkan::EVulkanClearPresentStatus status =
-                    path.Render(frameIndex, {.float32 = {0.1F * static_cast<float>(frameIndex), 0.2F, 0.3F, 1.0F}});
-            if (status == NVulkan::EVulkanClearPresentStatus::PRESENTED) {
-                ++frameIndex;
-            } else if (status == NVulkan::EVulkanClearPresentStatus::OUT_OF_DATE ||
-                       status == NVulkan::EVulkanClearPresentStatus::SUSPENDED) {
-                GTEST_SKIP() << "Swapchain became unavailable";
-            } else {
+            std::uint64_t frameIndex = 0;
+            std::vector<NVulkan::VulkanFrameCompletionEvent> completedFrames;
+            for (std::size_t attempts = 0; frameIndex < 6 && attempts < 600; ++attempts) {
+                const NVulkan::EVulkanClearPresentStatus status =
+                        path.Render(frameIndex, {.float32 = {0.1F * static_cast<float>(frameIndex), 0.2F, 0.3F, 1.0F}});
+                if (status == NVulkan::EVulkanClearPresentStatus::PRESENTED) {
+                    ++frameIndex;
+                } else if (status == NVulkan::EVulkanClearPresentStatus::OUT_OF_DATE ||
+                           status == NVulkan::EVulkanClearPresentStatus::SUSPENDED) {
+                    GTEST_SKIP() << "Swapchain became unavailable";
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+                }
+
+                std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
+                completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
+            }
+            EXPECT_EQ(frameIndex, 6U);
+
+            for (std::size_t attempts = 0; completedFrames.size() < 6 && attempts < 600; ++attempts) {
+                std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
+                completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
                 std::this_thread::sleep_for(std::chrono::milliseconds{10});
             }
-
-            std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
-            completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
+            ASSERT_EQ(completedFrames.size(), 6U);
+            for (std::size_t index = 0; index < completedFrames.size(); ++index) {
+                EXPECT_EQ(completedFrames[index].FrameIndex, index);
+                EXPECT_NE(completedFrames[index].Completion.Value, 0U);
+            }
         }
-        EXPECT_EQ(frameIndex, 6U);
-
-        for (std::size_t attempts = 0; completedFrames.size() < 6 && attempts < 600; ++attempts) {
-            std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
-            completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-        }
-        ASSERT_EQ(completedFrames.size(), 6U);
-        for (std::size_t index = 0; index < completedFrames.size(); ++index) {
-            EXPECT_EQ(completedFrames[index].FrameIndex, index);
-            EXPECT_NE(completedFrames[index].Completion.Value, 0U);
+        EXPECT_TRUE(validationErrors.empty());
+        for (const std::string& error: validationErrors) {
+            ADD_FAILURE() << error;
         }
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {

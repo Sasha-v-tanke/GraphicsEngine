@@ -48,7 +48,9 @@ private:
     VulkanSubmissionManager m_submissions;
     VulkanFrameContextRing m_frames;
     std::vector<std::unique_ptr<FrameResources>> m_frameResources;
+    std::vector<std::unique_ptr<FrameResources>> m_presentResources;
     std::deque<VulkanFrameCompletionEvent> m_pendingCompletions;
+    bool m_failed = false;
 };
 
 } // namespace NVulkan
