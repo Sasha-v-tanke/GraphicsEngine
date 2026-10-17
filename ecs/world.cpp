@@ -46,6 +46,9 @@ World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffe
     if (this != &other) {
         if (State_ != nullptr && State_->Owner != nullptr && !State_->OwnerLifetime.expired() && !State_->Submitted) {
             State_->Owner->RollbackDeferredStructuralCommands(State_->Commands);
+            std::scoped_lock lock{State_->Owner->DeferredStructuralMutex_};
+            State_->Owner->ReleaseUnusedDeferredEntityReservationsLocked(State_->EntityReservations,
+                                                                         State_->NextEntityReservation);
         }
         State_ = std::move(other.State_);
     }
@@ -387,7 +390,8 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 
     std::scoped_lock lock{DeferredStructuralMutex_};
     if (std::ranges::any_of(DeferredStructuralBatches_, [&](const DeferredCommandBatch& batch) {
-            return batch.ProducerOrder == buffer.State_->ProducerOrder;
+            return batch.Source == DeferredCommandBatch::ESource::EXTERNAL &&
+                   batch.ProducerOrder == buffer.State_->ProducerOrder;
         })) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                               "ECS deferred command buffer producer order must be unique");
@@ -463,6 +467,11 @@ void World::ApplyDeferredStructuralChanges() {
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
+        for (auto& [producerOrder, reservations]: PlannedDeferredEntityReservations_) {
+            static_cast<void>(producerOrder);
+            ReleaseUnusedDeferredEntityReservationsLocked(reservations, 0);
+        }
+        PlannedDeferredEntityReservations_.clear();
         std::ranges::sort(DeferredStructuralBatches_,
                           [](const DeferredCommandBatch& lhs, const DeferredCommandBatch& rhs) {
                               if (lhs.Source != rhs.Source) {

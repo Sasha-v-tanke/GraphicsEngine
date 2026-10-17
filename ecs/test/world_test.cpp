@@ -510,6 +510,28 @@ TEST(EcsWorld, MoveAssigningProducerBufferRollsBackPreviousReservations) {
     EXPECT_TRUE(world.IsAlive(entity));
 }
 
+TEST(EcsWorld, MoveAssigningProducerBufferReleasesUnusedPhaseReservations) {
+    NEcs::World world;
+    world.BeginDeferredStructuralPhase({{.Order = 0, .EntityCreateCount = 1}, {.Order = 1, .EntityCreateCount = 0}});
+
+    auto target = world.CreateDeferredStructuralCommandBuffer(0);
+    auto source = world.CreateDeferredStructuralCommandBuffer(1);
+    target = std::move(source);
+
+    const NEcs::Entity entity = world.CreateEntity();
+    EXPECT_TRUE(world.IsAlive(entity));
+}
+
+TEST(EcsWorld, CommitReleasesUnclaimedPhaseReservations) {
+    NEcs::World world;
+    world.BeginDeferredStructuralPhase({{.Order = 0, .EntityCreateCount = 1}});
+
+    world.ApplyDeferredStructuralChanges();
+
+    const NEcs::Entity entity = world.CreateEntity();
+    EXPECT_TRUE(world.IsAlive(entity));
+}
+
 TEST(EcsWorld, RejectsSubmittingProducerBufferToAnotherWorld) {
     NEcs::World firstWorld;
     NEcs::World secondWorld;
