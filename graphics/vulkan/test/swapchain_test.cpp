@@ -22,6 +22,7 @@
 extern char** environ;
 #endif
 
+#include <graphics/vulkan/clear_present_path.h>
 #include <graphics/vulkan/device.h>
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/instance.h>
@@ -102,7 +103,8 @@ VulkanSwapchainSupport MakeSupport() {
                             .supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
                             .currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
                             .supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                            .supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                            .supportedUsageFlags =
+                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     },
             .Formats =
                     {
@@ -504,4 +506,64 @@ TEST(VulkanSwapchainChild, DISABLED_CreatesAndDestroysSwapchain) {
 
 TEST(VulkanSwapchain, CreatesAndDestroysSwapchain) {
     RunSpawnedSmoke("VulkanSwapchainChild.DISABLED_CreatesAndDestroysSwapchain");
+}
+
+TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{MakeWindowConfig()};
+
+        NVulkan::VulkanInstanceConfig instanceConfig;
+        instanceConfig.ApplicationName = "GraphicsEngineVulkanClearPresentPathTest";
+        instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
+        instanceConfig.ValidationMode = NVulkan::EValidationMode::EnabledIfAvailable;
+        instanceConfig.EnableDebugUtils = true;
+
+        NVulkan::VulkanInstance instance{instanceConfig};
+        const NVulkan::NGlfw::VulkanSurface surface{instance, window};
+        const NVulkan::VulkanPhysicalDeviceSelection physicalDevice =
+                NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
+        const NVulkan::VulkanDevice device{physicalDevice};
+        NVulkan::VulkanSwapchain swapchain{device, physicalDevice, surface.GetHandle(), window.GetFramebufferSize()};
+        NVulkan::VulkanClearPresentPath path{device, swapchain, 2};
+
+        std::uint64_t frameIndex = 0;
+        std::vector<NVulkan::VulkanFrameCompletionEvent> completedFrames;
+        for (std::size_t attempts = 0; frameIndex < 6 && attempts < 600; ++attempts) {
+            const NVulkan::EVulkanClearPresentStatus status =
+                    path.Render(frameIndex, {.float32 = {0.1F * static_cast<float>(frameIndex), 0.2F, 0.3F, 1.0F}});
+            if (status == NVulkan::EVulkanClearPresentStatus::PRESENTED) {
+                ++frameIndex;
+            } else if (status == NVulkan::EVulkanClearPresentStatus::OUT_OF_DATE ||
+                       status == NVulkan::EVulkanClearPresentStatus::SUSPENDED) {
+                GTEST_SKIP() << "Swapchain became unavailable";
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+
+            std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
+            completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
+        }
+        EXPECT_EQ(frameIndex, 6U);
+
+        for (std::size_t attempts = 0; completedFrames.size() < 6 && attempts < 600; ++attempts) {
+            std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
+            completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        ASSERT_EQ(completedFrames.size(), 6U);
+        for (std::size_t index = 0; index < completedFrames.size(); ++index) {
+            EXPECT_EQ(completedFrames[index].FrameIndex, index);
+            EXPECT_NE(completedFrames[index].Completion.Value, 0U);
+        }
+    } catch (const NCommon::Exception& exception) {
+        if (IsEnvironmentFailure(exception)) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+        throw;
+    }
+}
+
+TEST(VulkanClearPresentPath, ClearsAndPresentsRepeatedFrames) {
+    RunSpawnedSmoke("VulkanClearPresentPathChild.DISABLED_ClearsAndPresentsRepeatedFrames");
 }

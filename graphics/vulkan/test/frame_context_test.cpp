@@ -230,6 +230,13 @@ TEST(VulkanFrameContextChild, DISABLED_UsesOneContextPerFrameSlotAndBlocksReuseU
         EXPECT_NE(second->GetCommandPool(), VK_NULL_HANDLE);
         EXPECT_NE(second->GetCommandPool(), first->GetCommandPool());
 
+        ring.ReleaseAcquired({.FrameIndex = 1, .FrameSlotIndex = 1});
+        NVulkan::VulkanFrameContext* reacquired = ring.TryAcquire({.FrameIndex = 3, .FrameSlotIndex = 1}, nullptr);
+        ASSERT_NE(reacquired, nullptr);
+        EXPECT_EQ(reacquired, second);
+        EXPECT_EQ(reacquired->GetFrameIndex(), 3U);
+        ring.ReleaseAcquired({.FrameIndex = 3, .FrameSlotIndex = 1});
+
         EXPECT_EQ(ring.TryAcquire({.FrameIndex = 2, .FrameSlotIndex = 0}, [](std::uint64_t) { return true; }), nullptr);
 
         ring.MarkSubmitted({.FrameIndex = 0, .FrameSlotIndex = 0}, 7);

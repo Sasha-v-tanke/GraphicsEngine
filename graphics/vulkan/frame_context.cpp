@@ -202,6 +202,18 @@ void VulkanFrameContextRing::MarkSubmitted(VulkanFrameContextAcquire acquire, st
     Get(acquire).MarkSubmitted(completionValue);
 }
 
+void VulkanFrameContextRing::ReleaseAcquired(VulkanFrameContextAcquire acquire) {
+    VulkanFrameContext& context = Get(acquire);
+    if (context.GetState() != EVulkanFrameContextState::ACQUIRED) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Vulkan frame context {} cannot be released from state {}",
+                              acquire.FrameSlotIndex,
+                              static_cast<int>(context.GetState()));
+    }
+
+    context.ReleaseCompleted();
+}
+
 VulkanFrameContext& VulkanFrameContextRing::GetBySlot(std::size_t frameSlotIndex) {
     if (frameSlotIndex >= m_contexts.size()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,

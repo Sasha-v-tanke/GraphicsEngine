@@ -2,6 +2,7 @@ MODULE(VulkanBackend)
 
 API(
     device.h
+    clear_present_path.h
     frame_context.h
     instance.h
     physical_device.h
@@ -13,6 +14,7 @@ API(
 
 SOURCES(
     device.cpp
+    clear_present_path.cpp
     frame_context.cpp
     instance.cpp
     physical_device.cpp

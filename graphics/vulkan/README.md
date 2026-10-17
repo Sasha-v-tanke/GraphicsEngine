@@ -110,7 +110,7 @@ presentation chain when the framebuffer becomes non-zero again.
 
 Acquire and present wrappers translate WSI results into explicit backend states:
 acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
-They do not record rendering commands or perform layout transitions; the future
+They do not record rendering commands or perform layout transitions; the
 command/submission path owns those responsibilities.
 
 ## Frame Contexts
@@ -123,6 +123,8 @@ Each context owns frame-local Vulkan command state for the graphics queue. A
 context can be acquired for a new frame only when its previous completion value
 has finished. Until then `TryAcquire()` returns no context, so callers apply
 backpressure instead of resetting command pools that may still be in flight.
+An acquired context can be released before submit when WSI acquire cannot
+produce an image.
 
 Shutdown is conservative: if any context is still in flight, the ring waits for
 the logical device to become idle before destroying command pools.
@@ -138,6 +140,21 @@ The manager appends its timeline semaphore signal to every graphics submit while
 preserving caller-provided binary wait/signal semaphores. WSI acquire and present
 therefore remain on binary semaphores, and frame/resource lifetime code observes
 completion by querying the returned timeline value instead of using frame numbers.
+
+## Clear, Submit and Present
+
+`VulkanClearPresentPath` is the MVP-2 command path. For each logical frame it:
+
+- acquires a swapchain image with a frame-local binary semaphore;
+- transitions the image from present to transfer-write, clears it, then
+  transitions it back to present;
+- submits that command buffer with the acquire semaphore and signals a
+  present-ready binary semaphore plus the backend timeline;
+- presents without waiting for a fence.
+
+Frame slots are selected from the logical frame index, independently of WSI
+image indices and present timing. `PollCompletedFrames()` non-blockingly emits
+completed frame events in submission order; it never waits on the worker path.
 
 ## Resource State Tracking
 
