@@ -9,12 +9,15 @@ API(
     graphics_config.h
     graphics_pipeline.h
     shader.h
+    image.h
+    material.h
 )
 
 SOURCES(
     graphics.cpp
     graphics_pipeline.cpp
     shader.cpp
+    material.cpp
 )
 
 PUBLIC_DEPENDS(

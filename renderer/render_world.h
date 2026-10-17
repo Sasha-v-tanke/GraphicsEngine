@@ -5,13 +5,19 @@
 #include <limits>
 #include <span>
 
+#include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/math/camera.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/resources/resource_lease.h>
 
-namespace NResources {
+namespace NGraphics {
 
 class Material;
+
+} // namespace NGraphics
+
+namespace NResources {
+
 class MeshData;
 
 } // namespace NResources
@@ -57,7 +63,7 @@ struct RenderObject {
     RenderObjectId Id;
     NMath::Transform WorldTransform;
     NResources::ResourceLease<NResources::MeshData> Mesh;
-    NResources::ResourceLease<NResources::Material> Material;
+    NResources::ResourceLease<NGraphics::Material> Material;
 };
 
 class RenderWorld final {
@@ -74,21 +80,29 @@ public:
         return m_objects;
     }
 
+    [[nodiscard]] std::span<const NCommon::ResourceUseRecord> GetResourceUseRecords() const noexcept {
+        return m_resourceUseRecords;
+    }
+
 private:
     RenderWorld(RenderFrameIdentity frame,
                 const RenderView* views,
                 std::size_t viewCount,
                 const RenderObject* objects,
-                std::size_t objectCount) noexcept
+                std::size_t objectCount,
+                const NCommon::ResourceUseRecord* resourceUseRecords,
+                std::size_t resourceUseRecordCount) noexcept
         : m_frame(frame)
         , m_views(views, viewCount)
-        , m_objects(objects, objectCount) {
+        , m_objects(objects, objectCount)
+        , m_resourceUseRecords(resourceUseRecords, resourceUseRecordCount) {
     }
 
 private:
     RenderFrameIdentity m_frame;
     std::span<const RenderView> m_views;
     std::span<const RenderObject> m_objects;
+    std::span<const NCommon::ResourceUseRecord> m_resourceUseRecords;
 
     friend class NInternal::RenderWorldBuilder;
 };

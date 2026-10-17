@@ -12,6 +12,8 @@ stable state model that later loaders and graphics backends will extend without 
   stops new acquisitions, while existing leases keep their published version alive until their owner releases it.
 - `ResourceManager::TryAcquire()` is non-blocking: it returns no lease for a non-READY resource and never switches an
   existing lease to a later publication.
+- `ResourceUseRecord` is a compatibility alias for the common type-erased handoff record used by frame snapshots and
+  graphics submissions to keep a retained resource version alive across CPU/GPU lifetime boundaries.
 - `ResourceIdentity` is the deterministic cache key for a logical resource request.
 - Path-backed identities use `ResourceIdentity::FromPath`, which performs lexical normalization and stores generic
   separators without resolving the filesystem.
@@ -33,3 +35,33 @@ binary container enough for runtime ingestion: non-empty word-aligned data, SPIR
 
 Runtime shader compilation, reflection, and backend-native shader module creation are separate responsibilities. A failed
 shader load publishes `FAILED` with resource identity and file path context in `ErrorInfo`.
+
+## Images
+
+Image resources load CPU pixel data through stb_image into `ImageData`.
+
+The runtime format policy for this loader is fixed `RGBA8`: source channels are converted to four 8-bit channels and
+alpha is synthesized when the source has no alpha channel. The loader does not flip images vertically; coordinate-space
+or authoring-specific flip policy belongs to asset cooking or higher-level import configuration.
+
+The image loader does not create GPU images, image views, samplers, or renderer objects. Failed image loads publish
+`FAILED` with resource identity and file path context in `ErrorInfo`.
+
+GPU image objects live in the Graphics module. `NGraphics::ImageDescriptor`, `ImageViewDescriptor`, and
+`SamplerDescriptor` define the backend-independent contract for renderer/backend use: format, usage, access, lifetime,
+subresource range, and sampling state are explicit, while native image, view, sampler, and descriptor handles remain
+backend-private. CPU `ImageData` can feed later upload code without changing the resource-manager identity or load-state
+contract.
+
+## Materials
+
+Material resources are typed CPU resources backed by `NGraphics::Material`.
+
+Resources owns the material identity, load state, versioning, and frame-retained leases. The material object itself
+contains a backend-independent pipeline identity plus immutable buffer/image/sampler binding descriptors expressed as
+logical resource identities. New consumers do not acquire unloaded material versions, while already published frame
+snapshots may retain their acquired material version until the frame resource records are recycled.
+
+Native descriptor allocation and backend alignment/limit validation are not part of the Resources contract. Concrete
+Graphics backends translate material bindings into their private descriptor infrastructure during submission and must
+retain the resolved concrete resource dependencies for GPU lifetime.

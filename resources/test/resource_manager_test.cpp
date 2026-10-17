@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -11,6 +12,8 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <resources/image_loader.h>
+#include <resources/image_loader_internal.h>
 #include <resources/resource_manager.h>
 #include <resources/shader_artifact_loader.h>
 #include <tests/common/test_error.h>
@@ -25,8 +28,10 @@ struct TextureArtifact {
     std::string Name;
 };
 
+using NResources::EImagePixelFormat;
 using NResources::EResourceState;
 using NResources::EShaderStage;
+using NResources::ImageData;
 using NResources::ResourceIdentity;
 using NResources::ResourceManager;
 using NResources::ShaderArtifact;
@@ -41,6 +46,51 @@ void WriteWords(const std::filesystem::path& path, const std::vector<std::uint32
 
     file.write(reinterpret_cast<const char*>(words.data()),
                static_cast<std::streamsize>(words.size() * sizeof(std::uint32_t)));
+}
+
+void WriteBytes(const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes) {
+    std::ofstream file{path, std::ios::binary | std::ios::trunc};
+
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+std::vector<std::uint8_t>
+MakeTga(std::uint16_t width, std::uint16_t height, std::uint8_t imageType, std::uint8_t bitsPerPixel) {
+    return {
+            0U,
+            0U,
+            imageType,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            0U,
+            static_cast<std::uint8_t>(width & 0xFFU),
+            static_cast<std::uint8_t>(width >> 8U),
+            static_cast<std::uint8_t>(height & 0xFFU),
+            static_cast<std::uint8_t>(height >> 8U),
+            bitsPerPixel,
+            0x20U,
+    };
+}
+
+std::shared_ptr<const ImageData> LoadImageData(const std::filesystem::path& path,
+                                               const std::vector<std::uint8_t>& bytes) {
+    WriteBytes(path, bytes);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", path.filename().string()}, path);
+    std::shared_ptr<const ImageData> data = resources.GetCpuResource(image);
+
+    EXPECT_EQ(resources.GetState(image), EResourceState::READY);
+    std::filesystem::remove(path);
+
+    return data;
 }
 
 TEST(ResourceManager, CreatesTypedHandleForLogicalIdentity) {
@@ -389,6 +439,200 @@ TEST(ShaderArtifactLoader, FailsMissingArtifact) {
     ASSERT_TRUE(failure.has_value());
     EXPECT_NE(failure->Message.find("missing or unreadable SPIR-V binary"), std::string::npos);
     EXPECT_FALSE(resources.GetCpuResource(shader));
+}
+
+TEST(ImageLoader, LoadsValidRgbImageAsRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-valid-image.ppm");
+    const std::vector<std::uint8_t> bytes = {
+            'P',
+            '6',
+            '\n',
+            '2',
+            '\n',
+            '1',
+            '\n',
+            '2',
+            '5',
+            '5',
+            '\n',
+            255U,
+            0U,
+            0U,
+            0U,
+            255U,
+            0U,
+    };
+    WriteBytes(path, bytes);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "valid"}, path);
+    const std::shared_ptr<const ImageData> data = resources.GetCpuResource(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::READY);
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetWidth(), 2U);
+    EXPECT_EQ(data->GetHeight(), 1U);
+    EXPECT_EQ(data->GetFormat(), EImagePixelFormat::RGBA8);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      255U,
+                      0U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+              }));
+
+    std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, ConvertsGrayscaleImageToRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-grayscale-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(2, 1, 3, 8);
+    bytes.insert(bytes.end(), {0x22U, 0xCCU});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      0x22U,
+                      0x22U,
+                      0x22U,
+                      255U,
+                      0xCCU,
+                      0xCCU,
+                      0xCCU,
+                      255U,
+              }));
+}
+
+TEST(ImageLoader, PreservesGrayscaleAlphaImageAsRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-grayscale-alpha-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(2, 1, 3, 16);
+    bytes.insert(bytes.end(), {0x33U, 0x44U, 0xAAU, 0xBBU});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      0x33U,
+                      0x33U,
+                      0x33U,
+                      0x44U,
+                      0xAAU,
+                      0xAAU,
+                      0xAAU,
+                      0xBBU,
+              }));
+}
+
+TEST(ImageLoader, ConvertsRgbImageToRgba8WithoutVerticalFlip) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-rgb-two-row-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(1, 2, 2, 24);
+    bytes.insert(bytes.end(), {0U, 0U, 255U, 0U, 255U, 0U});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetWidth(), 1U);
+    EXPECT_EQ(data->GetHeight(), 2U);
+    EXPECT_EQ(data->GetFormat(), EImagePixelFormat::RGBA8);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      255U,
+                      0U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+                      0U,
+                      255U,
+              }));
+}
+
+TEST(ImageLoader, PreservesRgbaImageAsRgba8) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-rgba-image.tga");
+    std::vector<std::uint8_t> bytes = MakeTga(2, 1, 2, 32);
+    bytes.insert(bytes.end(), {0U, 0U, 255U, 17U, 0U, 255U, 0U, 221U});
+
+    const std::shared_ptr<const ImageData> data = LoadImageData(path, bytes);
+
+    ASSERT_TRUE(data);
+    EXPECT_EQ(data->GetPixels(),
+              (std::vector<std::uint8_t>{
+                      255U,
+                      0U,
+                      0U,
+                      17U,
+                      0U,
+                      255U,
+                      0U,
+                      221U,
+              }));
+}
+
+TEST(ImageLoader, FailsCorruptImageData) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-corrupt-image.bin");
+    WriteBytes(path, {'n', 'o', 't', 'i', 'm', 'a', 'g', 'e'});
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "corrupt"}, path);
+    const std::optional<NCommon::ErrorInfo> failure = resources.GetFailure(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::FAILED);
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->Code, NCommon::make_error_code(NCommon::EError::IO_ERROR));
+    EXPECT_NE(failure->Message.find("invalid or corrupt image data"), std::string::npos);
+    EXPECT_FALSE(resources.GetCpuResource(image));
+
+    std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, FailsMissingImageData) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-missing-image.ppm");
+    std::filesystem::remove(path);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "missing"}, path);
+    const std::optional<NCommon::ErrorInfo> failure = resources.GetFailure(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::FAILED);
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_NE(failure->Message.find("missing or unreadable image data"), std::string::npos);
+    EXPECT_FALSE(resources.GetCpuResource(image));
+}
+
+TEST(ImageLoader, RejectsOversizedImageBeforeReading) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-oversized-image.bin");
+    WriteBytes(path, {});
+    std::filesystem::resize_file(path, static_cast<std::uintmax_t>(std::numeric_limits<int>::max()) + 1U);
+
+    ResourceManager resources;
+
+    const auto image = NResources::LoadImage(resources, ResourceIdentity{"image", "oversized"}, path);
+    const std::optional<NCommon::ErrorInfo> failure = resources.GetFailure(image);
+
+    ASSERT_EQ(resources.GetState(image), EResourceState::FAILED);
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->Code, NCommon::make_error_code(NCommon::EError::IO_ERROR));
+    EXPECT_NE(failure->Message.find("image data exceeds stb_image size limit"), std::string::npos);
+    EXPECT_FALSE(resources.GetCpuResource(image));
+
+    std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, RejectsOversizedReadBufferBeforeStbCast) {
+    EXPECT_TRUE(NResources::NImageLoaderInternal::CanPassImageByteSizeToStb(
+            static_cast<std::size_t>(std::numeric_limits<int>::max())));
+    EXPECT_FALSE(NResources::NImageLoaderInternal::CanPassImageByteSizeToStb(
+            static_cast<std::size_t>(std::numeric_limits<int>::max()) + 1U));
 }
 
 } // namespace

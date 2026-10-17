@@ -16,4 +16,5 @@ endif ()
 
 if (GRAPHICS_ENGINE_BUILD_VULKAN)
     include_external(vulkan)
+    include_external(vma)
 endif ()

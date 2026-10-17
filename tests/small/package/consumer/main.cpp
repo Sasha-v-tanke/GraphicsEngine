@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <vector>
 
@@ -6,11 +8,16 @@
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
-#include <GraphicsEngine/graphics/graphics_pipeline.h>
-#include <GraphicsEngine/graphics/shader.h>
+#include <GraphicsEngine/graphics/image.h>
+#include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/lib/common/error/error.h>
+#include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/math/transform.h>
+#include <GraphicsEngine/renderer/renderer.h>
+#include <GraphicsEngine/resources/image_data.h>
+#include <GraphicsEngine/resources/image_loader.h>
 #include <GraphicsEngine/resources/resource_manager.h>
+#include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
@@ -49,29 +56,27 @@ int main() {
             .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
             .Lifetime = NGraphics::EBufferLifetime::Persistent,
     };
-    const auto makeShader = [&resources](NResources::EShaderStage stage, const char* key) {
-        const auto handle = resources.Request<NResources::ShaderArtifact>(NResources::ResourceIdentity{"shader", key});
-        const auto operation = resources.BeginLoading(handle);
-        resources.PublishReady(operation,
-                               std::make_shared<NResources::ShaderArtifact>(
-                                       stage,
-                                       std::vector<std::uint32_t>{0x07230203U, 0x00010000U, 0U, 2U, 0U}));
-        return NGraphics::Shader{resources, handle};
+    const NGraphics::ImageDescriptor gpuImage{
+            .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Usage = NGraphics::ImageUsage(NGraphics::EImageUsage::Sampled),
+            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+            .Lifetime = NGraphics::EImageLifetime::Persistent,
     };
-    const NGraphics::GraphicsPipelineDescriptor pipeline{
-            .Shaders =
-                    {
-                            makeShader(NResources::EShaderStage::VERTEX, "package.vertex"),
-                            makeShader(NResources::EShaderStage::FRAGMENT, "package.fragment"),
-                    },
-            .ColorAttachmentFormats = {NGraphics::EPixelFormat::BGRA8_SRGB},
-            .ColorBlendAttachments = {NGraphics::BlendAttachmentDescriptor{}},
+    const NGraphics::ImageViewDescriptor gpuImageView{
+            .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+            .Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color),
     };
+    const NGraphics::SamplerDescriptor gpuSampler{
+            .MinFilter = NGraphics::ESamplerFilter::Linear,
+            .MagFilter = NGraphics::ESamplerFilter::Linear,
+            .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
+    };
+    const NGraphics::Material material{NResources::ResourceIdentity{"pipeline", "package"}};
 
-    NGraphics::ValidateGraphicsPipelineDescriptor(pipeline);
-    const std::uint64_t pipelineHash = NGraphics::HashGraphicsPipelineDescriptor(pipeline);
-
-    if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256 || pipelineHash == 0) {
+    if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256 || gpuImage.Extent.Width != 1 ||
+        gpuImageView.Aspects == 0 || gpuSampler.AddressModeU != NGraphics::ESamplerAddressMode::ClampToEdge ||
+        material.GetPipeline().GetKey() != "package") {
         return 1;
     }
 
@@ -86,10 +91,31 @@ int main() {
                                                          std::vector<std::uint32_t>{0x07230203, 0x00010000, 0, 1, 0}));
 
     const std::shared_ptr<const NResources::ShaderArtifact> artifact = resources.GetCpuResource(shader);
+    const NResources::ImageData image{
+            1,
+            1,
+            NResources::EImagePixelFormat::RGBA8,
+            std::vector<std::uint8_t>{255U, 0U, 0U, 255U},
+    };
+    const std::filesystem::path imagePath =
+            std::filesystem::temp_directory_path() / "graphics-engine-package-image.ppm";
+    {
+        std::ofstream file{imagePath, std::ios::binary | std::ios::trunc};
+        const std::vector<std::uint8_t> bytes =
+                {'P', '6', '\n', '1', '\n', '1', '\n', '2', '5', '5', '\n', 255U, 0U, 0U};
+
+        file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    const auto loadedImage =
+            NResources::LoadImage(resources, NResources::ResourceIdentity{"image", "package.ppm"}, imagePath);
+    const std::shared_ptr<const NResources::ImageData> loadedImageData = resources.GetCpuResource(loadedImage);
+    std::filesystem::remove(imagePath);
 
     return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F &&
                            world.IsAlive(entity) && artifact && validSpirV &&
-                           artifact->GetStage() == NResources::EShaderStage::VERTEX
+                           artifact->GetStage() == NResources::EShaderStage::VERTEX && image.GetWidth() == 1U &&
+                           image.GetPixels().size() == 4U && loadedImageData && loadedImageData->GetWidth() == 1U
                  ? 0
                  : 1;
 }

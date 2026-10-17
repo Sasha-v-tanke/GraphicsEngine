@@ -1,6 +1,7 @@
 # Vulkan Backend
 
-`VulkanBackend` owns Vulkan loader, instance bootstrap and physical-device selection for GraphicsEngine.
+`VulkanBackend` owns Vulkan loader, instance bootstrap, physical-device selection and logical-device
+bootstrap for GraphicsEngine.
 
 This layer is backend-internal. It may use Vulkan native types, but higher-level
 Window, Application, Engine and future Graphics public contracts must not depend
@@ -63,8 +64,119 @@ Rejected candidates retain explicit reasons for every missing required
 capability. If no candidate is suitable, initialization fails with diagnostics
 for all candidates.
 
+## Logical Device
+
+`VulkanDevice` creates and owns one `VkDevice` for a selected physical device.
+It enables only the queue families required by graphics and presentation; when
+both roles use the same family, only one queue create request is emitted.
+
+The logical-device layer enables the required Vulkan 1.2/1.3 features from the
+selected physical-device snapshot:
+
+- timeline semaphore;
+- Synchronization2;
+- Dynamic Rendering.
+
+After successful device creation, device-level Volk dispatch is loaded through
+`volkLoadDevice()`. The graphics and present queue handles are retrieved once
+and exposed only as `VulkanLockedQueue`, so backend code holds the queue mutex
+while using the raw `VkQueue`. Shared graphics/present queues therefore have one
+host-synchronization boundary.
+
+`VulkanDevice` publishes immutable `GraphicsCapabilities` from the selected
+device snapshot. The current public capability surface maps Vulkan presentation
+support, timeline semaphore support and the backend frame-in-flight policy.
+
+## Memory And Uploads
+
+Vulkan memory allocation is internal to the backend and uses VMA. Buffer and
+image allocation wrappers own both the Vulkan object and its VMA allocation, so
+partially constructed resources do not escape and destruction is paired.
+
+`VulkanUploadManager` stages buffer and 2D color-image payloads in host-visible
+VMA allocations. Upload command buffers use the graphics queue and the existing
+timeline submission manager. Staging buffers and their command buffers remain
+owned until the exact timeline completion is observed; `ReleaseCompleted()`
+returns only completed uploads. Steady-state upload does not call
+`vkDeviceWaitIdle`; shutdown waits only when pending upload work remains.
+
+Uploads use `VulkanResourceStateTracker` for transfer state transitions. The
+caller shares that tracker with subsequent consumers, so the tracker records
+the post-upload buffer state and image shader-read state instead of leaving
+hidden layouts or broad synchronization barriers in the upload path. The
+tracker changes are committed only after successful queue submission, and VMA
+allocation destruction removes the corresponding concrete resource state.
+The
+current manager is a serial baseline. Persistent staging arenas and batched
+submissions belong to FEATURE-0069.
+
+## Swapchain
+
+`VulkanSwapchain` owns one `VkSwapchainKHR` for one `VkSurfaceKHR` and the
+image views created for its images. Swapchain images themselves remain owned by
+Vulkan WSI and are exposed only as indexed handles plus their matching view.
+
+Swapchain planning is separated from object creation. The plan chooses:
+
+- preferred `VK_FORMAT_B8G8R8A8_SRGB` with `SRGB_NONLINEAR` color space when
+  available, otherwise the first reported surface format;
+- preferred mailbox present mode when available, otherwise mandatory FIFO;
+- the surface-fixed extent when Vulkan provides one, otherwise the current
+  framebuffer size clamped to surface limits;
+- one more image than `minImageCount`, capped by `maxImageCount`;
+- exclusive image sharing for a shared graphics/present family, or concurrent
+  sharing for separate families.
+
+A zero-width or zero-height framebuffer is treated as suspended presentation.
+That state is not fatal and creates no `VkSwapchainKHR`; callers recreate the
+presentation chain when the framebuffer becomes non-zero again.
+
+Acquire and present wrappers translate WSI results into explicit backend states:
+acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
+They do not record rendering commands or perform layout transitions; the future
+command/submission path owns those responsibilities.
+
+## Frame Contexts
+
+`VulkanFrameContextRing` owns one `VulkanFrameContext` per Engine frame slot.
+The ring size is exactly `MaxActiveFrames`; swapchain image indices are separate
+WSI values and do not select frame-local command state.
+
+Each context owns frame-local Vulkan command state for the graphics queue. A
+context can be acquired for a new frame only when its previous completion value
+has finished. Until then `TryAcquire()` returns no context, so callers apply
+backpressure instead of resetting command pools that may still be in flight.
+
+Shutdown is conservative: if any context is still in flight, the ring waits for
+the logical device to become idle before destroying command pools.
+
+## Submission Manager
+
+`VulkanSubmissionManager` owns backend-internal timeline completion for Vulkan
+queue work. Graphics submissions are serialized through `VulkanDevice` queue
+locks and receive a monotonically increasing timeline value from the graphics
+queue context.
+
+The manager appends its timeline semaphore signal to every graphics submit while
+preserving caller-provided binary wait/signal semaphores. WSI acquire and present
+therefore remain on binary semaphores, and frame/resource lifetime code observes
+completion by querying the returned timeline value instead of using frame numbers.
+
+## Resource State Tracking
+
+`VulkanResourceStateTracker` owns backend-internal image state for Synchronization2.
+Callers import external images, including swapchain images, with an explicit
+initial state. Semantic usages are converted to Vulkan stage, access, layout and
+queue-family state inside the backend.
+
+Image transitions produce `VkImageMemoryBarrier2` only when the tracked state
+actually changes. The tracker also records queue-family ownership state, so
+future multi-queue transfer/release/acquire paths can use the same model while
+the MVP-2 execution path remains single graphics queue.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
 instance creation, `volkLoadInstanceOnly()` loads instance-level dispatch.
-Device-level dispatch belongs to the logical-device layer.
+After successful logical-device creation, `volkLoadDevice()` loads device-level
+dispatch.
