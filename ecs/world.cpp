@@ -566,6 +566,10 @@ void World::ValidateSystemDeferredCommandCollectionLocked() const {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS parallel workers must use producer-local deferred command buffers");
     }
+    if (!ActiveSystemStructuralOrder_.has_value()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS system structural commands require an explicit structural order");
+    }
 }
 
 void World::PushDeferredCommand(DeferredStructuralCommandBuffer& buffer, std::unique_ptr<IDeferredCommand> command) {

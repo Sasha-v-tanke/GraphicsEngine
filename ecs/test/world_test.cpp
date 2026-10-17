@@ -683,6 +683,19 @@ TEST(EcsWorld, RejectsSharedDeferredCommandsFromSystemWorker) {
     EXPECT_TRUE(world.IsAlive(entity));
 }
 
+TEST(EcsWorld, RejectsStructuralCommandsWithoutSystemOrderBeforeReservation) {
+    NEcs::World world;
+
+    world.RegisterSystem({}, [&](NEcs::World& systemWorld) {
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(systemWorld.DeferCreateEntity()); });
+    });
+
+    world.RunSystems();
+
+    const NEcs::Entity entity = world.CreateEntity();
+    EXPECT_TRUE(world.IsAlive(entity));
+}
+
 TEST(EcsWorld, AppliesDeferredStructuralChangesInOrder) {
     NEcs::World world;
 
