@@ -157,7 +157,7 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
         const VkSemaphoreSubmitInfo waitSemaphore{
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                 .semaphore = resources.ImageAvailable,
-                .stageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         };
         const VkCommandBufferSubmitInfo commandBuffer{
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,

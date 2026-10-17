@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <spawn.h>
 #include <string>
@@ -514,13 +515,15 @@ TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
         NWindow::Window window{MakeWindowConfig()};
 
         std::vector<std::string> validationErrors;
+        std::mutex validationMutex;
         NVulkan::VulkanInstanceConfig instanceConfig;
         instanceConfig.ApplicationName = "GraphicsEngineVulkanClearPresentPathTest";
         instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
         instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
         instanceConfig.EnableDebugUtils = true;
-        instanceConfig.DebugMessageHandler = [&validationErrors](const NVulkan::VulkanDebugMessage& message) {
+        instanceConfig.DebugMessageHandler = [&](const NVulkan::VulkanDebugMessage& message) {
             if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                const std::lock_guard lock{validationMutex};
                 validationErrors.push_back(message.Message);
             }
         };
@@ -564,6 +567,7 @@ TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
                 EXPECT_NE(completedFrames[index].Completion.Value, 0U);
             }
         }
+        const std::lock_guard lock{validationMutex};
         EXPECT_TRUE(validationErrors.empty());
         for (const std::string& error: validationErrors) {
             ADD_FAILURE() << error;
