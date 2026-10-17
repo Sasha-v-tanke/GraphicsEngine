@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -403,8 +404,10 @@ private:
     std::vector<DeferredCommandBatch> DeferredStructuralBatches_;
     std::vector<std::unique_ptr<IDeferredCommand>> ActiveDeferredStructuralCommands_;
     std::vector<Entity> PendingDeferredAppendEntities_;
-    std::unordered_map<std::uint32_t, std::vector<DeferredEntityReservation>> PlannedDeferredEntityReservations_;
+    std::map<std::optional<std::uint32_t>, std::unordered_map<std::uint32_t, std::vector<DeferredEntityReservation>>>
+            PlannedDeferredEntityReservations_;
     std::uint32_t PendingDeferredEntityCreateCount_ = 0;
+    std::uint32_t OutstandingDeferredReservationBufferCount_ = 0;
     std::uint32_t ReservedDeferredEntityCount_ = 0;
     std::uint32_t NextNewEntityGeneration_ = 0;
     std::uint64_t NextDeferredBatchSubmissionOrder_ = 0;

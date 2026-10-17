@@ -52,6 +52,14 @@ commands by `(structuralOrder, direct-before-worker, producerOrder)`; producer
 orders must be unique within each system. Standalone external buffers form a
 separate phase after system commands. A worker buffer must be submitted after
 its workers join and before the owning callback returns.
+Each system declares its worker create counts with `BeginDeferredStructuralPhase()`
+inside its callback before starting workers; reservation plans belong to that
+system and producer orders can be reused by other systems. If a callback fails,
+its direct commands, submitted worker commands and unused reservations are
+discarded together.
+Commit is rejected while a buffer still owns claimed create reservations and
+has not been submitted or discarded. The rejected commit leaves reservations
+intact so the caller can submit or destroy the buffer and retry.
 
 ## Access Contract
 

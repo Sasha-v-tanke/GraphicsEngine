@@ -19,6 +19,7 @@ struct World::DeferredStructuralCommandBuffer::State {
     std::uint32_t ProducerOrder = 0;
     std::optional<std::uint32_t> SystemOrder;
     bool Submitted = false;
+    bool HasClaimedReservations = false;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
     std::vector<DeferredEntityReservation> EntityReservations;
     std::size_t NextEntityReservation = 0;
@@ -50,6 +51,9 @@ World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffe
             std::scoped_lock lock{State_->Owner->DeferredStructuralMutex_};
             State_->Owner->ReleaseUnusedDeferredEntityReservationsLocked(State_->EntityReservations,
                                                                          State_->NextEntityReservation);
+            if (State_->HasClaimedReservations) {
+                --State_->Owner->OutstandingDeferredReservationBufferCount_;
+            }
         }
         State_ = std::move(other.State_);
     }
@@ -63,6 +67,9 @@ World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() {
         std::scoped_lock lock{State_->Owner->DeferredStructuralMutex_};
         State_->Owner->ReleaseUnusedDeferredEntityReservationsLocked(State_->EntityReservations,
                                                                      State_->NextEntityReservation);
+        if (State_->HasClaimedReservations) {
+            --State_->Owner->OutstandingDeferredReservationBufferCount_;
+        }
     }
 }
 
@@ -365,12 +372,18 @@ void World::BeginDeferredStructuralPhase(std::vector<DeferredProducer> producers
     }
 
     std::scoped_lock lock{DeferredStructuralMutex_};
-    if (PendingDeferredEntityCreateCount_ != 0 || !PlannedDeferredEntityReservations_.empty()) {
+    if (IsCollectingSystemDeferredStructuralCommands_) {
+        ValidateSystemDeferredCommandCollectionLocked();
+    }
+    const auto systemOrder = ActiveSystemStructuralOrder_;
+    if (PlannedDeferredEntityReservations_.contains(systemOrder) ||
+        (!systemOrder.has_value() && PendingDeferredEntityCreateCount_ != 0)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS deferred structural phase is already active");
     }
 
+    auto& phase = PlannedDeferredEntityReservations_[systemOrder];
     for (const auto& producer: producers) {
-        auto& reservations = PlannedDeferredEntityReservations_[producer.Order];
+        auto& reservations = phase[producer.Order];
         reservations.reserve(producer.EntityCreateCount);
         for (std::uint32_t count = 0; count < producer.EntityCreateCount; ++count) {
             reservations.push_back(ReserveDeferredEntityLocked());
@@ -388,10 +401,16 @@ World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuf
         }
         buffer.State_->SystemOrder = ActiveSystemStructuralOrder_;
     }
-    if (const auto iterator = PlannedDeferredEntityReservations_.find(producerOrder);
-        iterator != PlannedDeferredEntityReservations_.end()) {
-        buffer.State_->EntityReservations = std::move(iterator->second);
-        PlannedDeferredEntityReservations_.erase(iterator);
+    if (const auto phase = PlannedDeferredEntityReservations_.find(buffer.State_->SystemOrder);
+        phase != PlannedDeferredEntityReservations_.end()) {
+        if (const auto iterator = phase->second.find(producerOrder); iterator != phase->second.end()) {
+            buffer.State_->EntityReservations = std::move(iterator->second);
+            phase->second.erase(iterator);
+            if (!buffer.State_->EntityReservations.empty()) {
+                buffer.State_->HasClaimedReservations = true;
+                ++OutstandingDeferredReservationBufferCount_;
+            }
+        }
     }
     return buffer;
 }
@@ -434,6 +453,10 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
     ReleaseUnusedDeferredEntityReservationsLocked(buffer.State_->EntityReservations,
                                                   buffer.State_->NextEntityReservation);
     AppendDeferredCommandBatch(std::move(batch));
+    if (buffer.State_->HasClaimedReservations) {
+        --OutstandingDeferredReservationBufferCount_;
+        buffer.State_->HasClaimedReservations = false;
+    }
     buffer.State_->Submitted = true;
 }
 
@@ -458,9 +481,29 @@ void World::RunSystems() {
         try {
             system.Callback(*this);
         } catch (...) {
+            std::scoped_lock lock{DeferredStructuralMutex_};
             for (const auto& command: ActiveDeferredStructuralCommands_) {
                 ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
                 command->RollbackReservation(*this);
+            }
+            std::erase_if(DeferredStructuralBatches_, [&](DeferredCommandBatch& batch) {
+                if (batch.Source != DeferredCommandBatch::ESource::SYSTEM ||
+                    batch.SystemOrder != ActiveSystemStructuralOrder_) {
+                    return false;
+                }
+                for (const auto& command: batch.Commands) {
+                    ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
+                    command->RollbackReservation(*this);
+                }
+                return true;
+            });
+            if (const auto phase = PlannedDeferredEntityReservations_.find(ActiveSystemStructuralOrder_);
+                ActiveSystemStructuralOrder_.has_value() && phase != PlannedDeferredEntityReservations_.end()) {
+                for (auto& [producerOrder, reservations]: phase->second) {
+                    static_cast<void>(producerOrder);
+                    ReleaseUnusedDeferredEntityReservationsLocked(reservations, 0);
+                }
+                PlannedDeferredEntityReservations_.erase(phase);
             }
             IsRunningSystems_ = false;
             IsCollectingSystemDeferredStructuralCommands_ = false;
@@ -506,9 +549,16 @@ void World::ApplyDeferredStructuralChanges() {
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
-        for (auto& [producerOrder, reservations]: PlannedDeferredEntityReservations_) {
-            static_cast<void>(producerOrder);
-            ReleaseUnusedDeferredEntityReservationsLocked(reservations, 0);
+        if (OutstandingDeferredReservationBufferCount_ != 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS deferred reservation buffers must be submitted or discarded before commit");
+        }
+        for (auto& [systemOrder, phase]: PlannedDeferredEntityReservations_) {
+            static_cast<void>(systemOrder);
+            for (auto& [producerOrder, reservations]: phase) {
+                static_cast<void>(producerOrder);
+                ReleaseUnusedDeferredEntityReservationsLocked(reservations, 0);
+            }
         }
         PlannedDeferredEntityReservations_.clear();
         std::ranges::sort(DeferredStructuralBatches_,

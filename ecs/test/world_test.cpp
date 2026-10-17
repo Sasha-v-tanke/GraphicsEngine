@@ -532,6 +532,31 @@ TEST(EcsWorld, CommitReleasesUnclaimedPhaseReservations) {
     EXPECT_TRUE(world.IsAlive(entity));
 }
 
+TEST(EcsWorld, RejectsCommitWhileBufferOwnsUnsubmittedReservations) {
+    NEcs::World world;
+    world.BeginDeferredStructuralPhase({{.Order = 0, .EntityCreateCount = 1}});
+    auto producer = world.CreateDeferredStructuralCommandBuffer(0);
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.ApplyDeferredStructuralChanges(); });
+
+    const NEcs::Entity entity = world.DeferCreateEntity(producer);
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.ApplyDeferredStructuralChanges(); });
+    world.SubmitDeferredStructuralCommands(std::move(producer));
+    world.ApplyDeferredStructuralChanges();
+    EXPECT_TRUE(world.IsAlive(entity));
+}
+
+TEST(EcsWorld, DiscardingClaimedBufferAfterRejectedCommitRestoresAllocator) {
+    NEcs::World world;
+    {
+        world.BeginDeferredStructuralPhase({{.Order = 0, .EntityCreateCount = 1}});
+        auto producer = world.CreateDeferredStructuralCommandBuffer(0);
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.ApplyDeferredStructuralChanges(); });
+    }
+    const NEcs::Entity entity = world.CreateEntity();
+    world.ApplyDeferredStructuralChanges();
+    EXPECT_TRUE(world.IsAlive(entity));
+}
+
 TEST(EcsWorld, RejectsSubmittingProducerBufferToAnotherWorld) {
     NEcs::World firstWorld;
     NEcs::World secondWorld;
@@ -791,6 +816,65 @@ TEST(EcsWorld, WorkerProducerOrdersAreScopedToTheirSystem) {
 
     world.RunSystems();
     EXPECT_FALSE(world.HasComponent<Position>(entity));
+}
+
+TEST(EcsWorld, WorkerCreateReservationsAreScopedToTheirSystem) {
+    auto replay = [](bool reverseRegistration) {
+        NEcs::World world;
+        NEcs::Entity low;
+        NEcs::Entity high;
+        auto registerProducer = [&](std::uint32_t order, NEcs::Entity& created) {
+            world.RegisterSystem(
+                    {},
+                    [&, order](NEcs::World& current) {
+                        current.BeginDeferredStructuralPhase({{.Order = 0, .EntityCreateCount = 1}});
+                        auto producer = current.CreateDeferredStructuralCommandBuffer(0);
+                        created = current.DeferCreateEntity(producer);
+                        NEcs::World::DeferAddComponent<Position>(producer, created, static_cast<int>(order), 0);
+                        current.SubmitDeferredStructuralCommands(std::move(producer));
+                    },
+                    order);
+        };
+        if (reverseRegistration) {
+            registerProducer(20, high);
+            registerProducer(10, low);
+        } else {
+            registerProducer(10, low);
+            registerProducer(20, high);
+        }
+        world.RunSystems();
+        EXPECT_EQ(world.GetComponent<Position>(low).X, 10);
+        EXPECT_EQ(world.GetComponent<Position>(high).X, 20);
+        return std::pair{low, high};
+    };
+    EXPECT_EQ(replay(false), replay(true));
+}
+
+TEST(EcsWorld, FailedSystemDiscardsSubmittedWorkerCommandsAndReservations) {
+    NEcs::World world;
+    const NEcs::Entity existing = world.CreateEntity();
+    NEcs::Entity created;
+    world.RegisterSystem(
+            {},
+            [&](NEcs::World& current) {
+                current.BeginDeferredStructuralPhase(
+                        {{.Order = 0, .EntityCreateCount = 2}, {.Order = 1, .EntityCreateCount = 1}});
+                auto producer = current.CreateDeferredStructuralCommandBuffer(0);
+                created = current.DeferCreateEntity(producer);
+                NEcs::World::DeferAddComponent<Position>(producer, created, 10, 0);
+                NEcs::World::DeferDestroyEntity(producer, existing);
+                current.SubmitDeferredStructuralCommands(std::move(producer));
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "test failure");
+            },
+            10);
+
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.RunSystems(); });
+    const NEcs::Entity immediate = world.CreateEntity();
+    world.ApplyDeferredStructuralChanges();
+    EXPECT_TRUE(world.IsAlive(existing));
+    EXPECT_TRUE(world.IsAlive(immediate));
+    EXPECT_FALSE(world.IsAlive(created));
+    EXPECT_FALSE(world.HasComponent<Position>(immediate));
 }
 
 TEST(EcsWorld, RejectsSubmittingSystemBufferAfterCallbackReturns) {
