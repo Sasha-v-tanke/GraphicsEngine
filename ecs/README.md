@@ -23,11 +23,10 @@ reserved identity.
 ## Mutation Phases
 
 The MVP-3 core executes registered systems sequentially through `RunSystems()`.
-Systems with an explicit `structuralOrder` execute in ascending order of that
-key, so direct deferred creates receive the same identities regardless of
-registration order. Systems without a structural order run first and cannot
-collect structural commands. This sequential policy precedes the dependency
-scheduler planned for MVP-4.
+An explicit `structuralOrder` controls structural merge only; it does not
+reorder callbacks or ordinary component reads/writes. Systems without a
+structural order cannot collect structural commands. The dependency scheduler
+is planned for MVP-4.
 The public access model already records `Read<T>()` and `Write<T>()`
 declarations so MVP-4 can add parallel scheduling without changing system
 registration semantics.
@@ -52,9 +51,15 @@ commands by `(structuralOrder, direct-before-worker, producerOrder)`; producer
 orders must be unique within each system. Standalone external buffers form a
 separate phase after system commands. A worker buffer must be submitted after
 its workers join and before the owning callback returns.
-Each system declares its worker create counts with `BeginDeferredStructuralPhase()`
-inside its callback before starting workers; reservation plans belong to that
-system and producer orders can be reused by other systems. If a callback fails,
+Buffers belong to the specific callback invocation that created them; a later
+invocation cannot submit them, and external buffers cannot be adopted by a system.
+Before `RunSystems()`, declare system producers with `BeginDeferredStructuralPhase()`
+and set each producer's `SystemOrder` to its owning system's structural order.
+Identities are reserved by `(SystemOrder, Order)` before any callback runs, and
+producer orders can be reused by other systems. System callbacks create entities
+through these planned buffers; the shared `DeferCreateEntity()` overload is
+rejected during system execution. New plans cannot begin inside a callback.
+If a callback fails,
 its direct commands, submitted worker commands and unused reservations are
 discarded together.
 Commit is rejected while a buffer still owns claimed create reservations and

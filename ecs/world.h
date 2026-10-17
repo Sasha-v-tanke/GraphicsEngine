@@ -31,6 +31,7 @@ public:
     struct DeferredProducer {
         std::uint32_t Order = 0;
         std::uint32_t EntityCreateCount = 0;
+        std::optional<std::uint32_t> SystemOrder = std::nullopt;
     };
 
     class DeferredStructuralCommandBuffer;
@@ -417,6 +418,7 @@ private:
     bool IsApplyingDeferredStructuralChanges_ = false;
     std::optional<std::thread::id> ActiveSystemThreadId_;
     std::optional<std::uint32_t> ActiveSystemStructuralOrder_;
+    std::uint64_t ActiveSystemInvocationId_ = 0;
 
     struct RegisteredSystem {
         SystemAccessList Access;
