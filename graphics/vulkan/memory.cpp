@@ -31,12 +31,10 @@ std::string_view GetVkResultName(VkResult result) {
 [[nodiscard]] VmaAllocationCreateFlags MakeAllocationFlags(NGraphics::BufferAccessFlags access) noexcept {
     VmaAllocationCreateFlags flags = 0;
 
-    if ((access & NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuWrite)) != 0) {
-        flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-    }
-
     if ((access & NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead)) != 0) {
         flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    } else if ((access & NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuWrite)) != 0) {
+        flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
     }
 
     return flags;

@@ -445,7 +445,7 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
                 {
                         .SizeBytes = 8,
                         .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
-                        .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
+                        .Access = NGraphics::EBufferAccess::CpuRead | NGraphics::EBufferAccess::CpuWrite,
                 });
         const std::array<std::byte, 4> firstPartialBytes{
                 std::byte{0x01},
