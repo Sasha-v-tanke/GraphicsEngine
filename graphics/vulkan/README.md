@@ -182,6 +182,10 @@ The acquire wait covers transfer commands. Present semaphores are reused only
 after acquiring their image again, independently of frame-slot timeline completion.
 A recording, submission or presentation failure makes the path terminal; destroy
 it before retrying. Shutdown drains device work before destroying synchronization resources.
+`Render()` returns an optional completion token independently of presentation status.
+Advance the logical frame index whenever that token is present, including when
+present reports out-of-date. Without a token the frame was not submitted and may
+be retried. Drain submitted completion events before destroying the path.
 
 ## Resource State Tracking
 

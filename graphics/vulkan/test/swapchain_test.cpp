@@ -534,22 +534,31 @@ TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
                 NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
         const NVulkan::VulkanDevice device{physicalDevice};
         NVulkan::VulkanSwapchain swapchain{device, physicalDevice, surface.GetHandle(), window.GetFramebufferSize()};
+        {
+            NVulkan::VulkanSwapchain suspended{device, physicalDevice, surface.GetHandle(), {.Width = 0, .Height = 0}};
+            NVulkan::VulkanClearPresentPath path{device, suspended, 1};
+            const NVulkan::VulkanClearPresentResult result = path.Render(0, {.float32 = {0, 0, 0, 1}});
+            EXPECT_EQ(result.Status, NVulkan::EVulkanClearPresentStatus::SUSPENDED);
+            EXPECT_FALSE(result.Completion.has_value());
+            EXPECT_TRUE(path.PollCompletedFrames().empty());
+        }
         for (const std::size_t activeSlots: {1U, 3U}) {
             NVulkan::VulkanClearPresentPath path{device, swapchain, activeSlots};
 
             std::uint64_t frameIndex = 0;
             std::vector<NVulkan::VulkanFrameCompletionEvent> completedFrames;
             for (std::size_t attempts = 0; frameIndex < 6 && attempts < 600; ++attempts) {
-                const NVulkan::EVulkanClearPresentStatus status =
+                const NVulkan::VulkanClearPresentResult result =
                         path.Render(frameIndex, {.float32 = {0.1F * static_cast<float>(frameIndex), 0.2F, 0.3F, 1.0F}});
-                if (status == NVulkan::EVulkanClearPresentStatus::PRESENTED) {
+                if (result.Completion.has_value()) {
+                    EXPECT_NE(result.Completion->Value, 0U);
                     ++frameIndex;
-                } else if (status == NVulkan::EVulkanClearPresentStatus::OUT_OF_DATE ||
-                           status == NVulkan::EVulkanClearPresentStatus::SUSPENDED) {
-                    GTEST_SKIP() << "Swapchain became unavailable";
                 } else {
+                    ASSERT_EQ(result.Status, NVulkan::EVulkanClearPresentStatus::NOT_READY);
                     std::this_thread::sleep_for(std::chrono::milliseconds{10});
                 }
+                ASSERT_NE(result.Status, NVulkan::EVulkanClearPresentStatus::OUT_OF_DATE);
+                ASSERT_NE(result.Status, NVulkan::EVulkanClearPresentStatus::SUSPENDED);
 
                 std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
                 completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());

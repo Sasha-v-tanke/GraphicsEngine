@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <GraphicsEngine/graphics/vulkan/frame_context.h>
@@ -20,6 +21,11 @@ enum class EVulkanClearPresentStatus {
     SUSPENDED,
 };
 
+struct VulkanClearPresentResult {
+    EVulkanClearPresentStatus Status = EVulkanClearPresentStatus::NOT_READY;
+    std::optional<VulkanQueueCompletion> Completion;
+};
+
 struct VulkanFrameCompletionEvent {
     std::uint64_t FrameIndex = 0;
     VulkanQueueCompletion Completion;
@@ -31,7 +37,7 @@ public:
 
     ~VulkanClearPresentPath();
 
-    [[nodiscard]] EVulkanClearPresentStatus Render(std::uint64_t frameIndex, VkClearColorValue clearColor);
+    [[nodiscard]] VulkanClearPresentResult Render(std::uint64_t frameIndex, VkClearColorValue clearColor);
 
     [[nodiscard]] std::vector<VulkanFrameCompletionEvent> PollCompletedFrames();
 

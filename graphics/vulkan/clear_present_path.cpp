@@ -107,13 +107,13 @@ VulkanClearPresentPath::~VulkanClearPresentPath() {
     }
 }
 
-EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameIndex, VkClearColorValue clearColor) {
+VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex, VkClearColorValue clearColor) {
     if (m_failed) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Vulkan clear/present path requires shutdown after failure");
     }
     if (m_swapchain.IsSuspended()) {
-        return EVulkanClearPresentStatus::SUSPENDED;
+        return {.Status = EVulkanClearPresentStatus::SUSPENDED};
     }
 
     const VulkanFrameContextAcquire acquire{
@@ -124,7 +124,7 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
         return m_submissions.IsCompleted({.Value = value});
     });
     if (context == nullptr) {
-        return EVulkanClearPresentStatus::NOT_READY;
+        return {.Status = EVulkanClearPresentStatus::NOT_READY};
     }
 
     bool submitted = false;
@@ -134,16 +134,16 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
                 m_swapchain.AcquireNextImage(resources.ImageAvailable, VK_NULL_HANDLE, 0);
         if (acquired.Status == EVulkanSwapchainAcquireStatus::OUT_OF_DATE) {
             m_frames.ReleaseAcquired(acquire);
-            return EVulkanClearPresentStatus::OUT_OF_DATE;
+            return {.Status = EVulkanClearPresentStatus::OUT_OF_DATE};
         }
         if (acquired.Status == EVulkanSwapchainAcquireStatus::SUSPENDED) {
             m_frames.ReleaseAcquired(acquire);
-            return EVulkanClearPresentStatus::SUSPENDED;
+            return {.Status = EVulkanClearPresentStatus::SUSPENDED};
         }
         if (acquired.Status != EVulkanSwapchainAcquireStatus::ACQUIRED &&
             acquired.Status != EVulkanSwapchainAcquireStatus::SUBOPTIMAL) {
             m_frames.ReleaseAcquired(acquire);
-            return EVulkanClearPresentStatus::NOT_READY;
+            return {.Status = EVulkanClearPresentStatus::NOT_READY};
         }
 
         std::unique_ptr<FrameResources>& presentResources = m_presentResources[acquired.ImageIndex];
@@ -183,8 +183,11 @@ EVulkanClearPresentStatus VulkanClearPresentPath::Render(std::uint64_t frameInde
         const VulkanLockedQueue presentQueue = m_device.LockPresentQueue();
         const EVulkanSwapchainPresentStatus present =
                 m_swapchain.Present(presentQueue, acquired.ImageIndex, {presentResources->PresentReady});
-        return present == EVulkanSwapchainPresentStatus::OUT_OF_DATE ? EVulkanClearPresentStatus::OUT_OF_DATE
-                                                                     : EVulkanClearPresentStatus::PRESENTED;
+        return {
+                .Status = present == EVulkanSwapchainPresentStatus::OUT_OF_DATE ? EVulkanClearPresentStatus::OUT_OF_DATE
+                                                                                : EVulkanClearPresentStatus::PRESENTED,
+                .Completion = completion,
+        };
     } catch (...) {
         m_failed = true;
         if (!submitted) {
