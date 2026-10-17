@@ -326,6 +326,40 @@ VulkanBufferState MakeVulkanBufferState(EVulkanResourceUsage usage, std::uint32_
     GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unknown Vulkan buffer usage");
 }
 
+VulkanResourceStateTracker::Transaction VulkanResourceStateTracker::BeginTransaction() {
+    return Transaction{*this};
+}
+
+void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrier2& barrier) {
+    const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
+void RecordVulkanResourceBarrier(VkCommandBuffer commandBuffer, const VkBufferMemoryBarrier2& barrier) {
+    const VkDependencyInfo dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 1,
+            .pBufferMemoryBarriers = &barrier,
+            .imageMemoryBarrierCount = 0,
+            .pImageMemoryBarriers = nullptr,
+    };
+    vkCmdPipelineBarrier2(commandBuffer, &dependency);
+}
+
 void VulkanResourceStateTracker::ImportImage(VkImage image,
                                              VkImageSubresourceRange subresourceRange,
                                              VulkanImageState state) {
@@ -335,6 +369,45 @@ void VulkanResourceStateTracker::ImportImage(VkImage image,
 
     for (const ImageKey key: MakeImageKeys(image, subresourceRange)) {
         m_images[key] = state;
+    }
+}
+
+VulkanResourceStateTracker::Transaction::Transaction(VulkanResourceStateTracker& tracker)
+    : m_tracker(&tracker)
+    , m_images(tracker.m_images)
+    , m_buffers(tracker.m_buffers) {
+}
+
+VulkanResourceStateTracker::Transaction::Transaction(Transaction&& other) noexcept
+    : m_tracker(std::exchange(other.m_tracker, nullptr))
+    , m_images(std::move(other.m_images))
+    , m_buffers(std::move(other.m_buffers)) {
+}
+
+VulkanResourceStateTracker::Transaction&
+VulkanResourceStateTracker::Transaction::operator=(Transaction&& other) noexcept {
+    if (this != &other) {
+        Rollback();
+        m_tracker = std::exchange(other.m_tracker, nullptr);
+        m_images = std::move(other.m_images);
+        m_buffers = std::move(other.m_buffers);
+    }
+    return *this;
+}
+
+VulkanResourceStateTracker::Transaction::~Transaction() {
+    Rollback();
+}
+
+void VulkanResourceStateTracker::Transaction::Commit() noexcept {
+    m_tracker = nullptr;
+}
+
+void VulkanResourceStateTracker::Transaction::Rollback() noexcept {
+    if (m_tracker != nullptr) {
+        m_tracker->m_images.swap(m_images);
+        m_tracker->m_buffers.swap(m_buffers);
+        m_tracker = nullptr;
     }
 }
 
@@ -498,6 +571,76 @@ VulkanResourceStateTracker::TransitionBuffer(const VulkanBufferTransition& trans
 
     ReplaceBufferRange(m_buffers, transition.Buffer, transition.Offset, transition.Size, destination);
     return MakeBufferBarrier(transition.Buffer, transition.Offset, transition.Size, *source, destination);
+}
+
+std::vector<VkBufferMemoryBarrier2>
+VulkanResourceStateTracker::TransitionBufferRanges(const VulkanBufferTransition& transition) {
+    if (transition.Buffer == VK_NULL_HANDLE) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer transition requires a buffer");
+    }
+    ValidateTransitionUsage(transition.Usage);
+
+    const VkDeviceSize transitionEnd = RangeEnd(transition.Offset, transition.Size);
+    VkDeviceSize coveredOffset = transition.Offset;
+    std::vector<BufferRangeState> sources;
+
+    while (coveredOffset < transitionEnd) {
+        const BufferRangeState* source = nullptr;
+        for (const BufferRangeState& range: m_buffers) {
+            if (range.Buffer == transition.Buffer && range.Offset <= coveredOffset &&
+                coveredOffset < RangeEnd(range.Offset, range.Size)) {
+                source = &range;
+                break;
+            }
+        }
+
+        if (source == nullptr) {
+            if (sources.empty() &&
+                !HasBufferRangeOverlap(m_buffers, transition.Buffer, transition.Offset, transition.Size)) {
+                VulkanBufferState destination = MakeVulkanBufferState(transition.Usage, transition.QueueFamilyIndex);
+                ValidateInitialQueueFamily(destination);
+                m_buffers.push_back({
+                        .Buffer = transition.Buffer,
+                        .Offset = transition.Offset,
+                        .Size = transition.Size,
+                        .State = destination,
+                });
+                return {};
+            }
+
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                  "Vulkan buffer transition range is only partially tracked");
+        }
+
+        const VkDeviceSize sourceEnd = RangeEnd(source->Offset, source->Size);
+        const VkDeviceSize segmentEnd = std::min(sourceEnd, transitionEnd);
+        sources.push_back({
+                .Buffer = transition.Buffer,
+                .Offset = coveredOffset,
+                .Size = segmentEnd == std::numeric_limits<VkDeviceSize>::max() ? VK_WHOLE_SIZE
+                                                                               : segmentEnd - coveredOffset,
+                .State = source->State,
+        });
+        coveredOffset = segmentEnd;
+    }
+
+    std::vector<BufferRangeState> replacement = m_buffers;
+    std::vector<VkBufferMemoryBarrier2> barriers;
+    barriers.reserve(sources.size());
+    for (const BufferRangeState& source: sources) {
+        VulkanBufferState destination = MakeVulkanBufferState(transition.Usage, transition.QueueFamilyIndex);
+        destination = ResolveQueueFamily(source.State, destination);
+        if (RequiresBarrier(source.State, destination)) {
+            barriers.push_back(
+                    MakeBufferBarrier(transition.Buffer, source.Offset, source.Size, source.State, destination));
+        } else {
+            destination = MergeReadStates(source.State, destination);
+        }
+        ReplaceBufferRange(replacement, transition.Buffer, source.Offset, source.Size, destination);
+    }
+
+    m_buffers.swap(replacement);
+    return barriers;
 }
 
 std::size_t VulkanResourceStateTracker::ImageKeyHash::operator()(ImageKey key) const noexcept {

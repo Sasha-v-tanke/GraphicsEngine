@@ -17,17 +17,25 @@ SOURCES(
     clear_present_path.cpp
     frame_context.cpp
     instance.cpp
+    memory.h
+    memory.cpp
     physical_device.cpp
     resource_conversion.cpp
     resource_state.cpp
     submission_manager.cpp
     swapchain.cpp
+    upload_manager.h
+    upload_manager.cpp
 )
 
 PUBLIC_DEPENDS(
     Common
     Graphics
     Vulkan
+)
+
+PRIVATE_DEPENDS(
+    VulkanMemoryAllocator
 )
 
 if (GRAPHICS_ENGINE_BUILD_GLFW)

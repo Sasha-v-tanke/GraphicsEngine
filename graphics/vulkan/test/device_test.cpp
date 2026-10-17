@@ -1,7 +1,11 @@
+#include <array>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <optional>
 #include <spawn.h>
 #include <string>
@@ -22,8 +26,11 @@ extern char** environ;
 #include <graphics/vulkan/device.h>
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/instance.h>
+#include <graphics/vulkan/memory.h>
 #include <graphics/vulkan/physical_device.h>
 #include <graphics/vulkan/resource_conversion.h>
+#include <graphics/vulkan/submission_manager.h>
+#include <graphics/vulkan/upload_manager.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <tests/common/test_error.h>
@@ -351,6 +358,165 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
 
 TEST(VulkanDevice, CreatesAndDestroysDeviceAndPublishesCapabilities) {
     RunSpawnedSmoke("VulkanDeviceChild.DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilities");
+}
+
+TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{MakeWindowConfig()};
+        std::vector<std::string> validationErrors;
+
+        NVulkan::VulkanInstanceConfig instanceConfig;
+        instanceConfig.ApplicationName = "GraphicsEngine Vulkan Upload Test";
+        instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
+        instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
+        instanceConfig.EnableDebugUtils = true;
+        instanceConfig.DebugMessageHandler = [&validationErrors](const NVulkan::VulkanDebugMessage& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                validationErrors.push_back(message.Message);
+            }
+        };
+
+        NVulkan::VulkanInstance instance{instanceConfig};
+        const NVulkan::NGlfw::VulkanSurface surface{instance, window};
+        const NVulkan::VulkanPhysicalDeviceSelection physicalDevice =
+                NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
+        const NVulkan::VulkanDevice device{physicalDevice};
+        NVulkan::VulkanResourceStateTracker resourceStates;
+        NVulkan::VulkanMemoryAllocator memory{instance.GetHandle(), physicalDevice.Handle, device, resourceStates};
+        NVulkan::VulkanSubmissionManager submissions{device};
+        NVulkan::VulkanUploadManager uploads{device, memory, submissions, resourceStates};
+        const std::array<std::byte, 4> bytes{
+                std::byte{0x01},
+                std::byte{0x02},
+                std::byte{0x03},
+                std::byte{0x04},
+        };
+        std::vector<NVulkan::VulkanBufferAllocation> destinations;
+        destinations.reserve(32);
+        NVulkan::VulkanQueueCompletion completion{};
+        for (std::size_t index = 0; index < 32; ++index) {
+            destinations.emplace_back(NVulkan::CreateVulkanBuffer(
+                    memory,
+                    {
+                            .SizeBytes = bytes.size(),
+                            .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
+                    }));
+            completion = uploads.UploadBuffer(destinations.back(), bytes);
+        }
+
+        EXPECT_GT(uploads.GetPendingUploadCount(), 0U);
+        EXPECT_LE(uploads.GetPendingUploadCount(), destinations.size());
+        submissions.Wait(completion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+        EXPECT_EQ(uploads.GetPendingUploadCount(), 0U);
+
+        for (NVulkan::VulkanBufferAllocation& destination: destinations) {
+            void* mapped = destination.Map();
+            destination.Invalidate(0, bytes.size());
+            EXPECT_EQ(std::memcmp(mapped, bytes.data(), bytes.size()), 0);
+            destination.Unmap();
+            ASSERT_TRUE(resourceStates.GetBufferState(destination.GetBuffer(), 0, bytes.size()).has_value());
+            EXPECT_EQ(resourceStates.GetBufferState(destination.GetBuffer(), 0, bytes.size())->AccessMask,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        }
+        const VkBuffer destroyedBuffer = destinations.front().GetBuffer();
+        destinations.clear();
+        EXPECT_FALSE(resourceStates.GetBufferState(destroyedBuffer, 0, bytes.size()).has_value());
+
+        std::optional<NVulkan::VulkanBufferAllocation> retainedDestination = NVulkan::CreateVulkanBuffer(
+                memory,
+                {
+                        .SizeBytes = bytes.size(),
+                        .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                        .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
+                });
+        const VkBuffer retainedBuffer = retainedDestination->GetBuffer();
+        const NVulkan::VulkanQueueCompletion retainedCompletion = uploads.UploadBuffer(*retainedDestination, bytes);
+        retainedDestination.reset();
+        EXPECT_TRUE(resourceStates.GetBufferState(retainedBuffer, 0, bytes.size()).has_value());
+        submissions.Wait(retainedCompletion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+        EXPECT_FALSE(resourceStates.GetBufferState(retainedBuffer, 0, bytes.size()).has_value());
+
+        NVulkan::VulkanBufferAllocation partialDestination = NVulkan::CreateVulkanBuffer(
+                memory,
+                {
+                        .SizeBytes = 8,
+                        .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                        .Access = NGraphics::EBufferAccess::CpuRead | NGraphics::EBufferAccess::CpuWrite,
+                });
+        const std::array<std::byte, 4> firstPartialBytes{
+                std::byte{0x01},
+                std::byte{0x02},
+                std::byte{0x03},
+                std::byte{0x04},
+        };
+        const std::array<std::byte, 4> secondPartialBytes{
+                std::byte{0x05},
+                std::byte{0x06},
+                std::byte{0x07},
+                std::byte{0x08},
+        };
+        (void)uploads.UploadBuffer(partialDestination, firstPartialBytes, 0);
+        const NVulkan::VulkanQueueCompletion partialCompletion =
+                uploads.UploadBuffer(partialDestination, secondPartialBytes, 2);
+        submissions.Wait(partialCompletion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+
+        const std::array<std::byte, 6> expectedPartialBytes{
+                std::byte{0x01},
+                std::byte{0x02},
+                std::byte{0x05},
+                std::byte{0x06},
+                std::byte{0x07},
+                std::byte{0x08},
+        };
+        void* mappedPartialDestination = partialDestination.Map();
+        partialDestination.Invalidate(0, expectedPartialBytes.size());
+        EXPECT_EQ(std::memcmp(mappedPartialDestination, expectedPartialBytes.data(), expectedPartialBytes.size()), 0);
+        partialDestination.Unmap();
+
+        NVulkan::VulkanImageAllocation image = NVulkan::CreateVulkanImage(
+                memory,
+                {
+                        .Extent = {.Width = 1, .Height = 1, .Depth = 1},
+                        .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+                        .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+                        .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+                });
+        const NVulkan::VulkanQueueCompletion imageCompletion = uploads.UploadImage(image, bytes);
+
+        EXPECT_EQ(uploads.GetPendingUploadCount(), 1U);
+        submissions.Wait(imageCompletion, std::numeric_limits<std::uint64_t>::max());
+        uploads.ReleaseCompleted();
+        EXPECT_EQ(uploads.GetPendingUploadCount(), 0U);
+        const VkImageSubresourceRange imageRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+        };
+        ASSERT_TRUE(resourceStates.GetImageState(image.GetImage(), imageRange).has_value());
+        EXPECT_EQ(resourceStates.GetImageState(image.GetImage(), imageRange)->Layout,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        const VkImage destroyedImage = image.GetImage();
+        image = {};
+        EXPECT_FALSE(resourceStates.GetImageState(destroyedImage, imageRange).has_value());
+        EXPECT_TRUE(validationErrors.empty()) << (validationErrors.empty() ? "" : validationErrors.front());
+    } catch (const NCommon::Exception& exception) {
+        if (IsEnvironmentFailure(exception)) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+
+        throw;
+    }
+}
+
+TEST(VulkanUploadManager, RetainsStagingUntilTimelineCompletion) {
+    RunSpawnedSmoke("VulkanUploadManagerChild.DISABLED_RetainsStagingUntilTimelineCompletion");
 }
 
 } // namespace

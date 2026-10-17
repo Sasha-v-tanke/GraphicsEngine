@@ -2,10 +2,12 @@
 
 #include <vulkan.h>
 
+#include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/image.h>
 
 namespace NVulkan {
 
+[[nodiscard]] VkBufferUsageFlags ToVulkanBufferUsage(NGraphics::BufferUsageFlags usage);
 [[nodiscard]] VkFormat ToVulkanFormat(NGraphics::EImageFormat format);
 [[nodiscard]] VkImageUsageFlags ToVulkanImageUsage(NGraphics::ImageUsageFlags usage);
 [[nodiscard]] VkImageAspectFlags ToVulkanImageAspect(NGraphics::ImageAspectFlags aspects);
