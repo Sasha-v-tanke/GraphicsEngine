@@ -159,8 +159,11 @@ jobs:
         run: ./tests/test_heavy.sh
 
       - name: Show test log
-        if: failure()
+        if: always()
         run: |
           if [ -f tests/result/test-heavy.log ]; then
             cat tests/result/test-heavy.log
+          fi
+          if [ -f cmake-build-ci-vulkan-glfw/Testing/Temporary/LastTest.log ]; then
+            cat cmake-build-ci-vulkan-glfw/Testing/Temporary/LastTest.log
           fi
