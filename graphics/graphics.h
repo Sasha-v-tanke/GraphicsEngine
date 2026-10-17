@@ -9,6 +9,7 @@
 #include <graphics/frame_submission.h>
 #include <graphics/graphics_capabilities.h>
 #include <graphics/graphics_config.h>
+#include <graphics/graphics_pipeline.h>
 #include <graphics/image.h>
 #include <lib/common/wrapper/non_transferable.h>
 
@@ -47,6 +48,10 @@ public:
     void DestroySampler(SamplerHandle sampler, CompletionPoint completedAfter = {});
     [[nodiscard]] SamplerDescriptor GetSamplerDescriptor(SamplerHandle sampler) const;
 
+    [[nodiscard]] GraphicsPipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDescriptor& descriptor);
+    void DestroyGraphicsPipeline(GraphicsPipelineHandle pipeline, CompletionPoint completedAfter = {});
+    [[nodiscard]] GraphicsPipelineDescriptor GetGraphicsPipelineDescriptor(GraphicsPipelineHandle pipeline) const;
+
 private:
     explicit Graphics(std::unique_ptr<NBackend::IGraphicsBackend> backend,
                       const RequiredGraphicsCapabilities& requiredCapabilities = {});
@@ -55,6 +60,11 @@ private:
 
     struct BufferRecord {
         BufferDescriptor Descriptor;
+        std::uint64_t Generation = 0;
+    };
+
+    struct GraphicsPipelineRecord {
+        GraphicsPipelineDescriptor Descriptor;
         std::uint64_t Generation = 0;
     };
 
@@ -77,11 +87,14 @@ private:
     [[nodiscard]] const ImageRecord& ResolveImage(ImageHandle image) const;
     [[nodiscard]] const ImageViewRecord& ResolveImageView(ImageViewHandle imageView) const;
     [[nodiscard]] const SamplerRecord& ResolveSampler(SamplerHandle sampler) const;
+    [[nodiscard]] const GraphicsPipelineRecord& ResolveGraphicsPipeline(GraphicsPipelineHandle pipeline) const;
     void ValidateCompletionOwner(CompletionPoint completion) const;
 
     std::unique_ptr<NBackend::IGraphicsBackend> m_backend;
     std::uint64_t m_ownerId = 0;
     std::uint64_t m_nextBufferGeneration = 1;
+    std::uint64_t m_nextGraphicsPipelineGeneration = 1;
+    std::unordered_map<std::uint64_t, GraphicsPipelineRecord> m_graphicsPipelines;
     std::uint64_t m_nextImageGeneration = 1;
     std::uint64_t m_nextImageViewGeneration = 1;
     std::uint64_t m_nextSamplerGeneration = 1;

@@ -199,6 +199,21 @@ actually changes. The tracker also records queue-family ownership state, so
 future multi-queue transfer/release/acquire paths can use the same model while
 the MVP-2 execution path remains single graphics queue.
 
+## Graphics pipelines
+
+`VulkanGraphicsPipeline` consumes the immutable Graphics descriptor and cooked shader snapshots.
+It creates shader modules, an empty pipeline layout and a dynamic-rendering pipeline transactionally;
+temporary shader modules are released after creation. Viewport and scissor are dynamic.
+The physical-device selection must be the selection used to create the supplied device.
+The device must outlive the pipeline, and the caller must complete all GPU uses before destruction.
+Descriptor layouts and push constants are not part of this initial pipeline descriptor.
+Non-solid rasterization and independent blending are rejected because VulkanDevice does not enable
+those optional features. Vertex-input and attachment limits are checked before driver creation.
+Pipeline caching and pass recording are delivered by their subsequent cards.
+
+The heavy device smoke creates color and depth-only pipelines from embedded cooked SPIR-V fixtures,
+repeats creation/destruction, checks unsupported rasterization, and fails on validation errors.
+
 ## Dispatch
 
 Global Vulkan entry points are loaded with `volkInitialize()`. After successful
