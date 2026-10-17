@@ -17,6 +17,7 @@ struct World::DeferredStructuralCommandBuffer::State {
     World* Owner = nullptr;
     std::weak_ptr<bool> OwnerLifetime;
     std::uint32_t ProducerOrder = 0;
+    std::optional<std::uint32_t> SystemOrder;
     bool Submitted = false;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
     std::vector<DeferredEntityReservation> EntityReservations;
@@ -357,18 +358,21 @@ std::size_t World::GetSystemCount() const noexcept {
 void World::BeginDeferredStructuralPhase(std::vector<DeferredProducer> producers) {
     std::ranges::sort(producers, {}, &DeferredProducer::Order);
 
+    for (std::size_t index = 1; index < producers.size(); ++index) {
+        if (producers[index - 1].Order == producers[index].Order) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS deferred producer orders must be unique");
+        }
+    }
+
     std::scoped_lock lock{DeferredStructuralMutex_};
     if (PendingDeferredEntityCreateCount_ != 0 || !PlannedDeferredEntityReservations_.empty()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS deferred structural phase is already active");
     }
 
-    for (std::size_t index = 0; index < producers.size(); ++index) {
-        if (index > 0 && producers[index - 1].Order == producers[index].Order) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS deferred producer orders must be unique");
-        }
-        auto& reservations = PlannedDeferredEntityReservations_[producers[index].Order];
-        reservations.reserve(producers[index].EntityCreateCount);
-        for (std::uint32_t count = 0; count < producers[index].EntityCreateCount; ++count) {
+    for (const auto& producer: producers) {
+        auto& reservations = PlannedDeferredEntityReservations_[producer.Order];
+        reservations.reserve(producer.EntityCreateCount);
+        for (std::uint32_t count = 0; count < producer.EntityCreateCount; ++count) {
             reservations.push_back(ReserveDeferredEntityLocked());
         }
     }
@@ -377,6 +381,13 @@ void World::BeginDeferredStructuralPhase(std::vector<DeferredProducer> producers
 World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder) {
     DeferredStructuralCommandBuffer buffer{*this, producerOrder};
     std::scoped_lock lock{DeferredStructuralMutex_};
+    if (IsCollectingSystemDeferredStructuralCommands_) {
+        if (!ActiveSystemStructuralOrder_.has_value()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS system structural commands require an explicit structural order");
+        }
+        buffer.State_->SystemOrder = ActiveSystemStructuralOrder_;
+    }
     if (const auto iterator = PlannedDeferredEntityReservations_.find(producerOrder);
         iterator != PlannedDeferredEntityReservations_.end()) {
         buffer.State_->EntityReservations = std::move(iterator->second);
@@ -389,8 +400,22 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
     ValidateDeferredStructuralCommandBuffer(buffer);
 
     std::scoped_lock lock{DeferredStructuralMutex_};
+    if (IsCollectingSystemDeferredStructuralCommands_) {
+        if (!ActiveSystemStructuralOrder_.has_value() ||
+            (buffer.State_->SystemOrder.has_value() && buffer.State_->SystemOrder != ActiveSystemStructuralOrder_)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS worker buffer must be submitted by its owning structural system");
+        }
+        buffer.State_->SystemOrder = ActiveSystemStructuralOrder_;
+    } else if (buffer.State_->SystemOrder.has_value()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS worker buffer must be submitted before its system returns");
+    }
     if (std::ranges::any_of(DeferredStructuralBatches_, [&](const DeferredCommandBatch& batch) {
-            return batch.Source == DeferredCommandBatch::ESource::EXTERNAL &&
+            return batch.Source == (buffer.State_->SystemOrder.has_value() ? DeferredCommandBatch::ESource::SYSTEM
+                                                                           : DeferredCommandBatch::ESource::EXTERNAL) &&
+                   (!buffer.State_->SystemOrder.has_value() ||
+                    (batch.IsWorker && batch.SystemOrder == *buffer.State_->SystemOrder)) &&
                    batch.ProducerOrder == buffer.State_->ProducerOrder;
         })) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
@@ -398,7 +423,10 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
     }
 
     DeferredCommandBatch batch{
-            .Source = DeferredCommandBatch::ESource::EXTERNAL,
+            .Source = buffer.State_->SystemOrder.has_value() ? DeferredCommandBatch::ESource::SYSTEM
+                                                             : DeferredCommandBatch::ESource::EXTERNAL,
+            .SystemOrder = buffer.State_->SystemOrder.value_or(0),
+            .IsWorker = buffer.State_->SystemOrder.has_value(),
             .ProducerOrder = buffer.State_->ProducerOrder,
             .Commands = std::move(buffer.State_->Commands),
     };
@@ -410,7 +438,17 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 }
 
 void World::RunSystems() {
+    std::vector<RegisteredSystem*> executionOrder;
+    executionOrder.reserve(Systems_.size());
     for (auto& system: Systems_) {
+        executionOrder.push_back(&system);
+    }
+    std::stable_sort(executionOrder.begin(), executionOrder.end(), [](const auto* lhs, const auto* rhs) {
+        return lhs->StructuralOrder < rhs->StructuralOrder;
+    });
+
+    for (auto* registeredSystem: executionOrder) {
+        auto& system = *registeredSystem;
         ActiveDeferredStructuralCommands_.clear();
         IsCollectingSystemDeferredStructuralCommands_ = true;
         IsRunningSystems_ = true;
@@ -445,6 +483,7 @@ void World::RunSystems() {
                 }
                 AppendDeferredCommandBatch({
                         .Source = DeferredCommandBatch::ESource::SYSTEM,
+                        .SystemOrder = *ActiveSystemStructuralOrder_,
                         .ProducerOrder = *ActiveSystemStructuralOrder_,
                         .Commands = std::move(ActiveDeferredStructuralCommands_),
                 });
@@ -476,6 +515,12 @@ void World::ApplyDeferredStructuralChanges() {
                           [](const DeferredCommandBatch& lhs, const DeferredCommandBatch& rhs) {
                               if (lhs.Source != rhs.Source) {
                                   return lhs.Source < rhs.Source;
+                              }
+                              if (lhs.SystemOrder != rhs.SystemOrder) {
+                                  return lhs.SystemOrder < rhs.SystemOrder;
+                              }
+                              if (lhs.IsWorker != rhs.IsWorker) {
+                                  return lhs.IsWorker < rhs.IsWorker;
                               }
                               if (lhs.ProducerOrder != rhs.ProducerOrder) {
                                   return lhs.ProducerOrder < rhs.ProducerOrder;

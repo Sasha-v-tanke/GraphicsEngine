@@ -233,6 +233,8 @@ private:
         };
 
         ESource Source = ESource::EXTERNAL;
+        std::uint32_t SystemOrder = 0;
+        bool IsWorker = false;
         std::uint32_t ProducerOrder = 0;
         std::uint64_t SubmissionOrder = 0;
         std::vector<std::unique_ptr<IDeferredCommand>> Commands;

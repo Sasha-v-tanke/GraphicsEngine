@@ -23,6 +23,11 @@ reserved identity.
 ## Mutation Phases
 
 The MVP-3 core executes registered systems sequentially through `RunSystems()`.
+Systems with an explicit `structuralOrder` execute in ascending order of that
+key, so direct deferred creates receive the same identities regardless of
+registration order. Systems without a structural order run first and cannot
+collect structural commands. This sequential policy precedes the dependency
+scheduler planned for MVP-4.
 The public access model already records `Read<T>()` and `Write<T>()`
 declarations so MVP-4 can add parallel scheduling without changing system
 registration semantics.
@@ -40,6 +45,13 @@ change entity identity. Buffers are submitted after the join point. Callers that
 their own phases can use `ApplyDeferredStructuralChanges()` as an explicit
 structural commit point. Parallel conflict detection is a later feature; this
 core keeps mutation rules explicit and predictable.
+
+Create system worker buffers inside their owning callback, before dispatching
+workers. They capture that system's structural order. Commit orders system
+commands by `(structuralOrder, direct-before-worker, producerOrder)`; producer
+orders must be unique within each system. Standalone external buffers form a
+separate phase after system commands. A worker buffer must be submitted after
+its workers join and before the owning callback returns.
 
 ## Access Contract
 
