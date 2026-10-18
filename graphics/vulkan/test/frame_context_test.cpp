@@ -237,14 +237,14 @@ public:
                     const std::lock_guard lock{m_mutex};
                     for (auto it = m_pending.begin(); it != m_pending.end();) {
                         try {
-                            if (!m_submissions.IsCompleted({.Value = it->first})) {
+                            if (!m_submissions.IsCompleted(it->second.Completion)) {
                                 ++it;
                                 continue;
                             }
-                            it->second.set_value();
+                            it->second.Signal.set_value();
                             ++Completed;
                         } catch (...) {
-                            it->second.set_exception(std::current_exception());
+                            it->second.Signal.set_exception(std::current_exception());
                         }
                         it = m_pending.erase(it);
                     }
@@ -256,10 +256,7 @@ public:
 
     void Update(const NEngine::NRuntime::FrameContext&) override {
     }
-    void Draw(const NEngine::NRuntime::FrameContext&) override {
-    }
-
-    std::shared_future<void> SubmitFrame(const NEngine::NRuntime::FrameContext& frame) override {
+    void Draw(const NEngine::NRuntime::FrameContext& frame) override {
         const std::lock_guard lock{m_mutex};
         const auto handle = frame.GetFrame();
         const NVulkan::VulkanFrameContextAcquire acquire{.FrameIndex = handle.GetFrameIndex(),
@@ -277,12 +274,17 @@ public:
         RecordEmptyCommandBuffer(command);
         const VkCommandBufferSubmitInfo info{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
                                              .commandBuffer = command};
-        std::promise<void> signal;
-        auto result = signal.get_future().share();
-        const auto completion = m_submissions.SubmitGraphics({.CommandBuffers = {info}});
-        m_ring.MarkSubmitted(acquire, completion.Value);
-        m_pending.emplace(completion.Value, std::move(signal));
-        return result;
+        auto [pending, inserted] = m_pending.try_emplace(handle.GetFrameIndex());
+        ASSERT_TRUE(inserted);
+        try {
+            frame.RegisterGpuCompletion(pending->second.Signal.get_future().share());
+            pending->second.Completion = m_submissions.SubmitGraphics({.CommandBuffers = {info}});
+        } catch (...) {
+            pending->second.Signal.set_exception(std::current_exception());
+            m_pending.erase(pending);
+            throw;
+        }
+        m_ring.MarkSubmitted(acquire, pending->second.Completion.Value);
     }
 
     std::atomic<int> Completed = 0;
@@ -293,7 +295,11 @@ private:
     NVulkan::VulkanFrameContextRing m_ring;
     std::vector<VkCommandBuffer> m_commands;
     std::mutex m_mutex;
-    std::map<std::uint64_t, std::promise<void>> m_pending;
+    struct PendingCompletion {
+        NVulkan::VulkanQueueCompletion Completion;
+        std::promise<void> Signal;
+    };
+    std::map<std::uint64_t, PendingCompletion> m_pending;
     std::jthread m_events;
 };
 

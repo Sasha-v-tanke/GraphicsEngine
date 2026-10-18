@@ -29,6 +29,10 @@ public:
         return m_storage.GetMemoryResource();
     }
 
+    void RegisterGpuCompletion(std::shared_future<void> completion) const {
+        m_storage.RegisterGpuCompletion(std::move(completion));
+    }
+
 private:
     NController::FrameHandle m_frame;
     NController::FrameStorage m_storage;
@@ -44,11 +48,6 @@ public:
     }
 
     virtual void Draw(const FrameContext& frame) = 0;
-
-    [[nodiscard]] virtual std::shared_future<void> SubmitFrame(const FrameContext& frame) {
-        Draw(frame);
-        return {};
-    }
 };
 
 [[nodiscard]] std::unique_ptr<IFrameRuntime> MakeDefaultFrameRuntime();
