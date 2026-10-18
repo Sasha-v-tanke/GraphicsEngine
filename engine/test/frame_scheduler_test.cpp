@@ -61,7 +61,8 @@ TEST(FrameScheduler, CannotAbortOrRecycleSubmittedGpuFrame) {
     scheduler.EndUpdate(frame);
     scheduler.SignalDraw(frame);
     scheduler.BeginFinalize(frame);
-    scheduler.MarkSubmitted(frame);
+    std::promise<void> signal;
+    scheduler.MarkSubmitted(frame, signal.get_future().share());
     EXPECT_EQ(scheduler.GetState(frame), EFrameState::SUBMITTED);
     ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.AbortFrame(frame); });
     ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.RecycleFrame(frame); });
@@ -69,6 +70,8 @@ TEST(FrameScheduler, CannotAbortOrRecycleSubmittedGpuFrame) {
     EXPECT_EQ(scheduler.GetState(frame), EFrameState::GPU_IN_FLIGHT);
     EXPECT_FALSE(scheduler.TryAcquireFrame().has_value());
     ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.AbortFrame(frame); });
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { scheduler.CompleteGpu(frame); });
+    signal.set_value();
     scheduler.CompleteGpu(frame);
     scheduler.RecycleFrame(frame);
     EXPECT_TRUE(scheduler.TryAcquireFrame().has_value());
