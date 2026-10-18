@@ -68,6 +68,35 @@ constexpr ImageAspectFlags KNOWN_IMAGE_ASPECT_MASK =
     return levels;
 }
 
+class BackendObjectCreationGuard final {
+public:
+    using DestroyFunction = void (NBackend::IGraphicsBackend::*)(std::uint64_t, std::optional<std::uint64_t>) noexcept;
+
+    BackendObjectCreationGuard(NBackend::IGraphicsBackend& backend,
+                               std::uint64_t value,
+                               DestroyFunction destroyFunction) noexcept
+        : m_backend(backend)
+        , m_value(value)
+        , m_destroyFunction(destroyFunction) {
+    }
+
+    ~BackendObjectCreationGuard() noexcept {
+        if (m_active) {
+            (m_backend.*m_destroyFunction)(m_value, std::nullopt);
+        }
+    }
+
+    void Release() noexcept {
+        m_active = false;
+    }
+
+private:
+    NBackend::IGraphicsBackend& m_backend;
+    std::uint64_t m_value = 0;
+    DestroyFunction m_destroyFunction;
+    bool m_active = true;
+};
+
 class BufferCreationGuard final {
 public:
     BufferCreationGuard(NBackend::IGraphicsBackend& backend, std::uint64_t value) noexcept
@@ -278,6 +307,65 @@ void Graphics::DestroyBuffer(BufferHandle buffer, CompletionPoint completedAfter
 
 BufferDescriptor Graphics::GetBufferDescriptor(BufferHandle buffer) const {
     return ResolveBuffer(buffer).Descriptor;
+}
+
+GraphicsPipelineHandle Graphics::CreateGraphicsPipeline(const GraphicsPipelineDescriptor& descriptor) {
+    ValidateGraphicsPipelineDescriptor(descriptor);
+
+    if (m_nextGraphicsPipelineGeneration == std::numeric_limits<std::uint64_t>::max()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::OUT_OF_MEMORY, "Graphics pipeline generation space is exhausted");
+    }
+
+    const std::uint64_t value = m_backend->CreateGraphicsPipeline(descriptor);
+
+    if (value == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned invalid pipeline handle");
+    }
+
+    if (m_graphicsPipelines.contains(value)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned duplicate pipeline handle");
+    }
+
+    BackendObjectCreationGuard creationGuard{
+            *m_backend,
+            value,
+            &NBackend::IGraphicsBackend::DestroyGraphicsPipeline,
+    };
+
+    const std::uint64_t generation = m_nextGraphicsPipelineGeneration;
+    const auto [it, inserted] = m_graphicsPipelines.emplace(value,
+                                                            GraphicsPipelineRecord{
+                                                                    .Descriptor = descriptor,
+                                                                    .Generation = generation,
+                                                            });
+
+    if (!inserted) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend returned duplicate pipeline handle");
+    }
+
+    ++m_nextGraphicsPipelineGeneration;
+    creationGuard.Release();
+
+    return GraphicsPipelineHandle{m_ownerId, value, it->second.Generation};
+}
+
+void Graphics::DestroyGraphicsPipeline(GraphicsPipelineHandle pipeline, CompletionPoint completedAfter) {
+    const GraphicsPipelineRecord& record = ResolveGraphicsPipeline(pipeline);
+    (void)record;
+
+    std::optional<std::uint64_t> completedAfterValue;
+
+    if (completedAfter.IsValid()) {
+        ValidateCompletionOwner(completedAfter);
+        completedAfterValue = completedAfter.m_value;
+    }
+
+    m_backend->DestroyGraphicsPipeline(pipeline.m_value, completedAfterValue);
+    m_graphicsPipelines.erase(pipeline.m_value);
+}
+
+GraphicsPipelineDescriptor Graphics::GetGraphicsPipelineDescriptor(GraphicsPipelineHandle pipeline) const {
+    return ResolveGraphicsPipeline(pipeline).Descriptor;
 }
 
 ImageHandle Graphics::CreateImage(const ImageDescriptor& descriptor) {
@@ -587,6 +675,25 @@ const Graphics::SamplerRecord& Graphics::ResolveSampler(SamplerHandle sampler) c
 
     if (it == m_samplers.end() || it->second.Generation != sampler.m_generation) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Sampler handle is stale");
+    }
+
+    return it->second;
+}
+
+const Graphics::GraphicsPipelineRecord& Graphics::ResolveGraphicsPipeline(GraphicsPipelineHandle pipeline) const {
+    if (!pipeline.IsValid()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline handle is invalid");
+    }
+
+    if (pipeline.m_ownerId != m_ownerId) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "Graphics pipeline handle belongs to another Graphics");
+    }
+
+    const auto it = m_graphicsPipelines.find(pipeline.m_value);
+
+    if (it == m_graphicsPipelines.end() || it->second.Generation != pipeline.m_generation) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics pipeline handle is stale");
     }
 
     return it->second;

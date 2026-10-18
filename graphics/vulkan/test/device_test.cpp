@@ -23,8 +23,11 @@
 extern char** environ;
 #endif
 
+#include "pipeline_shaders.h"
+
 #include <graphics/vulkan/device.h>
 #include <graphics/vulkan/glfw_surface.h>
+#include <graphics/vulkan/graphics_pipeline.h>
 #include <graphics/vulkan/instance.h>
 #include <graphics/vulkan/memory.h>
 #include <graphics/vulkan/physical_device.h>
@@ -33,6 +36,7 @@ extern char** environ;
 #include <graphics/vulkan/upload_manager.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <resources/resource_manager.h>
 #include <tests/common/test_error.h>
 #include <window/window.h>
 #include <window/window_config.h>
@@ -280,6 +284,59 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
             EXPECT_TRUE(device.GetGraphicsCapabilities().Presentation);
             EXPECT_TRUE(device.GetGraphicsCapabilities().TimelineCompletion);
             EXPECT_EQ(device.GetGraphicsCapabilities().MaxFramesInFlight, 2U);
+
+            NResources::ResourceManager resources;
+            auto makeShader = [&](NResources::EShaderStage stage,
+                                  const std::string& key,
+                                  const std::vector<std::uint32_t>& words) {
+                const auto resource = resources.Request<NResources::ShaderArtifact>({"pipeline-test", key});
+                const auto loading = resources.BeginLoading(resource);
+                resources.PublishReady(loading, std::make_shared<NResources::ShaderArtifact>(stage, words));
+                return NGraphics::Shader{resources, resource};
+            };
+            NGraphics::GraphicsPipelineDescriptor pipelineDescriptor{
+                    .Shaders = {makeShader(NResources::EShaderStage::VERTEX, "vertex", NTest::VertexShaderWords),
+                                makeShader(NResources::EShaderStage::FRAGMENT, "fragment", NTest::FragmentShaderWords)},
+                    .VertexLayout = {},
+                    .Topology = NGraphics::EPrimitiveTopology::TRIANGLE_LIST,
+                    .RasterState = {},
+                    .DepthState = {},
+                    .ColorAttachmentFormats = {NGraphics::EPixelFormat::RGBA8_UNORM},
+                    .ColorBlendAttachments = {{}},
+                    .DepthAttachmentFormat = NGraphics::EPixelFormat::UNDEFINED,
+                    .Samples = NGraphics::ESampleCount::X1,
+            };
+            for (int iteration = 0; iteration < 3; ++iteration) {
+                const NVulkan::VulkanGraphicsPipeline pipeline{device, physicalDevice, pipelineDescriptor};
+                EXPECT_NE(pipeline.GetHandle(), VK_NULL_HANDLE);
+                EXPECT_NE(pipeline.GetLayout(), VK_NULL_HANDLE);
+            }
+            auto unsupportedPipeline = pipelineDescriptor;
+            unsupportedPipeline.Shaders[0] =
+                    NGraphics::Shader{resources, pipelineDescriptor.Shaders[0].GetArtifactResource(), "missing"};
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+                const NVulkan::VulkanGraphicsPipeline pipeline{device, physicalDevice, unsupportedPipeline};
+            });
+            unsupportedPipeline.Shaders[0] =
+                    makeShader(NResources::EShaderStage::VERTEX, "wrong-stage", NTest::FragmentShaderWords);
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+                const NVulkan::VulkanGraphicsPipeline pipeline{device, physicalDevice, unsupportedPipeline};
+            });
+            unsupportedPipeline = pipelineDescriptor;
+            unsupportedPipeline.RasterState.PolygonMode = NGraphics::EPolygonMode::LINE;
+            NTest::ExpectError(NCommon::EError::UNSUPPORTED, [&] {
+                const NVulkan::VulkanGraphicsPipeline pipeline{device, physicalDevice, unsupportedPipeline};
+            });
+            pipelineDescriptor.Shaders.pop_back();
+            pipelineDescriptor.ColorAttachmentFormats.clear();
+            pipelineDescriptor.ColorBlendAttachments.clear();
+            pipelineDescriptor.DepthAttachmentFormat = NGraphics::EPixelFormat::D32_FLOAT;
+            pipelineDescriptor.DepthState.TestEnabled = true;
+            pipelineDescriptor.DepthState.WriteEnabled = true;
+            {
+                const NVulkan::VulkanGraphicsPipeline pipeline{device, physicalDevice, pipelineDescriptor};
+                EXPECT_NE(pipeline.GetHandle(), VK_NULL_HANDLE);
+            }
 
             {
                 const NVulkan::VulkanLockedQueue graphicsQueue = device.LockGraphicsQueue();
