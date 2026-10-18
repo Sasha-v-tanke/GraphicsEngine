@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <limits>
 #include <memory>
 #include <memory_resource>
@@ -104,6 +105,8 @@ public:
 
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() const;
 
+    void RegisterGpuCompletion(std::shared_future<void> completion) const;
+
     template<typename T, typename... TArgs>
     [[nodiscard]] T& Emplace(TArgs&&... args) const;
 
@@ -148,7 +151,9 @@ public:
 
     void Complete(FrameHandle frame);
 
-    void MarkSubmitted(FrameHandle frame);
+    void MarkSubmitted(FrameHandle frame, std::shared_future<void> completion);
+
+    [[nodiscard]] std::shared_future<void> GetGpuCompletion(FrameHandle frame) const;
 
     void BeginGpu(FrameHandle frame);
 
@@ -259,6 +264,7 @@ private:
     std::optional<Clock::time_point> m_simulationStartedAt;
     Duration m_deltaTime = Duration::zero();
     FrameArena m_arena;
+    std::shared_future<void> m_gpuCompletion;
 };
 
 class FrameScheduler final: private NCommon::NonTransferable {
@@ -282,7 +288,9 @@ public:
 
     void CompleteFrame(FrameHandle frame);
 
-    void MarkSubmitted(FrameHandle frame);
+    void MarkSubmitted(FrameHandle frame, std::shared_future<void> completion);
+
+    [[nodiscard]] std::shared_future<void> GetGpuCompletion(FrameHandle frame) const;
 
     void BeginGpu(FrameHandle frame);
 

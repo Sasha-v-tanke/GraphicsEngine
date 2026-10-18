@@ -19,6 +19,10 @@ std::pmr::memory_resource& FrameStorage::GetMemoryResource() const {
     return GetScheduler().GetMemoryResource(m_frame);
 }
 
+void FrameStorage::RegisterGpuCompletion(std::shared_future<void> completion) const {
+    GetScheduler().MarkSubmitted(m_frame, std::move(completion));
+}
+
 FrameScheduler& FrameStorage::GetScheduler() const {
     if (m_scheduler == nullptr) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid frame storage");
@@ -135,8 +139,18 @@ void FrameExecutionSlot::Complete(FrameHandle frame) {
     Transition(frame, EFrameState::FINALIZE, EFrameState::COMPLETE);
 }
 
-void FrameExecutionSlot::MarkSubmitted(FrameHandle frame) {
+void FrameExecutionSlot::MarkSubmitted(FrameHandle frame, std::shared_future<void> completion) {
+    if (!completion.valid() || completion.wait_for(std::chrono::seconds{0}) == std::future_status::deferred) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                              "GPU completion must be an externally signaled future");
+    }
     Transition(frame, EFrameState::FINALIZE, EFrameState::SUBMITTED);
+    m_gpuCompletion = std::move(completion);
+}
+
+std::shared_future<void> FrameExecutionSlot::GetGpuCompletion(FrameHandle frame) const {
+    Validate(frame);
+    return m_gpuCompletion;
 }
 
 void FrameExecutionSlot::BeginGpu(FrameHandle frame) {
@@ -144,6 +158,10 @@ void FrameExecutionSlot::BeginGpu(FrameHandle frame) {
 }
 
 void FrameExecutionSlot::CompleteGpu(FrameHandle frame) {
+    Validate(frame);
+    if (!m_gpuCompletion.valid() || m_gpuCompletion.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "GPU frame is still in flight");
+    }
     Transition(frame, EFrameState::GPU_IN_FLIGHT, EFrameState::COMPLETE);
 }
 
@@ -248,6 +266,7 @@ void FrameExecutionSlot::Transition(FrameHandle frame, EFrameState expectedState
 }
 
 void FrameExecutionSlot::ResetFrameData() {
+    m_gpuCompletion = {};
     m_arena.Reset();
     m_applicationFrameIndex = FrameHandle::INVALID_FRAME_INDEX;
     m_simulationIndex = FrameHandle::INVALID_FRAME_INDEX;
@@ -360,9 +379,14 @@ void FrameScheduler::CompleteFrame(FrameHandle frame) {
     slot.Complete(frame);
 }
 
-void FrameScheduler::MarkSubmitted(FrameHandle frame) {
+void FrameScheduler::MarkSubmitted(FrameHandle frame, std::shared_future<void> completion) {
     std::lock_guard lock{m_mutex};
-    GetSlotLocked(frame).MarkSubmitted(frame);
+    GetSlotLocked(frame).MarkSubmitted(frame, std::move(completion));
+}
+
+std::shared_future<void> FrameScheduler::GetGpuCompletion(FrameHandle frame) const {
+    std::lock_guard lock{m_mutex};
+    return GetSlotLocked(frame).GetGpuCompletion(frame);
 }
 
 void FrameScheduler::BeginGpu(FrameHandle frame) {

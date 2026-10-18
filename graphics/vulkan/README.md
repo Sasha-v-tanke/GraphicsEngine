@@ -191,7 +191,9 @@ be retried. Drain submitted completion events before destroying the path.
 
 Runtime frame-ring integration uses the exact `VulkanQueueCompletion` returned
 by submit. An external backend event service fulfills the corresponding
-`IFrameRuntime::SubmitFrame()` future only after the timeline reaches that value.
+future registered through `FrameContext::RegisterGpuCompletion()` only after the
+timeline reaches that value. Registration happens before native submission, so
+an exception after submit cannot lose the completion or release the engine arena.
 Both VulkanFrameContext and FrameExecutionSlot use the same configured slot count
 and frame-slot identity. The engine retains its slot until CPU draw return and
 the GPU signal; the Vulkan ring independently verifies that same timeline value

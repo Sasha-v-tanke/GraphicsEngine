@@ -208,13 +208,16 @@ memory_resource физически остаётся тем же.
 
 ## Thread safety
 
-GPU runtimes override `IFrameRuntime::SubmitFrame()` and return a
-`std::shared_future<void>` fulfilled by the external backend completion source.
-The default implementation calls `Draw()` and returns an invalid future for CPU-only work.
+GPU runtimes call `FrameContext::RegisterGpuCompletion()` during `Draw()`, before
+native submission, with a `std::shared_future<void>` fulfilled by the external backend completion source.
+CPU-only runtimes do not register a GPU completion.
 A valid future must become ready only when the exact submission no longer uses
 frame storage, on success or failure; deferred futures are rejected. Present is
 not a completion signal. The backend completion service must keep delivering
 signals during `Engine::Stop()` and must outlive the engine's drain.
+If submission fails, settle the registered signal after retiring any GPU users.
+An exception after registration stops admission but retains the slot and its
+completion until the external signal arrives.
 
 GPU frames follow `FINALIZE -> SUBMITTED -> GPU_IN_FLIGHT -> COMPLETE -> FREE`.
 CPU draw-task termination precedes `GPU_IN_FLIGHT`; early GPU events are retained

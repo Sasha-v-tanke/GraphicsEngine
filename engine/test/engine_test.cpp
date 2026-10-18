@@ -46,13 +46,13 @@ public:
         static_cast<void>(frame.GetStorage().Emplace<Probe>(Destroyed));
     }
 
-    void Draw(const NEngine::NRuntime::FrameContext&) override {
-    }
-
-    std::shared_future<void> SubmitFrame(const NEngine::NRuntime::FrameContext& frame) override {
+    void Draw(const NEngine::NRuntime::FrameContext& frame) override {
         const auto index = static_cast<std::size_t>(frame.GetFrame().GetFrameIndex());
+        frame.RegisterGpuCompletion(Completions.at(index));
         Submitted.at(index).set_value();
-        return Completions.at(index);
+        if (ThrowAfterSubmission) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Failure after GPU submission");
+        }
     }
 
     void Finish() noexcept {
@@ -69,6 +69,7 @@ public:
     std::array<std::shared_future<void>, 3> Completions;
     std::array<std::shared_future<void>, 3> Submissions;
     std::atomic<int> Destroyed = 0;
+    bool ThrowAfterSubmission = false;
 };
 
 struct FinishGpuGuard {
@@ -176,6 +177,32 @@ TEST(EngineGpuCompletion, BackendFailureStopsAdmissionAndPreservesError) {
     ASSERT_TRUE(engine->GetLastError().has_value());
     EXPECT_EQ(engine->GetLastError()->Message, "GPU completion failed");
     engine->Stop();
+}
+
+TEST(EngineGpuCompletion, RetainsSubmittedStorageWhenDrawThrows) {
+    auto runtime = std::make_unique<GpuFrameRuntime>();
+    auto& gpu = *runtime;
+    gpu.ThrowAfterSubmission = true;
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 1}, std::move(runtime));
+    const FinishGpuGuard guard{gpu};
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(gpu.Submissions[0].wait_for(2s), std::future_status::ready);
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (engine->GetState() == NEngine::EEngineState::RUNNING && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPING);
+    EXPECT_EQ(gpu.Destroyed.load(), 0);
+    auto stopped = std::async(std::launch::async, [&] { engine->Stop(); });
+    EXPECT_EQ(stopped.wait_for(20ms), std::future_status::timeout);
+    EXPECT_EQ(gpu.Destroyed.load(), 0);
+    gpu.Signals[0].set_value();
+    EXPECT_EQ(stopped.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(gpu.Destroyed.load(), 1);
+    EXPECT_EQ(engine->GetLastError()->Message, "Failure after GPU submission");
 }
 
 class ThrowingFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
