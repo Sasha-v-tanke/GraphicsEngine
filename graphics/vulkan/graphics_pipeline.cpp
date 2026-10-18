@@ -201,6 +201,96 @@ void ValidateDevice(const VulkanPhysicalDeviceSelection& physicalDevice,
     }
 }
 
+VkPipelineInputAssemblyStateCreateInfo MakeInputAssembly(NGraphics::EPrimitiveTopology topology) {
+    return {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .topology = Convert(topology,
+                                std::array{VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                                           VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+                                           VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+                                           VK_PRIMITIVE_TOPOLOGY_LINE_STRIP,
+                                           VK_PRIMITIVE_TOPOLOGY_POINT_LIST}),
+            .primitiveRestartEnable = VK_FALSE,
+    };
+}
+
+VkPipelineViewportStateCreateInfo MakeViewport() {
+    return {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .viewportCount = 1,
+            .pViewports = nullptr,
+            .scissorCount = 1,
+            .pScissors = nullptr,
+    };
+}
+
+VkPipelineRasterizationStateCreateInfo MakeRasterization(const NGraphics::RasterStateDescriptor& rasterState) {
+    return {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthClampEnable = VK_FALSE,
+            .rasterizerDiscardEnable = VK_FALSE,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = Convert(rasterState.CullMode,
+                                std::array<VkCullModeFlags, 4>{VK_CULL_MODE_NONE,
+                                                               VK_CULL_MODE_FRONT_BIT,
+                                                               VK_CULL_MODE_BACK_BIT,
+                                                               VK_CULL_MODE_FRONT_AND_BACK}),
+            .frontFace = rasterState.FrontFace == NGraphics::EFrontFace::COUNTER_CLOCKWISE
+                               ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                               : VK_FRONT_FACE_CLOCKWISE,
+            .depthBiasEnable = VK_FALSE,
+            .depthBiasConstantFactor = 0.0F,
+            .depthBiasClamp = 0.0F,
+            .depthBiasSlopeFactor = 0.0F,
+            .lineWidth = 1.0F,
+    };
+}
+
+VkPipelineMultisampleStateCreateInfo MakeMultisample(NGraphics::ESampleCount samples) {
+    return {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .rasterizationSamples = static_cast<VkSampleCountFlagBits>(samples),
+            .sampleShadingEnable = VK_FALSE,
+            .minSampleShading = 0.0F,
+            .pSampleMask = nullptr,
+            .alphaToCoverageEnable = VK_FALSE,
+            .alphaToOneEnable = VK_FALSE,
+    };
+}
+
+VkPipelineDepthStencilStateCreateInfo MakeDepthStencil(const NGraphics::DepthStateDescriptor& depthState) {
+    return {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthTestEnable = depthState.TestEnabled,
+            .depthWriteEnable = depthState.WriteEnabled,
+            .depthCompareOp = Convert(depthState.CompareOperation,
+                                      std::array{VK_COMPARE_OP_NEVER,
+                                                 VK_COMPARE_OP_LESS,
+                                                 VK_COMPARE_OP_EQUAL,
+                                                 VK_COMPARE_OP_LESS_OR_EQUAL,
+                                                 VK_COMPARE_OP_GREATER,
+                                                 VK_COMPARE_OP_NOT_EQUAL,
+                                                 VK_COMPARE_OP_GREATER_OR_EQUAL,
+                                                 VK_COMPARE_OP_ALWAYS}),
+            .depthBoundsTestEnable = VK_FALSE,
+            .stencilTestEnable = VK_FALSE,
+            .front = {},
+            .back = {},
+            .minDepthBounds = 0.0F,
+            .maxDepthBounds = 1.0F,
+    };
+}
+
 } // namespace
 
 VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
@@ -262,81 +352,11 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
             .vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size()),
             .pVertexAttributeDescriptions = attributes.data(),
     };
-    const VkPipelineInputAssemblyStateCreateInfo assembly{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .topology = Convert(descriptor.Topology,
-                                std::array{VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-                                           VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
-                                           VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
-                                           VK_PRIMITIVE_TOPOLOGY_LINE_STRIP,
-                                           VK_PRIMITIVE_TOPOLOGY_POINT_LIST}),
-            .primitiveRestartEnable = VK_FALSE,
-    };
-    const VkPipelineViewportStateCreateInfo viewport{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .viewportCount = 1,
-            .pViewports = nullptr,
-            .scissorCount = 1,
-            .pScissors = nullptr,
-    };
-    const VkPipelineRasterizationStateCreateInfo raster{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .depthClampEnable = VK_FALSE,
-            .rasterizerDiscardEnable = VK_FALSE,
-            .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = Convert(descriptor.RasterState.CullMode,
-                                std::array<VkCullModeFlags, 4>{VK_CULL_MODE_NONE,
-                                                               VK_CULL_MODE_FRONT_BIT,
-                                                               VK_CULL_MODE_BACK_BIT,
-                                                               VK_CULL_MODE_FRONT_AND_BACK}),
-            .frontFace = descriptor.RasterState.FrontFace == NGraphics::EFrontFace::COUNTER_CLOCKWISE
-                               ? VK_FRONT_FACE_COUNTER_CLOCKWISE
-                               : VK_FRONT_FACE_CLOCKWISE,
-            .depthBiasEnable = VK_FALSE,
-            .depthBiasConstantFactor = 0.0F,
-            .depthBiasClamp = 0.0F,
-            .depthBiasSlopeFactor = 0.0F,
-            .lineWidth = 1.0F,
-    };
-    const VkPipelineMultisampleStateCreateInfo multisample{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .rasterizationSamples = static_cast<VkSampleCountFlagBits>(descriptor.Samples),
-            .sampleShadingEnable = VK_FALSE,
-            .minSampleShading = 0.0F,
-            .pSampleMask = nullptr,
-            .alphaToCoverageEnable = VK_FALSE,
-            .alphaToOneEnable = VK_FALSE,
-    };
-    const VkPipelineDepthStencilStateCreateInfo depth{
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .depthTestEnable = descriptor.DepthState.TestEnabled,
-            .depthWriteEnable = descriptor.DepthState.WriteEnabled,
-            .depthCompareOp = Convert(descriptor.DepthState.CompareOperation,
-                                      std::array{VK_COMPARE_OP_NEVER,
-                                                 VK_COMPARE_OP_LESS,
-                                                 VK_COMPARE_OP_EQUAL,
-                                                 VK_COMPARE_OP_LESS_OR_EQUAL,
-                                                 VK_COMPARE_OP_GREATER,
-                                                 VK_COMPARE_OP_NOT_EQUAL,
-                                                 VK_COMPARE_OP_GREATER_OR_EQUAL,
-                                                 VK_COMPARE_OP_ALWAYS}),
-            .depthBoundsTestEnable = VK_FALSE,
-            .stencilTestEnable = VK_FALSE,
-            .front = {},
-            .back = {},
-            .minDepthBounds = 0.0F,
-            .maxDepthBounds = 1.0F,
-    };
+    const VkPipelineInputAssemblyStateCreateInfo assembly = MakeInputAssembly(descriptor.Topology);
+    const VkPipelineViewportStateCreateInfo viewport = MakeViewport();
+    const VkPipelineRasterizationStateCreateInfo raster = MakeRasterization(descriptor.RasterState);
+    const VkPipelineMultisampleStateCreateInfo multisample = MakeMultisample(descriptor.Samples);
+    const VkPipelineDepthStencilStateCreateInfo depth = MakeDepthStencil(descriptor.DepthState);
     std::vector<VkPipelineColorBlendAttachmentState> blendAttachments;
     std::vector<VkFormat> colorFormats;
     blendAttachments.reserve(descriptor.ColorAttachmentFormats.size());
