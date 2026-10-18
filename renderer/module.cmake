@@ -12,6 +12,7 @@ SOURCES(
 )
 
 PUBLIC_DEPENDS(
+    Graphics
     Math
     Resources
 )

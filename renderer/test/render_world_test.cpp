@@ -1,8 +1,10 @@
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include <GraphicsEngine/ecs/world.h>
+#include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/renderer/render_components.h>
 #include <GraphicsEngine/renderer/render_world.h>
 #include <GraphicsEngine/renderer/renderer.h>
@@ -14,15 +16,6 @@
 #include <tests/common/test_error.h>
 
 namespace NResources {
-
-class Material final {
-public:
-    explicit Material(int revision = 0) noexcept
-        : Revision(revision) {
-    }
-
-    int Revision = 0;
-};
 
 class MeshData final {
 public:
@@ -40,12 +33,12 @@ namespace {
 using NEngine::EngineConfig;
 using NEngine::NController::FrameHandle;
 using NEngine::NController::FrameScheduler;
+using NGraphics::Material;
 using NRenderer::CameraComponent;
 using NRenderer::RenderableComponent;
 using NRenderer::Renderer;
 using NRenderer::RenderWorld;
 using NRenderer::TransformComponent;
-using NResources::Material;
 using NResources::MeshData;
 using NResources::ResourceIdentity;
 using NResources::ResourceManager;
@@ -57,6 +50,18 @@ MakeReadyResource(ResourceManager& resources, ResourceIdentity identity, int rev
     const NResources::ResourceOperation<T> operation = resources.BeginLoading(handle);
 
     resources.PublishReady(operation, std::make_shared<T>(revision));
+
+    return handle;
+}
+
+NResources::ResourceHandle<Material>
+MakeReadyMaterial(ResourceManager& resources, ResourceIdentity identity, int revision = 0) {
+    const NResources::ResourceHandle<Material> handle = resources.Request<Material>(std::move(identity));
+    const NResources::ResourceOperation<Material> operation = resources.BeginLoading(handle);
+
+    resources.PublishReady(
+            operation,
+            std::make_shared<Material>(ResourceIdentity{"pipeline", "material-" + std::to_string(revision)}));
 
     return handle;
 }
@@ -116,7 +121,7 @@ TEST(RenderWorld, IsolatesWorldAndResourceMutationsAfterExtraction) {
     const NResources::ResourceHandle<MeshData> secondMesh =
             MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "second"}, 2);
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "first"}, 3);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "first"}, 3);
 
     NEcs::World world;
 
@@ -183,7 +188,7 @@ TEST(RenderWorld, IsolatesWorldAndResourceMutationsAfterExtraction) {
     EXPECT_EQ(renderObject.Mesh.GetResource(), firstMesh);
     EXPECT_EQ(renderObject.Material.GetResource(), material);
     EXPECT_EQ(renderObject.Mesh->Revision, 1);
-    EXPECT_EQ(renderObject.Material->Revision, 3);
+    EXPECT_EQ(renderObject.Material->GetPipeline(), (ResourceIdentity{"pipeline", "material-3"}));
 }
 
 TEST(RenderWorld, RetainsResourceVersionUntilFrameRecycle) {
@@ -196,7 +201,7 @@ TEST(RenderWorld, RetainsResourceVersionUntilFrameRecycle) {
     resources.PublishReady(firstMeshOperation, firstMeshPayload);
 
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "retained"}, 1);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "retained"}, 1);
 
     NEcs::World world;
     const NEcs::Entity object = world.CreateEntity();
@@ -262,7 +267,7 @@ TEST(RenderWorld, RetainsResourceVersionAcrossMultipleFrameSlots) {
     resources.PublishReady(meshOperation, meshPayload);
 
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "shared"}, 1);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "shared"}, 1);
 
     NEcs::World world;
     const NEcs::Entity object = world.CreateEntity();
@@ -319,7 +324,7 @@ TEST(RenderWorld, SkipsNewConsumersAfterResourceUnload) {
     resources.PublishReady(meshOperation, std::make_shared<MeshData>(1));
 
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "unloaded"}, 1);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "unloaded"}, 1);
 
     NEcs::World world;
     const NEcs::Entity object = world.CreateEntity();
@@ -350,7 +355,7 @@ TEST(RenderWorld, RejectsStalePublicResourceHandleDuringExtraction) {
     const NResources::ResourceHandle<MeshData> staleMesh =
             MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "stale"}, 1);
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "stale"}, 1);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "stale"}, 1);
 
     resources.RequestUnload(staleMesh);
     resources.CompleteUnload(staleMesh);
@@ -383,7 +388,7 @@ TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
     const NResources::ResourceHandle<MeshData> mesh =
             MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "slot"});
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "slot"});
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "slot"});
 
     NEcs::World world;
 
@@ -429,7 +434,7 @@ TEST(Renderer, ProducesNoDrawCommandsWithoutViews) {
     const NResources::ResourceHandle<MeshData> mesh =
             MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "no-view"});
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "no-view"});
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "no-view"});
 
     NEcs::World world;
 
@@ -459,7 +464,7 @@ TEST(Renderer, BuildsDrawCommandsForEveryViewObjectPair) {
     const NResources::ResourceHandle<MeshData> mesh =
             MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "visible"}, 7);
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "visible"}, 8);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "visible"}, 8);
 
     NEcs::World world;
 
@@ -518,9 +523,9 @@ TEST(Renderer, SortsDrawCommandsDeterministically) {
     const NResources::ResourceHandle<MeshData> secondMesh =
             MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "b"}, 2);
     const NResources::ResourceHandle<Material> firstMaterial =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "a"}, 3);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "a"}, 3);
     const NResources::ResourceHandle<Material> secondMaterial =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "b"}, 4);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "b"}, 4);
 
     NEcs::World world;
 
@@ -570,7 +575,7 @@ TEST(Renderer, UsesObjectIdAsFinalSortTieBreak) {
     const NResources::ResourceHandle<MeshData> mesh =
             MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "tie"}, 1);
     const NResources::ResourceHandle<Material> material =
-            MakeReadyResource<Material>(resources, ResourceIdentity{"material", "tie"}, 2);
+            MakeReadyMaterial(resources, ResourceIdentity{"material", "tie"}, 2);
 
     NEcs::World world;
 

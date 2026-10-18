@@ -52,3 +52,16 @@ GPU image objects live in the Graphics module. `NGraphics::ImageDescriptor`, `Im
 subresource range, and sampling state are explicit, while native image, view, sampler, and descriptor handles remain
 backend-private. CPU `ImageData` can feed later upload code without changing the resource-manager identity or load-state
 contract.
+
+## Materials
+
+Material resources are typed CPU resources backed by `NGraphics::Material`.
+
+Resources owns the material identity, load state, versioning, and frame-retained leases. The material object itself
+contains a backend-independent pipeline identity plus immutable buffer/image/sampler binding descriptors expressed as
+logical resource identities. New consumers do not acquire unloaded material versions, while already published frame
+snapshots may retain their acquired material version until the frame resource records are recycled.
+
+Native descriptor allocation and backend alignment/limit validation are not part of the Resources contract. Concrete
+Graphics backends translate material bindings into their private descriptor infrastructure during submission and must
+retain the resolved concrete resource dependencies for GPU lifetime.

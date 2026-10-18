@@ -154,11 +154,16 @@ jobs:
           echo "VK_DRIVER_FILES=$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
 
       - name: Run heavy tests
+        env:
+          VK_LAYER_ENABLES: VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
         run: ./tests/test_heavy.sh
 
       - name: Show test log
-        if: failure()
+        if: always()
         run: |
           if [ -f tests/result/test-heavy.log ]; then
             cat tests/result/test-heavy.log
+          fi
+          if [ -f cmake-build-ci-vulkan-glfw/Testing/Temporary/LastTest.log ]; then
+            cat cmake-build-ci-vulkan-glfw/Testing/Temporary/LastTest.log
           fi

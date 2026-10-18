@@ -7,6 +7,7 @@
 #include <graphics/backend/backend.h>
 #include <graphics/backend/factory.h>
 #include <graphics/graphics.h>
+#include <graphics/material.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <resources/resource_manager.h>
@@ -172,6 +173,7 @@ TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
 
     const auto completion = graphics.SubmitFrame({
             .FrameIndex = 42,
+            .FrameSlotIndex = 0,
             .RequiresPresentation = true,
             .ResourceUseRecords = {lease->GetUseRecord()},
     });
@@ -179,6 +181,7 @@ TEST_F(GraphicsTest, SubmitsFrameAndReportsCompletionPoint) {
     ASSERT_TRUE(completion.IsValid());
     ASSERT_EQ(m_state.InFlightSubmissions.size(), 1U);
     EXPECT_EQ(m_state.InFlightSubmissions[0].second.FrameIndex, 42U);
+    EXPECT_EQ(m_state.InFlightSubmissions[0].second.FrameSlotIndex, 0U);
     EXPECT_TRUE(m_state.InFlightSubmissions[0].second.RequiresPresentation);
     ASSERT_EQ(m_state.InFlightSubmissions[0].second.ResourceUseRecords.size(), 1U);
     EXPECT_TRUE(m_state.InFlightSubmissions[0].second.ResourceUseRecords[0].IsValid());
@@ -207,6 +210,7 @@ TEST_F(GraphicsTest, RetainsSubmissionResourcesUntilCompletion) {
 
     const auto completion = graphics.SubmitFrame({
             .FrameIndex = 43,
+            .FrameSlotIndex = 1,
             .RequiresPresentation = false,
             .ResourceUseRecords = {lease->GetUseRecord()},
     });
@@ -239,7 +243,21 @@ TEST_F(GraphicsTest, RejectsPresentationSubmissionWhenBackendHasNoPresentationPa
     ExpectError(NCommon::EError::UNSUPPORTED, [&] {
         (void)graphics.SubmitFrame({
                 .FrameIndex = 1,
+                .FrameSlotIndex = 0,
                 .RequiresPresentation = true,
+                .ResourceUseRecords = {},
+        });
+    });
+}
+
+TEST_F(GraphicsTest, RejectsFrameSlotOutsideMaxFramesInFlight) {
+    NGraphics::Graphics graphics = CreateGraphics();
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)graphics.SubmitFrame({
+                .FrameIndex = 1,
+                .FrameSlotIndex = 2,
+                .RequiresPresentation = false,
                 .ResourceUseRecords = {},
         });
     });
@@ -261,6 +279,7 @@ TEST_F(GraphicsTest, RejectsCompletionPointFromAnotherGraphics) {
 
     const auto completion = first.SubmitFrame({
             .FrameIndex = 1,
+            .FrameSlotIndex = 0,
             .RequiresPresentation = true,
             .ResourceUseRecords = {},
     });
@@ -734,6 +753,203 @@ TEST_F(GraphicsTest, RejectsInvalidSamplerDescriptor) {
                 .MinLod = 0.0F,
                 .MaxLod = std::numeric_limits<float>::infinity(),
         });
+    });
+}
+
+TEST_F(GraphicsTest, CreatesMaterialAndPreservesBindingDescriptors) {
+    const NGraphics::Material material{
+            NResources::ResourceIdentity{"pipeline", "textured"},
+            {
+                    {
+                            .Binding = 0,
+                            .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                            .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex),
+                    },
+                    {
+                            .Binding = 1,
+                            .Type = NGraphics::EMaterialBindingType::CombinedImageSampler,
+                            .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Fragment),
+                    },
+            },
+            {
+                    {
+                            .Binding = 0,
+                            .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                            .Buffer =
+                                    {
+                                            .Resource = NResources::ResourceIdentity{"buffer", "camera"},
+                                            .SizeBytes = 256,
+                                    },
+                            .Image = {},
+                            .Sampler = {},
+                            .CombinedImageSampler = {},
+                    },
+                    {
+                            .Binding = 1,
+                            .Type = NGraphics::EMaterialBindingType::CombinedImageSampler,
+                            .Buffer = {},
+                            .Image = {},
+                            .Sampler = {},
+                            .CombinedImageSampler =
+                                    {
+                                            .Image = NResources::ResourceIdentity{"image", "albedo"},
+                                            .Sampler = NResources::ResourceIdentity{"sampler", "linear"},
+                                    },
+                    },
+            },
+    };
+
+    EXPECT_EQ(material.GetPipeline(), (NResources::ResourceIdentity{"pipeline", "textured"}));
+    ASSERT_EQ(material.GetLayout().size(), 2U);
+    EXPECT_EQ(material.GetLayout()[1].Binding, 1U);
+    EXPECT_EQ(material.GetLayout()[1].Type, NGraphics::EMaterialBindingType::CombinedImageSampler);
+    ASSERT_EQ(material.GetBindings().size(), 2U);
+    EXPECT_EQ(material.GetBindings()[0].Buffer.Resource, (NResources::ResourceIdentity{"buffer", "camera"}));
+    EXPECT_EQ(material.GetBindings()[0].Buffer.SizeBytes, 256U);
+    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.Image, (NResources::ResourceIdentity{"image", "albedo"}));
+    EXPECT_EQ(material.GetBindings()[1].CombinedImageSampler.Sampler,
+              (NResources::ResourceIdentity{"sampler", "linear"}));
+}
+
+TEST_F(GraphicsTest, RejectsInvalidMaterialDescriptors) {
+    const std::vector<NGraphics::MaterialBindingLayoutEntry> layout{
+            {
+                    .Binding = 0,
+                    .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                    .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex),
+            },
+    };
+    const std::vector<NGraphics::MaterialBinding> bindings{
+            {
+                    .Binding = 0,
+                    .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                    .Buffer =
+                            {
+                                    .Resource = NResources::ResourceIdentity{"buffer", "camera"},
+                                    .SizeBytes = 64,
+                            },
+                    .Image = {},
+                    .Sampler = {},
+                    .CombinedImageSampler = {},
+            },
+    };
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { const NGraphics::Material material{{}, layout, bindings}; });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{NResources::ResourceIdentity{"shader", "wrong"}, layout, bindings};
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "duplicate-layout"},
+                {layout[0], layout[0]},
+                bindings,
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "array"},
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex),
+                                .Count = 2,
+                        },
+                },
+                bindings,
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "missing"},
+                layout,
+                {},
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "type-mismatch"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::Sampler,
+                                .Buffer = {},
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
+                        },
+                },
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "invalid-buffer"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Buffer =
+                                        {
+                                                .Resource = NResources::ResourceIdentity{"buffer", "camera"},
+                                                .SizeBytes = 0,
+                                        },
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
+                        },
+                },
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "wrong-resource-class"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Buffer =
+                                        {
+                                                .Resource = NResources::ResourceIdentity{"image", "camera"},
+                                                .SizeBytes = 64,
+                                        },
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
+                        },
+                },
+        };
+    });
+
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        const NGraphics::Material material{
+                NResources::ResourceIdentity{"pipeline", "range-overflow"},
+                layout,
+                {
+                        {
+                                .Binding = 0,
+                                .Type = NGraphics::EMaterialBindingType::UniformBuffer,
+                                .Buffer =
+                                        {
+                                                .Resource = NResources::ResourceIdentity{"buffer", "camera"},
+                                                .OffsetBytes = std::numeric_limits<std::uint64_t>::max(),
+                                                .SizeBytes = 1,
+                                        },
+                                .Image = {},
+                                .Sampler = {},
+                                .CombinedImageSampler = {},
+                        },
+                },
+        };
     });
 }
 

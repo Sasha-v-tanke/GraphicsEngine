@@ -10,9 +10,14 @@
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/resources/resource_lease.h>
 
-namespace NResources {
+namespace NGraphics {
 
 class Material;
+
+} // namespace NGraphics
+
+namespace NResources {
+
 class MeshData;
 
 } // namespace NResources
@@ -58,7 +63,7 @@ struct RenderObject {
     RenderObjectId Id;
     NMath::Transform WorldTransform;
     NResources::ResourceLease<NResources::MeshData> Mesh;
-    NResources::ResourceLease<NResources::Material> Material;
+    NResources::ResourceLease<NGraphics::Material> Material;
 };
 
 class RenderWorld final {

@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <spawn.h>
 #include <string>
 #include <thread>
@@ -21,10 +23,12 @@
 extern char** environ;
 #endif
 
+#include <graphics/vulkan/clear_present_path.h>
 #include <graphics/vulkan/device.h>
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/instance.h>
 #include <graphics/vulkan/physical_device.h>
+#include <graphics/vulkan/resource_state.h>
 #include <graphics/vulkan/swapchain.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
@@ -100,7 +104,8 @@ VulkanSwapchainSupport MakeSupport() {
                             .supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
                             .currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
                             .supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                            .supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                            .supportedUsageFlags =
+                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     },
             .Formats =
                     {
@@ -186,18 +191,20 @@ void RecordPresentTransition(VkCommandBuffer commandBuffer, VkImage image) {
     };
     ASSERT_EQ(vkBeginCommandBuffer(commandBuffer, &beginInfo), VK_SUCCESS);
 
-    const VkImageMemoryBarrier2 barrier{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask = 0,
-            .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-            .dstAccessMask = 0,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange =
+    NVulkan::VulkanResourceStateTracker tracker;
+    tracker.ImportImage(image,
+                        {
+                                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                .baseMipLevel = 0,
+                                .levelCount = 1,
+                                .baseArrayLayer = 0,
+                                .layerCount = 1,
+                        },
+                        NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Undefined));
+    const std::optional<VkImageMemoryBarrier2> barrier = tracker.TransitionImage({
+            .Image = image,
+            .Usage = NVulkan::EVulkanResourceUsage::Present,
+            .SubresourceRange =
                     {
                             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                             .baseMipLevel = 0,
@@ -205,11 +212,12 @@ void RecordPresentTransition(VkCommandBuffer commandBuffer, VkImage image) {
                             .baseArrayLayer = 0,
                             .layerCount = 1,
                     },
-    };
+    });
+    ASSERT_TRUE(barrier.has_value());
     const VkDependencyInfo dependencyInfo{
             .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
             .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &barrier,
+            .pImageMemoryBarriers = &*barrier,
     };
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 
@@ -499,4 +507,88 @@ TEST(VulkanSwapchainChild, DISABLED_CreatesAndDestroysSwapchain) {
 
 TEST(VulkanSwapchain, CreatesAndDestroysSwapchain) {
     RunSpawnedSmoke("VulkanSwapchainChild.DISABLED_CreatesAndDestroysSwapchain");
+}
+
+TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{MakeWindowConfig()};
+
+        std::vector<std::string> validationErrors;
+        std::mutex validationMutex;
+        NVulkan::VulkanInstanceConfig instanceConfig;
+        instanceConfig.ApplicationName = "GraphicsEngineVulkanClearPresentPathTest";
+        instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
+        instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
+        instanceConfig.EnableDebugUtils = true;
+        instanceConfig.DebugMessageHandler = [&](const NVulkan::VulkanDebugMessage& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                const std::lock_guard lock{validationMutex};
+                validationErrors.push_back(message.Message);
+            }
+        };
+
+        NVulkan::VulkanInstance instance{instanceConfig};
+        const NVulkan::NGlfw::VulkanSurface surface{instance, window};
+        const NVulkan::VulkanPhysicalDeviceSelection physicalDevice =
+                NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
+        const NVulkan::VulkanDevice device{physicalDevice};
+        NVulkan::VulkanSwapchain swapchain{device, physicalDevice, surface.GetHandle(), window.GetFramebufferSize()};
+        {
+            NVulkan::VulkanSwapchain suspended{device, physicalDevice, surface.GetHandle(), {.Width = 0, .Height = 0}};
+            NVulkan::VulkanClearPresentPath path{device, suspended, 1};
+            const NVulkan::VulkanClearPresentResult result = path.Render(0, {.float32 = {0, 0, 0, 1}});
+            EXPECT_EQ(result.Status, NVulkan::EVulkanClearPresentStatus::SUSPENDED);
+            EXPECT_FALSE(result.Completion.has_value());
+            EXPECT_TRUE(path.PollCompletedFrames().empty());
+        }
+        for (const std::size_t activeSlots: {1U, 3U}) {
+            NVulkan::VulkanClearPresentPath path{device, swapchain, activeSlots};
+
+            std::uint64_t frameIndex = 0;
+            std::vector<NVulkan::VulkanFrameCompletionEvent> completedFrames;
+            for (std::size_t attempts = 0; frameIndex < 6 && attempts < 600; ++attempts) {
+                const NVulkan::VulkanClearPresentResult result =
+                        path.Render(frameIndex, {.float32 = {0.1F * static_cast<float>(frameIndex), 0.2F, 0.3F, 1.0F}});
+                if (result.Completion.has_value()) {
+                    EXPECT_NE(result.Completion->Value, 0U);
+                    ++frameIndex;
+                } else {
+                    ASSERT_EQ(result.Status, NVulkan::EVulkanClearPresentStatus::NOT_READY);
+                    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+                }
+                ASSERT_NE(result.Status, NVulkan::EVulkanClearPresentStatus::OUT_OF_DATE);
+                ASSERT_NE(result.Status, NVulkan::EVulkanClearPresentStatus::SUSPENDED);
+
+                std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
+                completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
+            }
+            EXPECT_EQ(frameIndex, 6U);
+
+            for (std::size_t attempts = 0; completedFrames.size() < 6 && attempts < 600; ++attempts) {
+                std::vector<NVulkan::VulkanFrameCompletionEvent> completed = path.PollCompletedFrames();
+                completedFrames.insert(completedFrames.end(), completed.begin(), completed.end());
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+            ASSERT_EQ(completedFrames.size(), 6U);
+            for (std::size_t index = 0; index < completedFrames.size(); ++index) {
+                EXPECT_EQ(completedFrames[index].FrameIndex, index);
+                EXPECT_NE(completedFrames[index].Completion.Value, 0U);
+            }
+        }
+        const std::lock_guard lock{validationMutex};
+        EXPECT_TRUE(validationErrors.empty());
+        for (const std::string& error: validationErrors) {
+            ADD_FAILURE() << error;
+        }
+    } catch (const NCommon::Exception& exception) {
+        if (IsEnvironmentFailure(exception)) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+        throw;
+    }
+}
+
+TEST(VulkanClearPresentPath, ClearsAndPresentsRepeatedFrames) {
+    RunSpawnedSmoke("VulkanClearPresentPathChild.DISABLED_ClearsAndPresentsRepeatedFrames");
 }

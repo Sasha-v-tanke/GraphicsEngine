@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -9,6 +10,7 @@ namespace NGraphics {
 
 struct FrameSubmission {
     std::uint64_t FrameIndex = 0;
+    std::size_t FrameSlotIndex = 0;
     bool RequiresPresentation = true;
     std::vector<NCommon::ResourceUseRecord> ResourceUseRecords;
 };

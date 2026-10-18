@@ -9,6 +9,7 @@
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/graphics/image.h>
+#include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/math/transform.h>
@@ -71,9 +72,11 @@ int main() {
             .MagFilter = NGraphics::ESamplerFilter::Linear,
             .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
     };
+    const NGraphics::Material material{NResources::ResourceIdentity{"pipeline", "package"}};
 
     if (!error || !supportsRequiredGraphics || buffer.SizeBytes != 256 || gpuImage.Extent.Width != 1 ||
-        gpuImageView.Aspects == 0 || gpuSampler.AddressModeU != NGraphics::ESamplerAddressMode::ClampToEdge) {
+        gpuImageView.Aspects == 0 || gpuSampler.AddressModeU != NGraphics::ESamplerAddressMode::ClampToEdge ||
+        material.GetPipeline().GetKey() != "package") {
         return 1;
     }
 

@@ -8,9 +8,14 @@
 #include <GraphicsEngine/renderer/render_world.h>
 #include <GraphicsEngine/resources/resource_handle.h>
 
-namespace NResources {
+namespace NGraphics {
 
 class Material;
+
+} // namespace NGraphics
+
+namespace NResources {
+
 class MeshData;
 
 } // namespace NResources
@@ -23,7 +28,7 @@ struct DrawCommandData {
     NMath::Transform WorldTransform;
     NResources::ResourceHandle<NResources::MeshData> Mesh;
     std::uint64_t MeshVersion = 0;
-    NResources::ResourceHandle<NResources::Material> Material;
+    NResources::ResourceHandle<NGraphics::Material> Material;
     std::uint64_t MaterialVersion = 0;
 };
 
