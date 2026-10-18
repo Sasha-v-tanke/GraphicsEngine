@@ -387,6 +387,10 @@ private:
 
             std::shared_future<void> completion = frameRuntime->SubmitFrame(context);
             if (completion.valid()) {
+                if (completion.wait_for(std::chrono::seconds{0}) == std::future_status::deferred) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                          "GPU completion must be an externally signaled future");
+                }
                 std::lock_guard lock{m_mutex};
                 GetFrameRecordLocked(frame).GpuCompletion = std::move(completion);
                 frameScheduler->MarkSubmitted(frame);
@@ -468,6 +472,7 @@ private:
                     } catch (...) {
                         SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
                         m_state = EEngineState::STOPPING;
+                        m_frameScheduler->CompleteGpu(record.Frame);
                         m_frameScheduler->AbortFrame(record.Frame);
                         record = {};
                         continue;

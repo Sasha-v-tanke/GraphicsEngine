@@ -164,7 +164,7 @@ void FrameExecutionSlot::Recycle(FrameHandle frame) {
 void FrameExecutionSlot::Abort(FrameHandle frame) {
     Validate(frame);
 
-    if (m_state == EFrameState::FREE) {
+    if (m_state == EFrameState::FREE || m_state == EFrameState::SUBMITTED || m_state == EFrameState::GPU_IN_FLIGHT) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Frame {} in slot {} cannot be aborted from state {}",
                               frame.GetFrameIndex(),

@@ -189,6 +189,15 @@ be retried. Drain submitted completion events before destroying the path.
 
 ## Resource State Tracking
 
+Runtime frame-ring integration uses the exact `VulkanQueueCompletion` returned
+by submit. An external backend event service fulfills the corresponding
+`IFrameRuntime::SubmitFrame()` future only after the timeline reaches that value.
+Both VulkanFrameContext and FrameExecutionSlot use the same configured slot count
+and frame-slot identity. The engine retains its slot until CPU draw return and
+the GPU signal; the Vulkan ring independently verifies that same timeline value
+before resetting command pools. Presentation timing does not release either slot.
+The completion service remains active while Engine drains in-flight frames on stop.
+
 `VulkanResourceStateTracker` owns backend-internal image state for Synchronization2.
 Callers import external images, including swapchain images, with an explicit
 initial state. Semantic usages are converted to Vulkan stage, access, layout and

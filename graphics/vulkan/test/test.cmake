@@ -1,6 +1,7 @@
 TEST_MODULE(VulkanBackend)
 
 PRIVATE_DEPENDS(
+    Engine
     VulkanMemoryAllocator
 )
 

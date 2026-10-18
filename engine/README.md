@@ -208,6 +208,26 @@ memory_resource физически остаётся тем же.
 
 ## Thread safety
 
+GPU runtimes override `IFrameRuntime::SubmitFrame()` and return a
+`std::shared_future<void>` fulfilled by the external backend completion source.
+The default implementation calls `Draw()` and returns an invalid future for CPU-only work.
+A valid future must become ready only when the exact submission no longer uses
+frame storage, on success or failure; deferred futures are rejected. Present is
+not a completion signal. The backend completion service must keep delivering
+signals during `Engine::Stop()` and must outlive the engine's drain.
+
+GPU frames follow `FINALIZE -> SUBMITTED -> GPU_IN_FLIGHT -> COMPLETE -> FREE`.
+CPU draw-task termination precedes `GPU_IN_FLIGHT`; early GPU events are retained
+by the shared state. Application checkpoints reap ready external signals without
+blocking workers or scheduling polling tasks. Out-of-order signals may complete
+different slots, while admission retains logical frame order. Abort and recycle
+cannot release a submitted slot before GPU completion.
+
+`Stop()` first drains CPU tasks, then waits for external GPU signals outside the
+engine mutex before releasing frame storage. Completion failures stop admission
+and preserve a structured runtime error. The completion source is responsible
+for retiring native backend objects before it reports terminal failure.
+
 Публичные операции FrameScheduler сериализуют изменение и проверку состояния через scheduler mutex.
 Это обеспечивает согласованность:
 
