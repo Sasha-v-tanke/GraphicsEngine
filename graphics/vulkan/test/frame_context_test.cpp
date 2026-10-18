@@ -1,8 +1,12 @@
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <future>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <spawn.h>
 #include <string>
 #include <string_view>
@@ -21,12 +25,15 @@
 extern char** environ;
 #endif
 
+#include <engine/runtime/frame_runtime.h>
 #include <graphics/vulkan/device.h>
 #include <graphics/vulkan/frame_context.h>
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/instance.h>
 #include <graphics/vulkan/physical_device.h>
+#include <graphics/vulkan/submission_manager.h>
 #include <gtest/gtest.h>
+#include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 #include <window/window.h>
 #include <window/window_config.h>
@@ -192,6 +199,7 @@ void SubmitCommandBuffer(const NVulkan::VulkanDevice& device, VkCommandBuffer co
 }
 
 struct VulkanRuntime {
+    std::atomic<int> ValidationErrors = 0;
     NWindow::WindowRuntime WindowRuntime;
     NWindow::Window Window{MakeWindowConfig()};
     NVulkan::VulkanInstance Instance{MakeInstanceConfig()};
@@ -200,15 +208,131 @@ struct VulkanRuntime {
             NVulkan::SelectVulkanPhysicalDevice(Instance, Surface.GetHandle());
     NVulkan::VulkanDevice Device{PhysicalDevice};
 
-    [[nodiscard]] static NVulkan::VulkanInstanceConfig MakeInstanceConfig() {
+    [[nodiscard]] NVulkan::VulkanInstanceConfig MakeInstanceConfig() {
         NVulkan::VulkanInstanceConfig instanceConfig;
         instanceConfig.ApplicationName = "GraphicsEngineVulkanFrameContextTest";
         instanceConfig.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
-        instanceConfig.ValidationMode = NVulkan::EValidationMode::EnabledIfAvailable;
+        instanceConfig.ValidationMode = NVulkan::EValidationMode::Required;
         instanceConfig.EnableDebugUtils = true;
+        instanceConfig.DebugMessageHandler = [this](const NVulkan::VulkanDebugMessage& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                ++ValidationErrors;
+                ADD_FAILURE() << message.Message;
+            }
+        };
         return instanceConfig;
     }
 };
+
+class TimelineFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    TimelineFrameRuntime(const NVulkan::VulkanDevice& device, std::size_t slots)
+        : m_device(device)
+        , m_submissions(device)
+        , m_ring(device, slots)
+        , m_commands(slots, VK_NULL_HANDLE)
+        , m_events([this](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                {
+                    const std::lock_guard lock{m_mutex};
+                    for (auto it = m_pending.begin(); it != m_pending.end();) {
+                        try {
+                            if (!m_submissions.IsCompleted({.Value = it->first})) {
+                                ++it;
+                                continue;
+                            }
+                            it->second.set_value();
+                            ++Completed;
+                        } catch (...) {
+                            it->second.set_exception(std::current_exception());
+                        }
+                        it = m_pending.erase(it);
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+        }) {
+    }
+
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+    }
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+    }
+
+    std::shared_future<void> SubmitFrame(const NEngine::NRuntime::FrameContext& frame) override {
+        const std::lock_guard lock{m_mutex};
+        const auto handle = frame.GetFrame();
+        const NVulkan::VulkanFrameContextAcquire acquire{.FrameIndex = handle.GetFrameIndex(),
+                                                         .FrameSlotIndex = handle.GetSlotIndex()};
+        auto* context = m_ring.TryAcquire(acquire, [&](std::uint64_t value) {
+            return m_submissions.IsCompleted({.Value = value});
+        });
+        if (context == nullptr) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Engine recycled a GPU frame slot too early");
+        }
+        VkCommandBuffer& command = m_commands[handle.GetSlotIndex()];
+        if (command == VK_NULL_HANDLE) {
+            command = AllocateCommandBuffer(m_device.GetHandle(), context->GetCommandPool());
+        }
+        RecordEmptyCommandBuffer(command);
+        const VkCommandBufferSubmitInfo info{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                             .commandBuffer = command};
+        std::promise<void> signal;
+        auto result = signal.get_future().share();
+        const auto completion = m_submissions.SubmitGraphics({.CommandBuffers = {info}});
+        m_ring.MarkSubmitted(acquire, completion.Value);
+        m_pending.emplace(completion.Value, std::move(signal));
+        return result;
+    }
+
+    std::atomic<int> Completed = 0;
+
+private:
+    const NVulkan::VulkanDevice& m_device;
+    NVulkan::VulkanSubmissionManager m_submissions;
+    NVulkan::VulkanFrameContextRing m_ring;
+    std::vector<VkCommandBuffer> m_commands;
+    std::mutex m_mutex;
+    std::map<std::uint64_t, std::promise<void>> m_pending;
+    std::jthread m_events;
+};
+
+TEST(VulkanFrameContextChild, DISABLED_RecyclesEngineSlotsAfterTimelineEvents) {
+    try {
+        VulkanRuntime runtime;
+        for (const std::size_t slots: {1U, 3U}) {
+            auto frameRuntime = std::make_unique<TimelineFrameRuntime>(runtime.Device, slots);
+            auto& gpu = *frameRuntime;
+            auto engine = NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = slots, .WorkerCount = 1},
+                                                                   std::move(frameRuntime));
+            engine->Start();
+            int submitted = 0;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+            while (submitted < 12 && std::chrono::steady_clock::now() < deadline) {
+                if (engine->Update()) {
+                    ASSERT_TRUE(engine->Draw());
+                    ++submitted;
+                } else {
+                    std::this_thread::yield();
+                }
+            }
+            EXPECT_EQ(submitted, 12);
+            engine->Stop();
+            EXPECT_EQ(gpu.Completed.load(), 12);
+            EXPECT_FALSE(engine->GetLastError().has_value());
+        }
+        EXPECT_EQ(runtime.ValidationErrors.load(), 0);
+    } catch (const NCommon::Exception& exception) {
+        if (IsEnvironmentFailure(exception)) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+        throw;
+    }
+}
+
+TEST(VulkanFrameContext, RecyclesEngineSlotsAfterTimelineEvents) {
+    RunSpawnedSmoke("VulkanFrameContextChild.DISABLED_RecyclesEngineSlotsAfterTimelineEvents");
+}
 
 TEST(VulkanFrameContextChild, DISABLED_UsesOneContextPerFrameSlotAndBlocksReuseUntilCompletion) {
     try {

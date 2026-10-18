@@ -1,3 +1,5 @@
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -6,6 +8,7 @@
 #include <memory_resource>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -20,6 +23,160 @@ namespace {
 
 using NTest::ExpectError;
 using namespace std::chrono_literals;
+
+class GpuFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    GpuFrameRuntime() {
+        for (std::size_t index = 0; index < Completions.size(); ++index) {
+            Completions[index] = Signals[index].get_future().share();
+            Submissions[index] = Submitted[index].get_future().share();
+        }
+    }
+
+    void Update(const NEngine::NRuntime::FrameContext& frame) override {
+        struct Probe {
+            explicit Probe(std::atomic<int>& count)
+                : Count(count) {
+            }
+            ~Probe() noexcept {
+                ++Count;
+            }
+            std::atomic<int>& Count;
+        };
+        static_cast<void>(frame.GetStorage().Emplace<Probe>(Destroyed));
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+    }
+
+    std::shared_future<void> SubmitFrame(const NEngine::NRuntime::FrameContext& frame) override {
+        const auto index = static_cast<std::size_t>(frame.GetFrame().GetFrameIndex());
+        Submitted.at(index).set_value();
+        return Completions.at(index);
+    }
+
+    void Finish() noexcept {
+        for (auto& signal: Signals) {
+            try {
+                signal.set_value();
+            } catch (...) {
+            }
+        }
+    }
+
+    std::array<std::promise<void>, 3> Signals;
+    std::array<std::promise<void>, 3> Submitted;
+    std::array<std::shared_future<void>, 3> Completions;
+    std::array<std::shared_future<void>, 3> Submissions;
+    std::atomic<int> Destroyed = 0;
+};
+
+struct FinishGpuGuard {
+    GpuFrameRuntime& Runtime;
+    ~FinishGpuGuard() {
+        Runtime.Finish();
+    }
+};
+
+bool AcquireEventually(NEngine::Engine& engine) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (engine.Update()) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return false;
+}
+
+TEST(EngineGpuCompletion, RetainsFrameStorageUntilExternalCompletion) {
+    auto runtime = std::make_unique<GpuFrameRuntime>();
+    auto& gpu = *runtime;
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 1}, std::move(runtime));
+    const FinishGpuGuard guard{gpu};
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(gpu.Submissions[0].wait_for(2s), std::future_status::ready);
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        EXPECT_FALSE(engine->Update());
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(gpu.Destroyed.load(), 0);
+    gpu.Signals[0].set_value();
+    ASSERT_TRUE(AcquireEventually(*engine));
+    EXPECT_EQ(gpu.Destroyed.load(), 1);
+}
+
+TEST(EngineGpuCompletion, KeepsLogicalSlotOrderWithOutOfOrderSignals) {
+    auto runtime = std::make_unique<GpuFrameRuntime>();
+    auto& gpu = *runtime;
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 2, .WorkerCount = 1}, std::move(runtime));
+    const FinishGpuGuard guard{gpu};
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_TRUE(AcquireEventually(*engine));
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(gpu.Submissions[1].wait_for(2s), std::future_status::ready);
+    gpu.Signals[1].set_value();
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (gpu.Destroyed.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+        EXPECT_FALSE(engine->Update());
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(gpu.Destroyed.load(), 1);
+    EXPECT_FALSE(engine->Update());
+    gpu.Signals[0].set_value();
+    ASSERT_TRUE(AcquireEventually(*engine));
+    EXPECT_EQ(gpu.Destroyed.load(), 2);
+}
+
+TEST(EngineGpuCompletion, StopWaitsForInFlightGpuWork) {
+    auto runtime = std::make_unique<GpuFrameRuntime>();
+    auto& gpu = *runtime;
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 1}, std::move(runtime));
+    const FinishGpuGuard guard{gpu};
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(gpu.Submissions[0].wait_for(2s), std::future_status::ready);
+    auto stopped = std::async(std::launch::async, [&] { engine->Stop(); });
+    EXPECT_EQ(stopped.wait_for(20ms), std::future_status::timeout);
+    EXPECT_EQ(gpu.Destroyed.load(), 0);
+    gpu.Signals[0].set_value();
+    EXPECT_EQ(stopped.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(gpu.Destroyed.load(), 1);
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
+}
+
+TEST(EngineGpuCompletion, BackendFailureStopsAdmissionAndPreservesError) {
+    auto runtime = std::make_unique<GpuFrameRuntime>();
+    auto& gpu = *runtime;
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 1}, std::move(runtime));
+    const FinishGpuGuard guard{gpu};
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(gpu.Submissions[0].wait_for(2s), std::future_status::ready);
+    gpu.Signals[0].set_exception(std::make_exception_ptr(std::runtime_error("GPU completion failed")));
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (engine->GetState() == NEngine::EEngineState::RUNNING && std::chrono::steady_clock::now() < deadline) {
+        try {
+            static_cast<void>(engine->Update());
+        } catch (const NCommon::Exception&) {
+        }
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPING);
+    ASSERT_TRUE(engine->GetLastError().has_value());
+    EXPECT_EQ(engine->GetLastError()->Message, "GPU completion failed");
+    engine->Stop();
+}
 
 class ThrowingFrameRuntime final: public NEngine::NRuntime::IFrameRuntime {
 public:

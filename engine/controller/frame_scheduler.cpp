@@ -135,6 +135,18 @@ void FrameExecutionSlot::Complete(FrameHandle frame) {
     Transition(frame, EFrameState::FINALIZE, EFrameState::COMPLETE);
 }
 
+void FrameExecutionSlot::MarkSubmitted(FrameHandle frame) {
+    Transition(frame, EFrameState::FINALIZE, EFrameState::SUBMITTED);
+}
+
+void FrameExecutionSlot::BeginGpu(FrameHandle frame) {
+    Transition(frame, EFrameState::SUBMITTED, EFrameState::GPU_IN_FLIGHT);
+}
+
+void FrameExecutionSlot::CompleteGpu(FrameHandle frame) {
+    Transition(frame, EFrameState::GPU_IN_FLIGHT, EFrameState::COMPLETE);
+}
+
 void FrameExecutionSlot::Recycle(FrameHandle frame) {
     Validate(frame);
 
@@ -152,7 +164,7 @@ void FrameExecutionSlot::Recycle(FrameHandle frame) {
 void FrameExecutionSlot::Abort(FrameHandle frame) {
     Validate(frame);
 
-    if (m_state == EFrameState::FREE) {
+    if (m_state == EFrameState::FREE || m_state == EFrameState::SUBMITTED || m_state == EFrameState::GPU_IN_FLIGHT) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Frame {} in slot {} cannot be aborted from state {}",
                               frame.GetFrameIndex(),
@@ -346,6 +358,21 @@ void FrameScheduler::CompleteFrame(FrameHandle frame) {
     FrameExecutionSlot& slot = GetSlotLocked(frame);
 
     slot.Complete(frame);
+}
+
+void FrameScheduler::MarkSubmitted(FrameHandle frame) {
+    std::lock_guard lock{m_mutex};
+    GetSlotLocked(frame).MarkSubmitted(frame);
+}
+
+void FrameScheduler::BeginGpu(FrameHandle frame) {
+    std::lock_guard lock{m_mutex};
+    GetSlotLocked(frame).BeginGpu(frame);
+}
+
+void FrameScheduler::CompleteGpu(FrameHandle frame) {
+    std::lock_guard lock{m_mutex};
+    GetSlotLocked(frame).CompleteGpu(frame);
 }
 
 void FrameScheduler::RecycleFrame(FrameHandle frame) {

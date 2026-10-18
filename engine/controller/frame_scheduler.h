@@ -24,6 +24,8 @@ enum class EFrameState {
     UPDATING,
     WAITING_DRAW,
     FINALIZE,
+    SUBMITTED,
+    GPU_IN_FLIGHT,
     COMPLETE,
 };
 
@@ -145,6 +147,12 @@ public:
     void BeginFinalize(FrameHandle frame);
 
     void Complete(FrameHandle frame);
+
+    void MarkSubmitted(FrameHandle frame);
+
+    void BeginGpu(FrameHandle frame);
+
+    void CompleteGpu(FrameHandle frame);
 
     void Recycle(FrameHandle frame);
 
@@ -273,6 +281,12 @@ public:
     void BeginFinalize(FrameHandle frame);
 
     void CompleteFrame(FrameHandle frame);
+
+    void MarkSubmitted(FrameHandle frame);
+
+    void BeginGpu(FrameHandle frame);
+
+    void CompleteGpu(FrameHandle frame);
 
     void RecycleFrame(FrameHandle frame);
 
