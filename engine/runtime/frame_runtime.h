@@ -1,5 +1,6 @@
 #pragma once
 
+#include <future>
 #include <memory>
 #include <memory_resource>
 
@@ -26,6 +27,10 @@ public:
 
     [[nodiscard]] std::pmr::memory_resource& GetMemoryResource() const {
         return m_storage.GetMemoryResource();
+    }
+
+    void RegisterGpuCompletion(std::shared_future<void> completion) const {
+        m_storage.RegisterGpuCompletion(std::move(completion));
     }
 
 private:

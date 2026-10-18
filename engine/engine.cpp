@@ -158,6 +158,18 @@ public:
             SetLastError(MakeRuntimeError(std::current_exception()));
         }
 
+        if (m_frameRecords != nullptr) {
+            for (std::size_t index = 0; index < m_frameScheduler->GetMaxActiveFrames(); ++index) {
+                if (!m_frameRecords[index].HasUpdateTask) {
+                    continue;
+                }
+                const auto completion = m_frameScheduler->GetGpuCompletion(m_frameRecords[index].Frame);
+                if (completion.valid()) {
+                    completion.wait();
+                }
+            }
+        }
+
         {
             std::lock_guard lock{m_mutex};
 
@@ -182,6 +194,7 @@ public:
         std::lock_guard lock{m_mutex};
         RequireRunningLocked("update");
         ReapTerminalFrameRecordsLocked(*m_taskSystem);
+        RequireRunningLocked("update");
 
         if (!m_updateAdmissionOpen) {
             return false;
@@ -375,8 +388,9 @@ private:
             }
 
             frameRuntime->Draw(context);
-
-            frameScheduler->CompleteFrame(frame);
+            if (!frameScheduler->GetGpuCompletion(frame).valid()) {
+                frameScheduler->CompleteFrame(frame);
+            }
         } catch (...) {
             LatchRuntimeFailure(frame, std::current_exception());
             throw;
@@ -389,8 +403,10 @@ private:
 
             SetLastErrorLocked(MakeRuntimeError(error));
             m_state = EEngineState::STOPPING;
-            ClearFrameRecordLocked(frame);
-            m_frameScheduler->AbortFrame(frame);
+            if (!m_frameScheduler->GetGpuCompletion(frame).valid()) {
+                ClearFrameRecordLocked(frame);
+                m_frameScheduler->AbortFrame(frame);
+            }
         } catch (...) {
             SetLastError(MakeRuntimeError(std::current_exception()));
         }
@@ -438,7 +454,26 @@ private:
                 continue;
             }
 
-            if (status == NCommon::ETaskStatus::COMPLETED) {
+            bool failed = status != NCommon::ETaskStatus::COMPLETED;
+            const auto completion = m_frameScheduler->GetGpuCompletion(record.Frame);
+            if (completion.valid()) {
+                if (m_frameScheduler->GetState(record.Frame) == NController::EFrameState::SUBMITTED) {
+                    m_frameScheduler->BeginGpu(record.Frame);
+                }
+                if (completion.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+                    continue;
+                }
+                try {
+                    completion.get();
+                } catch (...) {
+                    SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
+                    m_state = EEngineState::STOPPING;
+                    failed = true;
+                }
+                m_frameScheduler->CompleteGpu(record.Frame);
+            }
+
+            if (!failed) {
                 m_frameScheduler->RecycleFrame(record.Frame);
             } else {
                 try {

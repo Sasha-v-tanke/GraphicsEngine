@@ -78,6 +78,8 @@ public:
 
     void MarkSubmitted(VulkanFrameContextAcquire acquire, std::uint64_t completionValue);
 
+    void ReleaseAcquired(VulkanFrameContextAcquire acquire);
+
 private:
     [[nodiscard]] VulkanFrameContext& GetBySlot(std::size_t frameSlotIndex);
 

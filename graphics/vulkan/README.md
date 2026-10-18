@@ -133,7 +133,7 @@ presentation chain when the framebuffer becomes non-zero again.
 
 Acquire and present wrappers translate WSI results into explicit backend states:
 acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
-They do not record rendering commands or perform layout transitions; the future
+They do not record rendering commands or perform layout transitions; the
 command/submission path owns those responsibilities.
 
 ## Frame Contexts
@@ -146,6 +146,8 @@ Each context owns frame-local Vulkan command state for the graphics queue. A
 context can be acquired for a new frame only when its previous completion value
 has finished. Until then `TryAcquire()` returns no context, so callers apply
 backpressure instead of resetting command pools that may still be in flight.
+An acquired context can be released before submit when WSI acquire cannot
+produce an image.
 
 Shutdown is conservative: if any context is still in flight, the ring waits for
 the logical device to become idle before destroying command pools.
@@ -162,7 +164,41 @@ preserving caller-provided binary wait/signal semaphores. WSI acquire and presen
 therefore remain on binary semaphores, and frame/resource lifetime code observes
 completion by querying the returned timeline value instead of using frame numbers.
 
+## Clear, Submit and Present
+
+`VulkanClearPresentPath` is the MVP-2 command path. For each logical frame it:
+
+- polls acquisition of a swapchain image with a frame-local binary semaphore;
+- discards the previous image contents from undefined layout to transfer-write, clears it, then
+  transitions it back to present;
+- submits that command buffer with the acquire semaphore and signals a
+  per-image present-ready binary semaphore plus the backend timeline;
+- presents without waiting for a fence.
+
+Frame slots are selected from the logical frame index, independently of WSI
+image indices and present timing. `PollCompletedFrames()` non-blockingly emits
+completed frame events in submission order; it never waits on the worker path.
+The acquire wait covers transfer commands. Present semaphores are reused only
+after acquiring their image again, independently of frame-slot timeline completion.
+A recording, submission or presentation failure makes the path terminal; destroy
+it before retrying. Shutdown drains device work before destroying synchronization resources.
+`Render()` returns an optional completion token independently of presentation status.
+Advance the logical frame index whenever that token is present, including when
+present reports out-of-date. Without a token the frame was not submitted and may
+be retried. Drain submitted completion events before destroying the path.
+
 ## Resource State Tracking
+
+Runtime frame-ring integration uses the exact `VulkanQueueCompletion` returned
+by submit. An external backend event service fulfills the corresponding
+future registered through `FrameContext::RegisterGpuCompletion()` only after the
+timeline reaches that value. Registration happens before native submission, so
+an exception after submit cannot lose the completion or release the engine arena.
+Both VulkanFrameContext and FrameExecutionSlot use the same configured slot count
+and frame-slot identity. The engine retains its slot until CPU draw return and
+the GPU signal; the Vulkan ring independently verifies that same timeline value
+before resetting command pools. Presentation timing does not release either slot.
+The completion service remains active while Engine drains in-flight frames on stop.
 
 `VulkanResourceStateTracker` owns backend-internal image state for Synchronization2.
 Callers import external images, including swapchain images, with an explicit
