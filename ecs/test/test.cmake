@@ -2,6 +2,7 @@ TEST_SUITE(Ecs)
 
 SOURCES(
     world_test.cpp
+    scheduling_test.cpp
 )
 
 PRIVATE_DEPENDS(

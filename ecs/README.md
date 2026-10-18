@@ -68,6 +68,16 @@ intact so the caller can submit or destroy the buffer and retry.
 
 ## Access Contract
 
+Systems registered with `SystemSchedule` use stable IDs and optional `Before`
+and `After` constraints. Every system in a scheduled world must declare an ID;
+legacy registrations retain their existing sequential execution mode.
+Unknown targets, duplicate IDs and cyclic constraints are rejected before any
+callback executes. Explicit constraints first define a canonical topological
+order, choosing the smallest ready ID. Read/write, write/read and write/write
+conflicts then add edges in that order; read/read access adds no dependency.
+This policy respects explicit constraints and avoids registration order as a
+hidden conflict-ordering key. `structuralOrder` remains a separate commit key.
+
 `AddComponent<T>()`, `GetComponent<T>()` and query callbacks require a live
 entity. Stale entities are rejected. `HasComponent<T>()` and
 `RemoveComponent<T>()` return `false` for stale or missing data.

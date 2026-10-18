@@ -177,6 +177,10 @@ public:
 
     void RegisterSystem(SystemAccessList access, SystemCallback callback);
     void RegisterSystem(SystemAccessList access, SystemCallback callback, std::uint32_t structuralOrder);
+    void RegisterSystem(SystemAccessList access,
+                        SystemCallback callback,
+                        SystemSchedule schedule,
+                        std::optional<std::uint32_t> structuralOrder = std::nullopt);
 
     [[nodiscard]] const std::vector<SystemAccess>& GetSystemAccess(std::size_t index) const;
     [[nodiscard]] std::size_t GetSystemCount() const noexcept;
@@ -380,6 +384,12 @@ private:
 
     void ValidateAlive(Entity entity) const;
     void ValidateSystemIndex(std::size_t index) const;
+    struct SystemExecutionGraph {
+        std::vector<std::size_t> Order;
+        std::vector<std::vector<std::size_t>> Dependencies;
+    };
+
+    [[nodiscard]] SystemExecutionGraph BuildSystemExecutionGraph(bool requireSchedules) const;
     void ValidateStructuralWriteAllowed() const;
     void ValidateDeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer& buffer) const;
     void ValidateSystemDeferredCommandCollectionLocked() const;
@@ -424,6 +434,7 @@ private:
         SystemAccessList Access;
         SystemCallback Callback;
         std::optional<std::uint32_t> StructuralOrder;
+        std::optional<SystemSchedule> Schedule = std::nullopt;
     };
 
     std::vector<RegisteredSystem> Systems_;

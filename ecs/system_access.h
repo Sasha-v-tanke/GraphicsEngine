@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <typeindex>
 #include <vector>
 
@@ -32,5 +33,11 @@ template<typename T>
 }
 
 using SystemAccessList = std::vector<SystemAccess>;
+
+struct SystemSchedule {
+    std::uint64_t Id = 0;
+    std::vector<std::uint64_t> Before = {};
+    std::vector<std::uint64_t> After = {};
+};
 
 } // namespace NEcs

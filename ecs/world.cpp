@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <numeric>
 
 namespace NEcs {
 
@@ -354,6 +355,111 @@ void World::RegisterSystem(SystemAccessList access, SystemCallback callback, std
     });
 }
 
+void World::RegisterSystem(SystemAccessList access,
+                           SystemCallback callback,
+                           SystemSchedule schedule,
+                           std::optional<std::uint32_t> structuralOrder) {
+    if (std::ranges::any_of(Systems_, [&schedule](const RegisteredSystem& system) {
+            return system.Schedule.has_value() && system.Schedule->Id == schedule.Id;
+        })) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system scheduling IDs must be unique");
+    }
+    if (structuralOrder.has_value()) {
+        RegisterSystem(std::move(access), std::move(callback), *structuralOrder);
+    } else {
+        RegisterSystem(std::move(access), std::move(callback));
+    }
+    Systems_.back().Schedule = std::move(schedule);
+}
+
+World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedules) const {
+    const std::size_t count = Systems_.size();
+    SystemExecutionGraph graph;
+    graph.Order.resize(count);
+    std::iota(graph.Order.begin(), graph.Order.end(), 0);
+    graph.Dependencies.resize(count);
+    const bool hasSchedules =
+            std::ranges::any_of(Systems_, [](const RegisteredSystem& system) { return system.Schedule.has_value(); });
+    if (!requireSchedules && !hasSchedules) {
+        return graph;
+    }
+
+    std::map<std::uint64_t, std::size_t> indices;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!Systems_[index].Schedule.has_value()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS scheduled execution requires a stable ID for every system");
+        }
+        indices.emplace(Systems_[index].Schedule->Id, index);
+    }
+    std::vector<std::vector<bool>> edges(count, std::vector<bool>(count, false));
+    auto addConstraint = [&](std::uint64_t before, std::uint64_t after) {
+        if (before == after || !indices.contains(before) || !indices.contains(after)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system ordering constraint is invalid");
+        }
+        edges[indices.at(before)][indices.at(after)] = true;
+    };
+    for (const auto& system: Systems_) {
+        for (const auto before: system.Schedule->Before) {
+            addConstraint(system.Schedule->Id, before);
+        }
+        for (const auto after: system.Schedule->After) {
+            addConstraint(after, system.Schedule->Id);
+        }
+    }
+
+    std::vector<std::size_t> incoming(count, 0);
+    for (const auto& outgoing: edges) {
+        for (std::size_t target = 0; target < count; ++target) {
+            incoming[target] += outgoing[target] ? 1 : 0;
+        }
+    }
+    std::vector<bool> visited(count, false);
+    graph.Order.clear();
+    for (std::size_t position = 0; position < count; ++position) {
+        std::optional<std::size_t> next;
+        for (const auto& [id, index]: indices) {
+            static_cast<void>(id);
+            if (!visited[index] && incoming[index] == 0) {
+                next = index;
+                break;
+            }
+        }
+        if (!next.has_value()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system ordering constraints contain a cycle");
+        }
+        visited[*next] = true;
+        graph.Order.push_back(*next);
+        for (std::size_t target = 0; target < count; ++target) {
+            if (edges[*next][target]) {
+                --incoming[target];
+            }
+        }
+    }
+
+    for (std::size_t left = 0; left < count; ++left) {
+        const std::size_t before = graph.Order[left];
+        for (std::size_t right = left + 1; right < count; ++right) {
+            const std::size_t after = graph.Order[right];
+            const bool conflicts = std::ranges::any_of(Systems_[before].Access, [&](const SystemAccess& lhs) {
+                return std::ranges::any_of(Systems_[after].Access, [&](const SystemAccess& rhs) {
+                    return lhs.Component == rhs.Component &&
+                           (lhs.Mode == ESystemAccessMode::WRITE || rhs.Mode == ESystemAccessMode::WRITE);
+                });
+            });
+            edges[before][after] = edges[before][after] || conflicts;
+        }
+    }
+    for (const std::size_t after: graph.Order) {
+        for (const std::size_t before: graph.Order) {
+            if (edges[before][after]) {
+                graph.Dependencies[after].push_back(before);
+            }
+        }
+    }
+    return graph;
+}
+
 const std::vector<SystemAccess>& World::GetSystemAccess(std::size_t index) const {
     ValidateSystemIndex(index);
     return Systems_[index].Access;
@@ -464,7 +570,9 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 }
 
 void World::RunSystems() {
-    for (auto& system: Systems_) {
+    const SystemExecutionGraph graph = BuildSystemExecutionGraph(false);
+    for (const std::size_t index: graph.Order) {
+        auto& system = Systems_[index];
         ActiveDeferredStructuralCommands_.clear();
         IsCollectingSystemDeferredStructuralCommands_ = true;
         IsRunningSystems_ = true;
