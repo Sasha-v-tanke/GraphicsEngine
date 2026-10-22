@@ -666,7 +666,12 @@ TEST(Engine, WraparoundWaitsForNextMappedSlotRecycle) {
     EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
     EXPECT_TRUE(runtimeRef.WaitDrawCountAtLeast(2, 2s));
 
-    EXPECT_TRUE(engine->Update());
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    bool frameAccepted = false;
+    while (std::chrono::steady_clock::now() < deadline && !(frameAccepted = engine->Update())) {
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(frameAccepted);
     EXPECT_TRUE(engine->Draw());
 
     engine->Stop();

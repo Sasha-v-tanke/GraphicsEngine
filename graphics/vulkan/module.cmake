@@ -13,6 +13,8 @@ API(
 )
 
 SOURCES(
+    graphics_pipeline.h
+    graphics_pipeline.cpp
     device.cpp
     clear_present_path.cpp
     frame_context.cpp
