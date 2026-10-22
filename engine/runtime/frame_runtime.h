@@ -4,6 +4,7 @@
 #include <memory>
 #include <memory_resource>
 
+#include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <engine/controller/frame_scheduler.h>
 #include <engine/engine.h>
 #include <engine/engine_config.h>
@@ -45,6 +46,14 @@ public:
     virtual void Update(const FrameContext& frame) = 0;
 
     virtual void Extract(const FrameContext&) {
+    }
+
+    // Scheduled work must depend on task.GetTask(). Its join completes only after all World readers finish,
+    // including failure paths. The engine keeps update admission closed until that join completes.
+    // An invalid handle means extraction completed synchronously. Do not cancel a join with live World readers.
+    [[nodiscard]] virtual NCommon::TaskHandle ScheduleExtract(const FrameContext& frame, NCommon::TaskContext&) {
+        Extract(frame);
+        return {};
     }
 
     virtual void Draw(const FrameContext& frame) = 0;

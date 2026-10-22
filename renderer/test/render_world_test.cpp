@@ -1,5 +1,8 @@
+#include <atomic>
+#include <future>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -11,6 +14,7 @@
 #include <GraphicsEngine/resources/resource_identity.h>
 #include <GraphicsEngine/resources/resource_manager.h>
 #include <engine/controller/frame_scheduler.h>
+#include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
 #include <renderer/extraction.h>
 #include <tests/common/test_error.h>
@@ -613,6 +617,284 @@ TEST(Renderer, UsesObjectIdAsFinalSortTieBreak) {
     EXPECT_EQ(plan.GetDrawCommands()[0].ObjectId.Generation, firstObject.Generation);
     EXPECT_EQ(plan.GetDrawCommands()[1].ObjectId.Index, secondObject.Index);
     EXPECT_EQ(plan.GetDrawCommands()[1].ObjectId.Generation, secondObject.Generation);
+}
+
+const RenderWorld* ExtractParallel(const NEcs::World& world,
+                                   const ResourceManager& resources,
+                                   const NEngine::NController::FrameStorage& storage,
+                                   NCommon::TaskSystem& tasks,
+                                   std::size_t chunkSize) {
+    const RenderWorld* result = nullptr;
+    NCommon::TaskHandle join;
+    const auto root = tasks.Submit([&](NCommon::TaskContext& task) {
+        join = NRenderer::NInternal::ScheduleRenderWorldExtraction(
+                world,
+                resources,
+                storage,
+                task,
+                [&](const RenderWorld& snapshot) { result = &snapshot; },
+                chunkSize);
+    });
+    tasks.Wait(root);
+    EXPECT_EQ(tasks.GetStatus(root), NCommon::ETaskStatus::COMPLETED);
+    if (!join.IsValid()) {
+        return nullptr;
+    }
+    tasks.Wait(join);
+    EXPECT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::COMPLETED);
+    return result;
+}
+
+TEST(RenderWorld, ParallelExtractionMatchesSerialAcrossUnevenChunksAndFrameSlots) {
+    ResourceManager resources;
+    const auto mesh = MakeReadyResource<MeshData>(resources, {"mesh", "parallel"}, 7);
+    const auto material = MakeReadyMaterial(resources, {"material", "parallel"}, 8);
+    NEcs::World world;
+    for (int index = 0; index < 1031; ++index) {
+        const auto entity = world.CreateEntity();
+        world.AddComponent<TransformComponent>(entity).Value.Translation.X = static_cast<float>(index);
+        if (index % 13 == 0) {
+            world.AddComponent<CameraComponent>(entity);
+        }
+        world.AddComponent<RenderableComponent>(
+                entity,
+                RenderableComponent{
+                        .Mesh = index % 11 == 0 ? NResources::ResourceHandle<MeshData>{} : mesh,
+                        .Material = material,
+                });
+    }
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 5}};
+    const auto serialFrame = BeginExtractionFrame(scheduler);
+    const auto& serial =
+            NRenderer::NInternal::ExtractRenderWorld(world, resources, scheduler.GetFrameStorage(serialFrame));
+    NCommon::TaskSystem tasks{4};
+    for (const std::size_t chunkSize: {17U, 31U, 256U, 2048U}) {
+        const auto parallelFrame = BeginExtractionFrame(scheduler);
+        const auto* parallel =
+                ExtractParallel(world, resources, scheduler.GetFrameStorage(parallelFrame), tasks, chunkSize);
+        ASSERT_NE(parallel, nullptr);
+        ASSERT_EQ(parallel->GetViews().size(), serial.GetViews().size());
+        ASSERT_EQ(parallel->GetObjects().size(), serial.GetObjects().size());
+        EXPECT_EQ(parallel->GetResourceUseRecords().size(), serial.GetResourceUseRecords().size());
+        for (std::size_t index = 0; index < serial.GetViews().size(); ++index) {
+            EXPECT_EQ(parallel->GetViews()[index].Id, serial.GetViews()[index].Id);
+            EXPECT_EQ(parallel->GetViews()[index].WorldTransform.Translation.X,
+                      serial.GetViews()[index].WorldTransform.Translation.X);
+        }
+        for (std::size_t index = 0; index < serial.GetObjects().size(); ++index) {
+            const auto& expected = serial.GetObjects()[index];
+            const auto& actual = parallel->GetObjects()[index];
+            EXPECT_EQ(actual.Id, expected.Id);
+            EXPECT_EQ(actual.WorldTransform.Translation.X, expected.WorldTransform.Translation.X);
+            EXPECT_EQ(actual.Mesh.GetVersion(), expected.Mesh.GetVersion());
+            EXPECT_EQ(actual.Material.GetVersion(), expected.Material.GetVersion());
+        }
+        EXPECT_NE(parallel->GetFrame(), serial.GetFrame());
+        scheduler.AbortFrame(parallelFrame);
+    }
+}
+
+TEST(RenderWorld, ParallelExtractionJoinsEmptyWorldWithOneWorker) {
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
+    ResourceManager resources;
+    NEcs::World world;
+    NCommon::TaskSystem tasks{1};
+    const auto frame = BeginExtractionFrame(scheduler);
+    const auto* snapshot = ExtractParallel(world, resources, scheduler.GetFrameStorage(frame), tasks, 256);
+    ASSERT_NE(snapshot, nullptr);
+    EXPECT_TRUE(snapshot->GetObjects().empty());
+    EXPECT_TRUE(snapshot->GetViews().empty());
+}
+
+TEST(RenderWorld, ParallelExtractionDoesNotPublishOnChunkFailure) {
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
+    ResourceManager resources;
+    ResourceManager otherResources;
+    const auto foreignMesh = MakeReadyResource<MeshData>(otherResources, {"mesh", "foreign"});
+    const auto material = MakeReadyMaterial(resources, {"material", "valid"});
+    NEcs::World world;
+    for (int index = 0; index < 1031; ++index) {
+        const auto entity = world.CreateEntity();
+        world.AddComponent<TransformComponent>(entity);
+        world.AddComponent<RenderableComponent>(entity, RenderableComponent{.Mesh = foreignMesh, .Material = material});
+    }
+    NCommon::TaskSystem tasks{4};
+    const auto frame = BeginExtractionFrame(scheduler);
+    bool published = false;
+    NCommon::TaskHandle join;
+    const auto root = tasks.Submit([&](NCommon::TaskContext& task) {
+        join = NRenderer::NInternal::ScheduleRenderWorldExtraction(
+                world,
+                resources,
+                scheduler.GetFrameStorage(frame),
+                task,
+                [&](const RenderWorld&) { published = true; },
+                17);
+    });
+    tasks.Wait(root);
+    ASSERT_TRUE(join.IsValid());
+    tasks.Wait(join);
+    EXPECT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::FAILED);
+    EXPECT_FALSE(published);
+    // The failed join has drained every chunk, so mutable World access is safe again.
+    world.DestroyEntity({.Index = 0, .Generation = 1});
+}
+
+class ParallelExtractionRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    ParallelExtractionRuntime() {
+        for (int index = 0; index < 1031; ++index) {
+            const auto entity = World.CreateEntity();
+            World.AddComponent<TransformComponent>(entity);
+            World.AddComponent<CameraComponent>(entity);
+        }
+    }
+
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ++Updates;
+    }
+
+    NCommon::TaskHandle ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,
+                                        NCommon::TaskContext& task) override {
+        return NRenderer::NInternal::ScheduleRenderWorldExtraction(
+                World,
+                Resources,
+                frame.GetStorage(),
+                task,
+                [this](const RenderWorld& snapshot) {
+                    Snapshot = &snapshot;
+                    Published.set_value();
+                    if (Release.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+                        throw std::runtime_error{"Extraction test release timed out"};
+                    }
+                    if (FailAfterJoin) {
+                        throw std::runtime_error{"Extraction publication failed"};
+                    }
+                },
+                17);
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+        EXPECT_EQ(Snapshot->GetViews().size(), 1031);
+        ++Draws;
+    }
+
+    NEcs::World World;
+    ResourceManager Resources;
+    std::promise<void> Published;
+    std::promise<void> ReleasePromise;
+    std::shared_future<void> Release = ReleasePromise.get_future().share();
+    std::atomic<int> Updates{0};
+    std::atomic<int> Draws{0};
+    const RenderWorld* Snapshot = nullptr;
+    bool FailAfterJoin = false;
+};
+
+TEST(RenderWorld, EngineKeepsWorldClosedUntilParallelExtractionJoinCompletes) {
+    auto runtime = std::make_unique<ParallelExtractionRuntime>();
+    auto& runtimeRef = *runtime;
+    auto published = runtimeRef.Published.get_future();
+    auto engine = NEngine::NRuntime::EngineFactory::Create(EngineConfig{.MaxActiveFrames = 2, .WorkerCount = 1},
+                                                           std::move(runtime));
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(published.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+    EXPECT_FALSE(engine->Update());
+    EXPECT_EQ(runtimeRef.Updates.load(), 1);
+    EXPECT_EQ(runtimeRef.Draws.load(), 0);
+    runtimeRef.ReleasePromise.set_value();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    bool admitted = false;
+    while (!admitted && std::chrono::steady_clock::now() < deadline) {
+        admitted = engine->Update();
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(admitted);
+    engine->Stop();
+    EXPECT_EQ(runtimeRef.Updates.load(), 2);
+    EXPECT_EQ(runtimeRef.Draws.load(), 1);
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(RenderWorld, EngineDrainsFailedExtractionWithoutDrawingOrReopeningWorld) {
+    auto runtime = std::make_unique<ParallelExtractionRuntime>();
+    auto& runtimeRef = *runtime;
+    runtimeRef.FailAfterJoin = true;
+    auto published = runtimeRef.Published.get_future();
+    auto engine = NEngine::NRuntime::EngineFactory::Create(EngineConfig{.MaxActiveFrames = 2, .WorkerCount = 4},
+                                                           std::move(runtime));
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(published.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+    EXPECT_FALSE(engine->Update());
+    runtimeRef.ReleasePromise.set_value();
+    engine->Stop();
+    EXPECT_EQ(runtimeRef.Updates.load(), 1);
+    EXPECT_EQ(runtimeRef.Draws.load(), 0);
+    ASSERT_TRUE(engine->GetLastError().has_value());
+    EXPECT_EQ(engine->GetLastError()->Message, "Extraction publication failed");
+}
+
+TEST(RenderWorld, FailedSchedulingRootNeverStartsChunksOrPublishes) {
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
+    ResourceManager resources;
+    NEcs::World world;
+    const auto entity = world.CreateEntity();
+    world.AddComponent<TransformComponent>(entity);
+    world.AddComponent<CameraComponent>(entity);
+    NCommon::TaskSystem tasks{4};
+    const auto frame = BeginExtractionFrame(scheduler);
+    bool published = false;
+    NCommon::TaskHandle join;
+    const auto root = tasks.Submit([&](NCommon::TaskContext& task) {
+        join = NRenderer::NInternal::ScheduleRenderWorldExtraction(world,
+                                                                   resources,
+                                                                   scheduler.GetFrameStorage(frame),
+                                                                   task,
+                                                                   [&](const RenderWorld&) { published = true; });
+        throw std::runtime_error{"Scheduling failed after graph submission"};
+    });
+    tasks.Wait(root);
+    ASSERT_TRUE(join.IsValid());
+    tasks.Wait(join);
+    EXPECT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_FALSE(published);
+    world.DestroyEntity(entity);
+}
+
+TEST(RenderWorld, ParallelExtractionStressPreservesPreviousSlotSnapshot) {
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 2}};
+    ResourceManager resources;
+    NEcs::World world;
+    for (int index = 0; index < 1003; ++index) {
+        const auto entity = world.CreateEntity();
+        world.AddComponent<TransformComponent>(entity);
+        world.AddComponent<CameraComponent>(entity);
+    }
+    NCommon::TaskSystem tasks{4};
+    const RenderWorld* previous = nullptr;
+    FrameHandle previousFrame;
+    for (int iteration = 0; iteration < 40; ++iteration) {
+        world.Query<TransformComponent>([&](NEcs::Entity, TransformComponent& transform) {
+            transform.Value.Translation.X = static_cast<float>(iteration);
+        });
+        const auto frame = BeginExtractionFrame(scheduler);
+        const auto* snapshot = ExtractParallel(world, resources, scheduler.GetFrameStorage(frame), tasks, 64);
+        ASSERT_NE(snapshot, nullptr);
+        ASSERT_EQ(snapshot->GetViews().size(), 1003);
+        for (std::size_t index = 0; index < snapshot->GetViews().size(); ++index) {
+            EXPECT_EQ(snapshot->GetViews()[index].Id.Index, index);
+            EXPECT_EQ(snapshot->GetViews()[index].WorldTransform.Translation.X, static_cast<float>(iteration));
+        }
+        if (previous != nullptr) {
+            EXPECT_EQ(previous->GetViews()[0].WorldTransform.Translation.X, static_cast<float>(iteration - 1));
+            scheduler.AbortFrame(previousFrame);
+        }
+        previous = snapshot;
+        previousFrame = frame;
+    }
 }
 
 } // namespace

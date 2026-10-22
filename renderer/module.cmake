@@ -20,6 +20,7 @@ PUBLIC_DEPENDS(
 PRIVATE_DEPENDS(
     Ecs
     Engine
+    Thread
 )
 
 RECURSE(

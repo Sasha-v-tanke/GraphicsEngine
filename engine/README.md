@@ -58,8 +58,15 @@ subsystems и переходит в `STOPPED`.
 ## Render extraction gate
 
 The application Draw checkpoint schedules frame finalization, but the next Engine Update is admitted only after
-`IFrameRuntime::Extract()` returns for the current frame. This keeps mutable simulation and extraction serialized while
-still allowing Update N+1 to overlap the remaining Draw work for N.
+`IFrameRuntime::Extract()` returns for the current frame, or the join returned by `ScheduleExtract()` completes.
+Scheduled extraction gates its work on the supplied scheduling task, drains all World readers before reporting failure,
+and expresses ordering with TaskSystem dependencies. Engine schedules a draw continuation after the join; it never waits
+inside a worker. This keeps mutable simulation and extraction serialized while still allowing Update N+1 to overlap the
+remaining Draw work for N.
+
+`CanAcceptUpdate()` services terminal frame records before checking admission. Async extraction failure therefore becomes
+observable to the regular Application frame loop even when admission remains closed; a manual Update or Stop is not
+required to latch the error and enter STOPPING.
 
 ## FrameScheduler
 

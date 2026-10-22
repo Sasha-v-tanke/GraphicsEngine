@@ -24,6 +24,26 @@ Renderer code receives read-only spans and does not access mutable `World` for t
 After extraction completes, Update N+1 may overlap render work for N. Logical unload or reload after extraction prevents
 new acquisitions but does not replace the versions already retained by `RenderWorld N`.
 
+### Parallel extraction
+
+An internal frame runtime can override `IFrameRuntime::ScheduleExtract()` and return the join handle from
+`NInternal::ScheduleRenderWorldExtraction()`. The default runtime hook still calls the serial `Extract()` method.
+The parallel helper enumerates render-facing component references in entity order, partitions them into chunks of
+256 entries by default, and schedules chunks through the current shared `TaskContext`. Chunk size can be selected for
+the workload; there is no task per entity. The serial helper remains available for small workloads and reference tests.
+
+Every chunk depends on the scheduling task, so a partially submitted graph cannot begin reading World if scheduling
+fails. Workers own separate temporary vectors. They never allocate from the frame arena concurrently. A join waits for
+all chunks, checks errors in chunk order, then moves views, objects and retained resource records into the frame slot in
+chunk/entity order. Worker completion order does not affect the published snapshot. A failed chunk prevents publication;
+all World readers have finished before the join reports failure. The source World and Resources must outlive the join,
+and World must remain read-only through it. Deterministic replay assumes identical component data and resource readiness
+and versions during extraction.
+
+Engine schedules the draw continuation after the extraction join, without blocking a TaskSystem worker. Update N+1
+remains closed until that continuation starts. A failed join cancels draw and puts Engine into its failed/stopping path;
+the frame is released only after extraction readers have drained. This also works with one worker.
+
 ## Frame ownership
 
 `RenderWorld`, its containers and its resource leases belong to the `FrameExecutionSlot` generation identified by

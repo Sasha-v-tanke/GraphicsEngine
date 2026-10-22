@@ -1,7 +1,9 @@
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -205,6 +207,40 @@ private:
     std::vector<std::string>& m_events;
 };
 
+class FailingAsyncExtractionRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ++Updates;
+    }
+
+    NCommon::TaskHandle ScheduleExtract(const NEngine::NRuntime::FrameContext&, NCommon::TaskContext& task) override {
+        const NCommon::TaskHandle dependencies[] = {task.GetTask()};
+        return task.Spawn([](NCommon::TaskContext&) { throw std::runtime_error{"Async extraction failed"}; },
+                          dependencies);
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+        ++Draws;
+    }
+
+    std::atomic<int> Updates{0};
+    std::atomic<int> Draws{0};
+};
+
+class FailingAsyncExtractionFactory final: public NApplication::NRuntime::IEngineFactory {
+public:
+    std::unique_ptr<NEngine::Engine> Create(NEngine::EngineConfig config) override {
+        auto runtime = std::make_unique<FailingAsyncExtractionRuntime>();
+        Runtime = runtime.get();
+        auto engine = NEngine::NRuntime::EngineFactory::Create(config, std::move(runtime));
+        Engine = engine.get();
+        return engine;
+    }
+
+    NEngine::Engine* Engine = nullptr;
+    FailingAsyncExtractionRuntime* Runtime = nullptr;
+};
+
 NApplication::ApplicationConfig MakeConfig() {
     return {
             .Window = NWindow::WindowConfig{NWindow::EWindowType::GLFW},
@@ -404,6 +440,33 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
                       "user.update",
                       "user.draw",
               }));
+}
+
+TEST_F(ApplicationTest, ObservesAsyncExtractionFailureWhileUpdateAdmissionIsClosed) {
+    auto factory = std::make_unique<FailingAsyncExtractionFactory>();
+    auto& factoryRef = *factory;
+    NApplication::NRuntime::FrameLoop frameLoop{MakeConfig(), std::move(factory)};
+    RecordingFrameLoopCallbacks callbacks{m_state.Events};
+    frameLoop.Start();
+
+    bool failed = false;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!failed && std::chrono::steady_clock::now() < deadline) {
+        try {
+            frameLoop.Step(callbacks);
+        } catch (const NCommon::Exception&) {
+            failed = true;
+        }
+        std::this_thread::yield();
+    }
+
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(factoryRef.Engine->GetState(), NEngine::EEngineState::STOPPING);
+    ASSERT_TRUE(factoryRef.Engine->GetLastError().has_value());
+    EXPECT_EQ(factoryRef.Engine->GetLastError()->Message, "Async extraction failed");
+    EXPECT_EQ(factoryRef.Runtime->Updates.load(), 1);
+    EXPECT_EQ(factoryRef.Runtime->Draws.load(), 0);
+    EXPECT_EQ(m_state.Events, (std::vector<std::string>{"user.update", "user.draw"}));
 }
 
 TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
