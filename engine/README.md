@@ -64,6 +64,10 @@ and expresses ordering with TaskSystem dependencies. Engine schedules a draw con
 inside a worker. This keeps mutable simulation and extraction serialized while still allowing Update N+1 to overlap the
 remaining Draw work for N.
 
+`CanAcceptUpdate()` services terminal frame records before checking admission. Async extraction failure therefore becomes
+observable to the regular Application frame loop even when admission remains closed; a manual Update or Stop is not
+required to latch the error and enter STOPPING.
+
 ## FrameScheduler
 
 `FrameScheduler` управляет bounded lifetime одновременно активных кадров Engine.

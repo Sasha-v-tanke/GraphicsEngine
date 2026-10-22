@@ -270,8 +270,10 @@ public:
         return true;
     }
 
-    [[nodiscard]] bool CanAcceptUpdate() const {
+    [[nodiscard]] bool CanAcceptUpdate() {
         std::lock_guard lock{m_mutex};
+        RequireRunningLocked("accept update");
+        ReapTerminalFrameRecordsLocked(*m_taskSystem);
         RequireRunningLocked("accept update");
 
         return m_updateAdmissionOpen;
