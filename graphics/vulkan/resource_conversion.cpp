@@ -16,7 +16,53 @@ constexpr NGraphics::ImageUsageFlags KnownImageUsageMask =
 constexpr NGraphics::ImageAspectFlags KnownImageAspectMask =
         NGraphics::ImageAspect(NGraphics::EImageAspect::Color) | NGraphics::ImageAspect(NGraphics::EImageAspect::Depth);
 
+constexpr NGraphics::BufferUsageFlags KnownBufferUsageMask =
+        NGraphics::BufferUsage(NGraphics::EBufferUsage::TransferSource) |
+        NGraphics::BufferUsage(NGraphics::EBufferUsage::TransferDestination) |
+        NGraphics::BufferUsage(NGraphics::EBufferUsage::Vertex) |
+        NGraphics::BufferUsage(NGraphics::EBufferUsage::Index) |
+        NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform) |
+        NGraphics::BufferUsage(NGraphics::EBufferUsage::Storage);
+
 } // namespace
+
+VkBufferUsageFlags ToVulkanBufferUsage(NGraphics::BufferUsageFlags usage) {
+    if ((usage & ~KnownBufferUsageMask) != 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Unsupported Vulkan buffer usage flags");
+    }
+
+    VkBufferUsageFlags result = 0;
+
+    if ((usage & NGraphics::BufferUsage(NGraphics::EBufferUsage::TransferSource)) != 0) {
+        result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    }
+
+    if ((usage & NGraphics::BufferUsage(NGraphics::EBufferUsage::TransferDestination)) != 0) {
+        result |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    }
+
+    if ((usage & NGraphics::BufferUsage(NGraphics::EBufferUsage::Vertex)) != 0) {
+        result |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    }
+
+    if ((usage & NGraphics::BufferUsage(NGraphics::EBufferUsage::Index)) != 0) {
+        result |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    }
+
+    if ((usage & NGraphics::BufferUsage(NGraphics::EBufferUsage::Uniform)) != 0) {
+        result |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    }
+
+    if ((usage & NGraphics::BufferUsage(NGraphics::EBufferUsage::Storage)) != 0) {
+        result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    }
+
+    if (result == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan buffer usage must not be empty");
+    }
+
+    return result;
+}
 
 VkFormat ToVulkanFormat(NGraphics::EImageFormat format) {
     switch (format) {

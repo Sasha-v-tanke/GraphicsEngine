@@ -87,6 +87,29 @@ host-synchronization boundary.
 device snapshot. The current public capability surface maps Vulkan presentation
 support, timeline semaphore support and the backend frame-in-flight policy.
 
+## Memory And Uploads
+
+Vulkan memory allocation is internal to the backend and uses VMA. Buffer and
+image allocation wrappers own both the Vulkan object and its VMA allocation, so
+partially constructed resources do not escape and destruction is paired.
+
+`VulkanUploadManager` stages buffer and 2D color-image payloads in host-visible
+VMA allocations. Upload command buffers use the graphics queue and the existing
+timeline submission manager. Staging buffers and their command buffers remain
+owned until the exact timeline completion is observed; `ReleaseCompleted()`
+returns only completed uploads. Steady-state upload does not call
+`vkDeviceWaitIdle`; shutdown waits only when pending upload work remains.
+
+Uploads use `VulkanResourceStateTracker` for transfer state transitions. The
+caller shares that tracker with subsequent consumers, so the tracker records
+the post-upload buffer state and image shader-read state instead of leaving
+hidden layouts or broad synchronization barriers in the upload path. The
+tracker changes are committed only after successful queue submission, and VMA
+allocation destruction removes the corresponding concrete resource state.
+The
+current manager is a serial baseline. Persistent staging arenas and batched
+submissions belong to FEATURE-0069.
+
 ## Swapchain
 
 `VulkanSwapchain` owns one `VkSwapchainKHR` for one `VkSurfaceKHR` and the
@@ -110,7 +133,7 @@ presentation chain when the framebuffer becomes non-zero again.
 
 Acquire and present wrappers translate WSI results into explicit backend states:
 acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
-They do not record rendering commands or perform layout transitions; the future
+They do not record rendering commands or perform layout transitions; the
 command/submission path owns those responsibilities.
 
 ## Descriptor Manager
@@ -156,9 +179,84 @@ Each context owns frame-local Vulkan command state for the graphics queue. A
 context can be acquired for a new frame only when its previous completion value
 has finished. Until then `TryAcquire()` returns no context, so callers apply
 backpressure instead of resetting command pools that may still be in flight.
+An acquired context can be released before submit when WSI acquire cannot
+produce an image.
 
 Shutdown is conservative: if any context is still in flight, the ring waits for
 the logical device to become idle before destroying command pools.
+
+## Submission Manager
+
+`VulkanSubmissionManager` owns backend-internal timeline completion for Vulkan
+queue work. Graphics submissions are serialized through `VulkanDevice` queue
+locks and receive a monotonically increasing timeline value from the graphics
+queue context.
+
+The manager appends its timeline semaphore signal to every graphics submit while
+preserving caller-provided binary wait/signal semaphores. WSI acquire and present
+therefore remain on binary semaphores, and frame/resource lifetime code observes
+completion by querying the returned timeline value instead of using frame numbers.
+
+## Clear, Submit and Present
+
+`VulkanClearPresentPath` is the MVP-2 command path. For each logical frame it:
+
+- polls acquisition of a swapchain image with a frame-local binary semaphore;
+- discards the previous image contents from undefined layout to transfer-write, clears it, then
+  transitions it back to present;
+- submits that command buffer with the acquire semaphore and signals a
+  per-image present-ready binary semaphore plus the backend timeline;
+- presents without waiting for a fence.
+
+Frame slots are selected from the logical frame index, independently of WSI
+image indices and present timing. `PollCompletedFrames()` non-blockingly emits
+completed frame events in submission order; it never waits on the worker path.
+The acquire wait covers transfer commands. Present semaphores are reused only
+after acquiring their image again, independently of frame-slot timeline completion.
+A recording, submission or presentation failure makes the path terminal; destroy
+it before retrying. Shutdown drains device work before destroying synchronization resources.
+`Render()` returns an optional completion token independently of presentation status.
+Advance the logical frame index whenever that token is present, including when
+present reports out-of-date. Without a token the frame was not submitted and may
+be retried. Drain submitted completion events before destroying the path.
+
+## Resource State Tracking
+
+Runtime frame-ring integration uses the exact `VulkanQueueCompletion` returned
+by submit. An external backend event service fulfills the corresponding
+future registered through `FrameContext::RegisterGpuCompletion()` only after the
+timeline reaches that value. Registration happens before native submission, so
+an exception after submit cannot lose the completion or release the engine arena.
+Both VulkanFrameContext and FrameExecutionSlot use the same configured slot count
+and frame-slot identity. The engine retains its slot until CPU draw return and
+the GPU signal; the Vulkan ring independently verifies that same timeline value
+before resetting command pools. Presentation timing does not release either slot.
+The completion service remains active while Engine drains in-flight frames on stop.
+
+`VulkanResourceStateTracker` owns backend-internal image state for Synchronization2.
+Callers import external images, including swapchain images, with an explicit
+initial state. Semantic usages are converted to Vulkan stage, access, layout and
+queue-family state inside the backend.
+
+Image transitions produce `VkImageMemoryBarrier2` only when the tracked state
+actually changes. The tracker also records queue-family ownership state, so
+future multi-queue transfer/release/acquire paths can use the same model while
+the MVP-2 execution path remains single graphics queue.
+
+## Graphics pipelines
+
+`VulkanGraphicsPipeline` consumes the immutable Graphics descriptor and cooked shader snapshots.
+It creates shader modules, an empty pipeline layout and a dynamic-rendering pipeline transactionally;
+temporary shader modules are released after creation. Viewport and scissor are dynamic.
+The physical-device selection must be the selection used to create the supplied device.
+The device must outlive the pipeline, and the caller must complete all GPU uses before destruction.
+Descriptor layouts and push constants are not part of this initial pipeline descriptor.
+Non-solid rasterization and independent blending are rejected because VulkanDevice does not enable
+those optional features. Vertex-input and attachment limits are checked before driver creation.
+Pipeline caching and pass recording are delivered by their subsequent cards.
+
+The heavy device smoke creates color and depth-only pipelines from embedded cooked SPIR-V fixtures,
+repeats creation/destruction, checks unsupported rasterization, and fails on validation errors.
 
 ## Dispatch
 

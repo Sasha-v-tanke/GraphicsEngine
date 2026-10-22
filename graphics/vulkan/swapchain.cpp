@@ -19,7 +19,7 @@ namespace {
 constexpr VkFormat PreferredFormat = VK_FORMAT_B8G8R8A8_SRGB;
 constexpr VkColorSpaceKHR PreferredColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 constexpr VkPresentModeKHR PreferredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-constexpr VkImageUsageFlags RequiredImageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+constexpr VkImageUsageFlags RequiredImageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
 std::string_view GetVkResultName(VkResult result) {
     switch (result) {
@@ -154,7 +154,7 @@ void RequireSwapchainSupport(const VulkanSwapchainSupport& support) {
 
     if (!SupportsUsage(support.Capabilities)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED,
-                              "Vulkan swapchain surface does not support color attachment usage");
+                              "Vulkan swapchain surface does not support required clear image usage");
     }
 }
 

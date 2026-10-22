@@ -1,0 +1,11 @@
+#include <vulkan.h>
+
+#define VMA_KHR_EXTENDED_FLAGS 0
+#define VMA_EXTERNAL_MEMORY_WIN32 0
+#define VMA_IMPLEMENTATION
+#define VMA_NULLABLE
+#define VMA_NOT_NULL
+#define VMA_NOT_NULL_NON_DISPATCHABLE
+#define VMA_NULLABLE_NON_DISPATCHABLE
+
+#include "vk_mem_alloc.h"
