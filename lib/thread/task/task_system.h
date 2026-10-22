@@ -15,8 +15,8 @@
 #include <utility>
 #include <vector>
 
-#include <lib/common/error/error.h>
-#include <lib/common/wrapper/non_copyable.h>
+#include <GraphicsEngine/lib/common/error/error.h>
+#include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
 
 namespace NCommon {
 
@@ -130,6 +130,7 @@ public:
     void Cancel(const TaskHandle& task);
     void Wait(const TaskHandle& task);
     void WaitIdle();
+    [[nodiscard]] static bool IsCurrentThreadWorker() noexcept;
 
 private:
     struct OwnerToken;

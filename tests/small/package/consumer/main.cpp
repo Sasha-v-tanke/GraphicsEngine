@@ -12,6 +12,7 @@
 #include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
+#include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/renderer/renderer.h>
 #include <GraphicsEngine/resources/image_data.h>
@@ -38,6 +39,9 @@ int main() {
     const std::error_code error = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
     NEcs::World world;
     const NEcs::Entity entity = world.CreateEntity();
+    NCommon::TaskSystem ecsTasks{2};
+    world.RegisterSystem({}, [](NEcs::World&) {}, NEcs::SystemSchedule{.Id = 1});
+    world.RunSystems(ecsTasks);
     const bool supportsRequiredGraphics = NGraphics::SatisfiesRequirements(
             {
                     .Presentation = true,

@@ -12,6 +12,7 @@ SOURCES(
 
 PUBLIC_DEPENDS(
     Common
+    Thread
 )
 
 RECURSE(
