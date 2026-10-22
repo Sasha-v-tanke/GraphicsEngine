@@ -301,7 +301,7 @@ private:
     struct FrameRuntimeRecord {
         NController::FrameHandle Frame;
         NCommon::TaskHandle UpdateTask;
-        NCommon::TaskHandle ExtractionTask;
+        NCommon::TaskHandle AsyncTask;
         NCommon::TaskHandle DrawTask;
         bool HasUpdateTask = false;
         bool HasDrawTask = false;
@@ -388,9 +388,9 @@ private:
             if (extraction.IsValid()) {
                 const NCommon::TaskHandle dependencies[] = {extraction};
                 const auto finish = task.Spawn(
-                        [this, frame, frameScheduler, frameRuntime](NCommon::TaskContext&) {
+                        [this, frame, frameScheduler, frameRuntime](NCommon::TaskContext& drawTask) {
                             try {
-                                FinishDraw(frame, *frameScheduler, *frameRuntime);
+                                FinishDraw(frame, *frameScheduler, *frameRuntime, drawTask);
                             } catch (...) {
                                 LatchRuntimeFailure(frame, std::current_exception());
                                 throw;
@@ -398,12 +398,12 @@ private:
                         },
                         dependencies);
                 std::lock_guard lock{m_mutex};
-                GetFrameRecordLocked(frame).ExtractionTask = extraction;
+                GetFrameRecordLocked(frame).AsyncTask = extraction;
                 GetFrameRecordLocked(frame).DrawTask = finish;
                 return;
             }
 
-            FinishDraw(frame, *frameScheduler, *frameRuntime);
+            FinishDraw(frame, *frameScheduler, *frameRuntime, task);
         } catch (...) {
             LatchRuntimeFailure(frame, std::current_exception());
             throw;
@@ -412,7 +412,8 @@ private:
 
     void FinishDraw(NController::FrameHandle frame,
                     NController::FrameScheduler& frameScheduler,
-                    NRuntime::IFrameRuntime& frameRuntime) {
+                    NRuntime::IFrameRuntime& frameRuntime,
+                    NCommon::TaskContext& task) {
         const NRuntime::FrameContext context{frame, frameScheduler.GetFrameStorage(frame)};
 
         {
@@ -420,7 +421,28 @@ private:
             m_updateAdmissionOpen = true;
         }
 
-        frameRuntime.Draw(context);
+        const auto preparation = frameRuntime.ScheduleDraw(context, task);
+        if (preparation.IsValid()) {
+            const NCommon::TaskHandle dependencies[] = {preparation};
+            const auto finish = task.Spawn(
+                    [this, frame, scheduler = &frameScheduler](NCommon::TaskContext&) {
+                        try {
+                            CompleteDraw(frame, *scheduler);
+                        } catch (...) {
+                            LatchRuntimeFailure(frame, std::current_exception());
+                            throw;
+                        }
+                    },
+                    dependencies);
+            std::lock_guard lock{m_mutex};
+            GetFrameRecordLocked(frame).AsyncTask = preparation;
+            GetFrameRecordLocked(frame).DrawTask = finish;
+            return;
+        }
+        CompleteDraw(frame, frameScheduler);
+    }
+
+    static void CompleteDraw(NController::FrameHandle frame, NController::FrameScheduler& frameScheduler) {
         if (!frameScheduler.GetGpuCompletion(frame).valid()) {
             frameScheduler.CompleteFrame(frame);
         }
@@ -486,12 +508,11 @@ private:
             bool failed = status != NCommon::ETaskStatus::COMPLETED;
             if (failed) {
                 if (!m_lastError.has_value()) {
-                    const auto extractionError =
-                            record.ExtractionTask.IsValid() ? taskSystem.GetError(record.ExtractionTask) : std::nullopt;
-                    SetLastErrorLocked(
-                            extractionError.value_or(taskSystem.GetError(record.DrawTask)
-                                                             .value_or(MakeRuntimeError(std::make_exception_ptr(
-                                                                     std::runtime_error{"Frame extraction failed"})))));
+                    const auto asyncError =
+                            record.AsyncTask.IsValid() ? taskSystem.GetError(record.AsyncTask) : std::nullopt;
+                    SetLastErrorLocked(asyncError.value_or(taskSystem.GetError(record.DrawTask)
+                                                                   .value_or(MakeRuntimeError(std::make_exception_ptr(
+                                                                           std::runtime_error{"Frame task failed"})))));
                 }
                 m_state = EEngineState::STOPPING;
             }

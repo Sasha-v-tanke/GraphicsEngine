@@ -897,4 +897,270 @@ TEST(RenderWorld, ParallelExtractionStressPreservesPreviousSlotSnapshot) {
     }
 }
 
+const NRenderer::RenderPlan* PrepareParallel(const RenderWorld& world,
+                                             std::pmr::memory_resource& memory,
+                                             NCommon::TaskSystem& tasks,
+                                             std::size_t chunkSize) {
+    const NRenderer::RenderPlan* result = nullptr;
+    NCommon::TaskHandle join;
+    const auto root = tasks.Submit([&](NCommon::TaskContext& task) {
+        join = Renderer::SchedulePrepare(
+                world,
+                memory,
+                task,
+                [&](const NRenderer::RenderPlan& plan) { result = &plan; },
+                chunkSize);
+    });
+    tasks.Wait(root);
+    EXPECT_EQ(tasks.GetStatus(root), NCommon::ETaskStatus::COMPLETED);
+    if (!join.IsValid()) {
+        return nullptr;
+    }
+    tasks.Wait(join);
+    EXPECT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::COMPLETED);
+    return result;
+}
+
+TEST(Renderer, ParallelPreparationMatchesSerialAndBatchesCompatibleInstances) {
+    ResourceManager resources;
+    const auto firstMesh = MakeReadyResource<MeshData>(resources, {"mesh", "first"}, 1);
+    const auto secondMesh = MakeReadyResource<MeshData>(resources, {"mesh", "second"}, 2);
+    const auto firstMaterial = MakeReadyMaterial(resources, {"material", "first"}, 1);
+    const auto secondMaterial = MakeReadyMaterial(resources, {"material", "second"}, 2);
+    NEcs::World world;
+    for (int index = 0; index < 3; ++index) {
+        const auto entity = world.CreateEntity();
+        world.AddComponent<TransformComponent>(entity);
+        world.AddComponent<CameraComponent>(entity);
+    }
+    for (int index = 0; index < 2053; ++index) {
+        const auto entity = world.CreateEntity();
+        world.AddComponent<TransformComponent>(entity).Value.Translation.X = static_cast<float>(index);
+        world.AddComponent<RenderableComponent>(
+                entity,
+                RenderableComponent{.Mesh = index % 2 == 0 ? firstMesh : secondMesh,
+                                    .Material = index % 3 == 0 ? firstMaterial : secondMaterial});
+    }
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
+    const auto frame = BeginExtractionFrame(scheduler);
+    const auto& snapshot = NRenderer::NInternal::ExtractRenderWorld(world, resources, scheduler.GetFrameStorage(frame));
+    std::pmr::monotonic_buffer_resource serialMemory;
+    const auto& serial = Renderer::Prepare(snapshot, serialMemory);
+    ASSERT_EQ(serial.GetDrawCommands().size(), 6159);
+    ASSERT_EQ(serial.GetBatches().size(), 12);
+    std::size_t covered = 0;
+    for (const auto& batch: serial.GetBatches()) {
+        EXPECT_EQ(batch.FirstCommand, covered);
+        ASSERT_GT(batch.CommandCount, 1);
+        const auto& first = serial.GetDrawCommands()[batch.FirstCommand];
+        for (std::size_t index = 0; index < batch.CommandCount; ++index) {
+            const auto& command = serial.GetDrawCommands()[batch.FirstCommand + index];
+            EXPECT_EQ(command.ViewId, first.ViewId);
+            EXPECT_EQ(command.Mesh, first.Mesh);
+            EXPECT_EQ(command.Material, first.Material);
+            EXPECT_EQ(command.MeshVersion, first.MeshVersion);
+            EXPECT_EQ(command.MaterialVersion, first.MaterialVersion);
+        }
+        covered += batch.CommandCount;
+    }
+    EXPECT_EQ(covered, serial.GetDrawCommands().size());
+    for (const auto workers: {1U, 4U}) {
+        NCommon::TaskSystem tasks{workers};
+        for (const auto chunkSize: {64U, 256U, 1024U, 8192U}) {
+            std::pmr::monotonic_buffer_resource parallelMemory;
+            const auto* parallel = PrepareParallel(snapshot, parallelMemory, tasks, chunkSize);
+            ASSERT_NE(parallel, nullptr);
+            ASSERT_EQ(parallel->GetDrawCommands().size(), serial.GetDrawCommands().size());
+            ASSERT_EQ(parallel->GetBatches().size(), serial.GetBatches().size());
+            EXPECT_EQ(parallel->GetFrame(), serial.GetFrame());
+            for (std::size_t index = 0; index < serial.GetDrawCommands().size(); ++index) {
+                const auto& actual = parallel->GetDrawCommands()[index];
+                const auto& expected = serial.GetDrawCommands()[index];
+                EXPECT_EQ(actual.ViewId, expected.ViewId);
+                EXPECT_EQ(actual.ObjectId, expected.ObjectId);
+                EXPECT_EQ(actual.WorldTransform.Translation.X, expected.WorldTransform.Translation.X);
+                EXPECT_EQ(actual.Mesh, expected.Mesh);
+                EXPECT_EQ(actual.Material, expected.Material);
+                EXPECT_EQ(actual.MeshVersion, expected.MeshVersion);
+                EXPECT_EQ(actual.MaterialVersion, expected.MaterialVersion);
+            }
+            for (std::size_t index = 0; index < serial.GetBatches().size(); ++index) {
+                EXPECT_EQ(parallel->GetBatches()[index].FirstCommand, serial.GetBatches()[index].FirstCommand);
+                EXPECT_EQ(parallel->GetBatches()[index].CommandCount, serial.GetBatches()[index].CommandCount);
+            }
+        }
+    }
+}
+
+TEST(Renderer, EmptyParallelPreparationPublishesNoBatches) {
+    ResourceManager resources;
+    NEcs::World world;
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
+    const auto frame = BeginExtractionFrame(scheduler);
+    const auto& snapshot = NRenderer::NInternal::ExtractRenderWorld(world, resources, scheduler.GetFrameStorage(frame));
+    NCommon::TaskSystem tasks{1};
+    std::pmr::monotonic_buffer_resource memory;
+    const auto* plan = PrepareParallel(snapshot, memory, tasks, 256);
+    ASSERT_NE(plan, nullptr);
+    EXPECT_TRUE(plan->GetDrawCommands().empty());
+    EXPECT_TRUE(plan->GetBatches().empty());
+}
+
+class ParallelPreparationRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    explicit ParallelPreparationRuntime(int objectCount = 2053) {
+        const auto mesh = MakeReadyResource<MeshData>(Resources, {"mesh", "preparation"});
+        const auto material = MakeReadyMaterial(Resources, {"material", "preparation"});
+        const auto camera = World.CreateEntity();
+        World.AddComponent<TransformComponent>(camera);
+        World.AddComponent<CameraComponent>(camera);
+        for (int index = 0; index < objectCount; ++index) {
+            const auto entity = World.CreateEntity();
+            World.AddComponent<TransformComponent>(entity);
+            World.AddComponent<RenderableComponent>(entity, RenderableComponent{.Mesh = mesh, .Material = material});
+        }
+    }
+
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ++Updates;
+    }
+
+    void Extract(const NEngine::NRuntime::FrameContext& frame) override {
+        Snapshot = &NRenderer::NInternal::ExtractRenderWorld(World, Resources, frame.GetStorage());
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+        ADD_FAILURE() << "Scheduled draw must bypass serial Draw";
+    }
+
+    NCommon::TaskHandle ScheduleDraw(const NEngine::NRuntime::FrameContext& frame,
+                                     NCommon::TaskContext& task) override {
+        return Renderer::SchedulePrepare(
+                *Snapshot,
+                frame.GetMemoryResource(),
+                task,
+                [this](const NRenderer::RenderPlan& plan) {
+                    EXPECT_EQ(plan.GetDrawCommands().size(), 2053);
+                    EXPECT_EQ(plan.GetBatches().size(), 1);
+                    Prepared.set_value();
+                    if (Release.wait_for(std::chrono::seconds{2}) != std::future_status::ready) {
+                        throw std::runtime_error{"Preparation release timed out"};
+                    }
+                    if (FailPreparation) {
+                        throw std::runtime_error{"Preparation failed"};
+                    }
+                    ++Draws;
+                },
+                64);
+    }
+
+    NEcs::World World;
+    ResourceManager Resources;
+    const RenderWorld* Snapshot = nullptr;
+    std::promise<void> Prepared;
+    std::promise<void> ReleasePromise;
+    std::shared_future<void> Release = ReleasePromise.get_future().share();
+    std::atomic<int> Updates{0};
+    std::atomic<int> Draws{0};
+    bool FailPreparation = false;
+};
+
+TEST(Renderer, EngineRetainsFrameUntilScheduledPreparationCompletes) {
+    auto runtime = std::make_unique<ParallelPreparationRuntime>();
+    auto& runtimeRef = *runtime;
+    auto prepared = runtimeRef.Prepared.get_future();
+    auto engine = NEngine::NRuntime::EngineFactory::Create(EngineConfig{.MaxActiveFrames = 1, .WorkerCount = 1},
+                                                           std::move(runtime));
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(prepared.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+    EXPECT_TRUE(engine->CanAcceptUpdate());
+    EXPECT_FALSE(engine->Update());
+    EXPECT_EQ(runtimeRef.Draws.load(), 0);
+    runtimeRef.ReleasePromise.set_value();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    bool admitted = false;
+    while (!admitted && std::chrono::steady_clock::now() < deadline) {
+        admitted = engine->Update();
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(admitted);
+    engine->Stop();
+    EXPECT_EQ(runtimeRef.Updates.load(), 2);
+    EXPECT_EQ(runtimeRef.Draws.load(), 1);
+    EXPECT_FALSE(engine->GetLastError().has_value());
+}
+
+TEST(Renderer, EngineObservesPreparationFailureThroughAdmissionPolling) {
+    auto runtime = std::make_unique<ParallelPreparationRuntime>();
+    auto& runtimeRef = *runtime;
+    runtimeRef.FailPreparation = true;
+    runtimeRef.ReleasePromise.set_value();
+    auto engine = NEngine::NRuntime::EngineFactory::Create(EngineConfig{.MaxActiveFrames = 1, .WorkerCount = 4},
+                                                           std::move(runtime));
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (engine->GetState() == NEngine::EEngineState::RUNNING && std::chrono::steady_clock::now() < deadline) {
+        try {
+            static_cast<void>(engine->CanAcceptUpdate());
+        } catch (const NCommon::Exception&) {
+        }
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPING);
+    ASSERT_TRUE(engine->GetLastError().has_value());
+    EXPECT_EQ(engine->GetLastError()->Message, "Preparation failed");
+    EXPECT_EQ(runtimeRef.Draws.load(), 0);
+}
+
+TEST(Renderer, LargeScenePreparationStressKeepsStableBatches) {
+    ParallelPreparationRuntime scene{12013};
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
+    const auto frame = BeginExtractionFrame(scheduler);
+    const auto& snapshot =
+            NRenderer::NInternal::ExtractRenderWorld(scene.World, scene.Resources, scheduler.GetFrameStorage(frame));
+    NCommon::TaskSystem tasks{4};
+    for (int iteration = 0; iteration < 16; ++iteration) {
+        std::pmr::monotonic_buffer_resource memory;
+        const auto* plan = PrepareParallel(snapshot, memory, tasks, iteration % 2 == 0 ? 127 : 4096);
+        ASSERT_NE(plan, nullptr);
+        ASSERT_EQ(plan->GetDrawCommands().size(), 12013);
+        ASSERT_EQ(plan->GetBatches().size(), 1);
+        EXPECT_EQ(plan->GetBatches()[0].FirstCommand, 0);
+        EXPECT_EQ(plan->GetBatches()[0].CommandCount, 12013);
+        for (std::size_t index = 0; index < plan->GetDrawCommands().size(); ++index) {
+            EXPECT_EQ(plan->GetDrawCommands()[index].ObjectId.Index, index + 1);
+        }
+    }
+}
+
+TEST(Renderer, FailedSchedulingDoesNotPublishPreparation) {
+    ParallelPreparationRuntime scene;
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
+    const auto frame = BeginExtractionFrame(scheduler);
+    const auto& snapshot =
+            NRenderer::NInternal::ExtractRenderWorld(scene.World, scene.Resources, scheduler.GetFrameStorage(frame));
+    NCommon::TaskSystem tasks{4};
+    std::pmr::monotonic_buffer_resource memory;
+    bool published = false;
+    NCommon::TaskHandle join;
+    const auto root = tasks.Submit([&](NCommon::TaskContext& task) {
+        join = Renderer::SchedulePrepare(
+                snapshot,
+                memory,
+                task,
+                [&](const NRenderer::RenderPlan&) { published = true; },
+                64);
+        throw std::runtime_error{"Preparation scheduling failed"};
+    });
+    tasks.Wait(root);
+    ASSERT_TRUE(join.IsValid());
+    tasks.Wait(join);
+    EXPECT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_FALSE(published);
+}
+
 } // namespace

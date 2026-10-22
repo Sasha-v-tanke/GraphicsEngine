@@ -68,6 +68,10 @@ remaining Draw work for N.
 observable to the regular Application frame loop even when admission remains closed; a manual Update or Stop is not
 required to latch the error and enter STOPPING.
 
+`IFrameRuntime::ScheduleDraw()` similarly supports a nonblocking preparation/draw join. Update admission opens after
+extraction, while the slot remains active until scheduled draw work completes. The completion continuation then retires
+the CPU frame or follows its registered GPU completion. Async draw failures are reaped through the same admission path.
+
 ## FrameScheduler
 
 `FrameScheduler` управляет bounded lifetime одновременно активных кадров Engine.

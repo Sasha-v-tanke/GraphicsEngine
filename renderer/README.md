@@ -64,10 +64,35 @@ buffers.
 The first renderer path builds backend-independent `DrawCommandData`:
 
 ```text
-RenderWorld -> visibility -> RenderItems -> sort -> DrawCommandData
+RenderWorld -> visibility/material preparation -> sort -> batch -> DrawCommandData
 ```
 
 Visibility is intentionally conservative for MVP-3: every render object is visible to every extracted view. The output is
 deterministic for the same `RenderWorld`; commands are ordered by view, material, mesh and object identity. Intermediate
 data and the resulting render plan are allocated from the caller-provided frame memory resource, normally the current
 `FrameExecutionSlot` arena.
+
+### Parallel preparation and batches
+
+`Renderer::SchedulePrepare()` partitions the view/object product into chunks through the shared `TaskContext`.
+Conservative visibility still includes every object for every view. Workers prepare command values in local vectors;
+only the join allocates from frame memory. After all readers finish, it merges chunks in index order, sorts by the same
+view/material/mesh/version/object key as serial `Prepare()`, then forms batches as a separate stage. Failure prevents
+publication and is reported only after all snapshot readers drain. All tasks depend transitively on the scheduling task,
+so partial graph submission failure cannot begin preparation. Do not cancel a join while it has live readers.
+
+`RenderPlan::GetBatches()` provides contiguous ranges into the unchanged `DrawCommandData` stream. Commands in a batch
+share view, mesh, material and retained resource versions; each command retains its own object ID and transform. These
+ranges describe compatible instances for a consumer while keeping the existing direct-command fallback available.
+Batching does not reinterpret differing materials, meshes or views as compatible and does not expose backend objects.
+
+A frame runtime can return the preparation join from `IFrameRuntime::ScheduleDraw()`. Engine retains the slot until that
+join and its completion continuation finish, then follows the existing GPU completion protocol. Update N+1 can overlap
+preparation N after extraction has joined. `Stop()` drains scheduled work before destroying the runtime or frame arena.
+The snapshot, arena and callback captures must remain alive through the returned join; asynchronous callbacks must copy
+any needed `FrameContext`, rather than retain a reference to the scheduling stack.
+
+Chunk size is a workload setting, with a measured default of 4096 items. Workloads within one chunk use a single serial
+preparation task. The reference `Prepare()` avoids scheduling overhead entirely; the current inexpensive visibility path
+can be faster serially even for thousands of objects. Choose parallel preparation by measurement, not by entity count
+alone. See [preparation benchmark](../benchmarks/renderer/README.md) for the tuning sweep and its limits.
