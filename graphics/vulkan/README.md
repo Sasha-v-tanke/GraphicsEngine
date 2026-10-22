@@ -163,7 +163,17 @@ descriptor writes, telemetry and in-flight retention state. The current policy i
 a single backend-owned manager with internal host synchronization; future
 frame/worker arenas can replace this without changing public `Material`. The
 manager can retain descriptor use until a submission completion value is reported
-and refuses destruction while retained sets are still in flight.
+and refuses destruction while retained sets are still in flight. Retention accepts
+only leases issued by that manager. Completion values must come from one queue
+timeline; callers report observed GPU completion, not frame numbers. The manager
+does not own bound resources: the device and buffer/image/view/sampler allocations
+must outlive all submitted uses and the cached sets. Failed cache insertion or
+set allocation rolls back newly created native objects.
+
+This is descriptor infrastructure only. The current main pipeline layout is
+empty; Vulkan execution of Renderer DrawCommandData and descriptor binding are
+not integrated here. FEATURE-0067's textured-draw acceptance criterion and the
+WorkerCount/MaxActiveFrames matrix remain open until that execution path exists.
 
 Telemetry reports descriptor allocations, cache hits and misses. It is intended
 for backend diagnostics and future frame-resource tuning, not for public

@@ -1,13 +1,14 @@
+#include "descriptor_manager.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <exception>
 #include <functional>
 #include <limits>
-#include <string>
+#include <string_view>
 #include <utility>
 
-#include <graphics/vulkan/descriptor_manager.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -24,8 +25,8 @@ void HashCombine(std::size_t& seed, const T& value) noexcept {
 }
 
 void HashIdentity(std::size_t& seed, const NResources::ResourceIdentity& identity) noexcept {
-    HashCombine(seed, std::string{identity.GetResourceClass()});
-    HashCombine(seed, std::string{identity.GetKey()});
+    HashCombine(seed, std::string_view{identity.GetResourceClass()});
+    HashCombine(seed, std::string_view{identity.GetKey()});
 }
 
 [[nodiscard]] VkDescriptorType ToDescriptorType(NGraphics::EMaterialBindingType type) {
@@ -192,7 +193,7 @@ VulkanDescriptorManager::VulkanDescriptorManager(VkDevice device, VulkanDescript
     const VkDescriptorPoolCreateInfo poolInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .pNext = nullptr,
-            .flags = 0,
+            .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
             .maxSets = DESCRIPTOR_POOL_SET_COUNT,
             .poolSizeCount = static_cast<std::uint32_t>(poolSizes.size()),
             .pPoolSizes = poolSizes.data(),
@@ -234,10 +235,18 @@ VulkanDescriptorSetLease VulkanDescriptorManager::Acquire(const VulkanDescriptor
 
     ++m_telemetry.CacheMisses;
     const VkDescriptorSetLayout layout = GetOrCreateLayout(request.Layout);
-    const VkDescriptorSet set = AllocateSet(layout, request.Layout);
-    WriteSet(set, request.Bindings);
-
-    m_cache.emplace(std::move(key), DescriptorEntry{.Layout = layout, .Set = set});
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    try {
+        set = AllocateSet(layout, request.Layout);
+        WriteSet(set, request.Bindings);
+        m_cache.emplace(std::move(key), DescriptorEntry{.Layout = layout, .Set = set});
+    } catch (...) {
+        if (set != VK_NULL_HANDLE) {
+            (void)vkFreeDescriptorSets(m_device, m_pool, 1, &set);
+        }
+        vkDestroyDescriptorSetLayout(m_device, layout, nullptr);
+        throw;
+    }
     ++m_telemetry.Allocations;
 
     return VulkanDescriptorSetLease{layout, set};
@@ -248,6 +257,13 @@ void VulkanDescriptorManager::RetainUntil(VulkanDescriptorSetLease lease, std::u
 
     if (!lease.IsValid() || completionValue == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor retention request is invalid");
+    }
+
+    const bool isOwned = std::ranges::any_of(m_cache, [&lease](const auto& item) {
+        return item.second.Layout == lease.GetLayout() && item.second.Set == lease.GetSet();
+    });
+    if (!isOwned) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Descriptor lease belongs to another manager");
     }
 
     m_inFlightCompletions.push_back(completionValue);

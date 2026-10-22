@@ -87,6 +87,11 @@ private:
     friend class VulkanDescriptorManager;
 };
 
+// Device and bound resources must outlive the manager and every submitted use.
+// Sets are immutable and cached until destruction; callers retain each submission on
+// one monotonically increasing queue timeline and report only observed completions.
+// Acquire/retention/telemetry are host-serialized. Destruction requires all GPU uses
+// completed and reported through ReleaseCompleted; leases do not own resources.
 class VulkanDescriptorManager final: public NCommon::NonTransferable {
 public:
     explicit VulkanDescriptorManager(VkDevice device, VulkanDescriptorLimits limits);

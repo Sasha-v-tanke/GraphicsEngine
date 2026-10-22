@@ -621,7 +621,12 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                     (void)descriptors.Acquire({.Layout = layout, .Bindings = mismatchedBindings});
                 });
 
+                NVulkan::VulkanDescriptorManager otherDescriptors{device.GetHandle(), device.GetDescriptorLimits()};
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { otherDescriptors.RetainUntil(first, 3); });
+                EXPECT_FALSE(otherDescriptors.HasInFlightDescriptors());
                 descriptors.RetainUntil(first, 3);
+                descriptors.ReleaseCompleted(2);
+                EXPECT_TRUE(descriptors.HasInFlightDescriptors());
                 EXPECT_TRUE(descriptors.HasInFlightDescriptors());
                 descriptors.ReleaseCompleted(3);
                 EXPECT_FALSE(descriptors.HasInFlightDescriptors());
