@@ -4,7 +4,7 @@ API(
     task/task_system.h
 )
 
-PRIVATE_DEPENDS(
+PUBLIC_DEPENDS(
     Common
 )
 

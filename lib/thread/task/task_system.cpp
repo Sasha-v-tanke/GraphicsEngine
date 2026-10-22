@@ -369,6 +369,10 @@ void TaskSystem::Wait(const TaskHandle& task) {
     task.m_state->Condition.wait(taskLock, [&task] { return TaskLifetime::IsTerminalLocked(task.m_state->Task); });
 }
 
+bool TaskSystem::IsCurrentThreadWorker() noexcept {
+    return CurrentWorker.System != nullptr;
+}
+
 void TaskSystem::WaitIdle() {
     if (CurrentWorker.System == this) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_STATE,

@@ -3,6 +3,7 @@
 #include "entity.h"
 #include "system_access.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -21,6 +22,10 @@
 
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
+
+namespace NCommon {
+class TaskSystem;
+}
 
 namespace NEcs {
 
@@ -177,6 +182,10 @@ public:
 
     void RegisterSystem(SystemAccessList access, SystemCallback callback);
     void RegisterSystem(SystemAccessList access, SystemCallback callback, std::uint32_t structuralOrder);
+    void RegisterSystem(SystemAccessList access,
+                        SystemCallback callback,
+                        SystemSchedule schedule,
+                        std::optional<std::uint32_t> structuralOrder = std::nullopt);
 
     [[nodiscard]] const std::vector<SystemAccess>& GetSystemAccess(std::size_t index) const;
     [[nodiscard]] std::size_t GetSystemCount() const noexcept;
@@ -184,6 +193,7 @@ public:
     [[nodiscard]] DeferredStructuralCommandBuffer CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder);
     void SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer);
     void RunSystems();
+    void RunSystems(NCommon::TaskSystem& taskSystem);
     void ApplyDeferredStructuralChanges();
 
 private:
@@ -380,6 +390,20 @@ private:
 
     void ValidateAlive(Entity entity) const;
     void ValidateSystemIndex(std::size_t index) const;
+    struct SystemExecutionGraph {
+        std::vector<std::size_t> Order;
+        std::vector<std::vector<std::size_t>> Dependencies;
+    };
+
+    [[nodiscard]] SystemExecutionGraph BuildSystemExecutionGraph(bool requireSchedules) const;
+    struct SystemInvocation;
+    [[nodiscard]] SystemInvocation* GetCurrentSystemInvocation() const noexcept;
+    void RunSystemsImpl(NCommon::TaskSystem* taskSystem);
+    void ExecuteSystem(std::size_t index, SystemInvocation& invocation);
+    void DiscardSystemCommands(std::vector<SystemInvocation>& invocations);
+    void PublishSystemCommands(std::vector<SystemInvocation>& invocations);
+    static thread_local SystemInvocation* CurrentSystemInvocation_;
+    static thread_local World* CommittingWorld_;
     void ValidateStructuralWriteAllowed() const;
     void ValidateDeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer& buffer) const;
     void ValidateSystemDeferredCommandCollectionLocked() const;
@@ -403,7 +427,6 @@ private:
     std::mutex DeferredStructuralMutex_;
     std::vector<std::unique_ptr<IDeferredCommand>> DeferredStructuralCommands_;
     std::vector<DeferredCommandBatch> DeferredStructuralBatches_;
-    std::vector<std::unique_ptr<IDeferredCommand>> ActiveDeferredStructuralCommands_;
     std::vector<Entity> PendingDeferredAppendEntities_;
     std::map<std::optional<std::uint32_t>, std::unordered_map<std::uint32_t, std::vector<DeferredEntityReservation>>>
             PlannedDeferredEntityReservations_;
@@ -413,17 +436,14 @@ private:
     std::uint32_t NextNewEntityGeneration_ = 0;
     std::uint64_t NextDeferredBatchSubmissionOrder_ = 0;
     std::shared_ptr<bool> LifetimeToken_;
-    bool IsRunningSystems_ = false;
-    bool IsCollectingSystemDeferredStructuralCommands_ = false;
-    bool IsApplyingDeferredStructuralChanges_ = false;
-    std::optional<std::thread::id> ActiveSystemThreadId_;
-    std::optional<std::uint32_t> ActiveSystemStructuralOrder_;
-    std::uint64_t ActiveSystemInvocationId_ = 0;
+    std::atomic_bool IsRunningSystems_ = false;
+    std::uint64_t NextSystemInvocationId_ = 0;
 
     struct RegisteredSystem {
         SystemAccessList Access;
         SystemCallback Callback;
         std::optional<std::uint32_t> StructuralOrder;
+        std::optional<SystemSchedule> Schedule = std::nullopt;
     };
 
     std::vector<RegisteredSystem> Systems_;

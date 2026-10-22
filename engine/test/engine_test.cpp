@@ -702,7 +702,7 @@ TEST(Engine, KeepsCompletedFrameActiveUntilDrawTaskReturns) {
     finishFirstDrawGuard.Release();
     EXPECT_TRUE(runtimeRef.WaitFirstDrawFinished(2s));
 
-    EXPECT_TRUE(engine->Update());
+    ASSERT_TRUE(AcquireEventually(*engine));
     EXPECT_TRUE(engine->Draw());
 
     engine->Stop();

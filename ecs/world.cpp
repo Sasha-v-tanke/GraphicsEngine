@@ -1,9 +1,30 @@
 #include "world.h"
 
 #include <algorithm>
+#include <exception>
 #include <iterator>
+#include <numeric>
+
+#include <GraphicsEngine/lib/thread/task/task_system.h>
 
 namespace NEcs {
+
+struct World::SystemInvocation {
+    World* Owner = nullptr;
+    std::optional<std::uint32_t> StructuralOrder;
+    std::uint64_t Id = 0;
+    std::vector<std::unique_ptr<IDeferredCommand>> Commands;
+    std::vector<DeferredCommandBatch> WorkerBatches;
+    std::exception_ptr Error;
+};
+
+thread_local World::SystemInvocation* World::CurrentSystemInvocation_ = nullptr;
+thread_local World* World::CommittingWorld_ = nullptr;
+
+World::SystemInvocation* World::GetCurrentSystemInvocation() const noexcept {
+    return CurrentSystemInvocation_ != nullptr && CurrentSystemInvocation_->Owner == this ? CurrentSystemInvocation_
+                                                                                          : nullptr;
+}
 
 std::uint32_t World::IDeferredCommand::GetReservedEntityCount() const noexcept {
     return 0;
@@ -178,7 +199,7 @@ Entity World::DeferCreateEntity() {
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
-        if (IsCollectingSystemDeferredStructuralCommands_) {
+        if (IsRunningSystems_) {
             ValidateSystemDeferredCommandCollectionLocked();
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS system entity creates require a planned producer-local buffer");
@@ -326,6 +347,7 @@ std::size_t World::GetAliveEntityCount() const noexcept {
 }
 
 void World::RegisterSystem(SystemAccessList access, SystemCallback callback) {
+    ValidateStructuralWriteAllowed();
     if (!callback) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system callback must be callable");
     }
@@ -338,6 +360,7 @@ void World::RegisterSystem(SystemAccessList access, SystemCallback callback) {
 }
 
 void World::RegisterSystem(SystemAccessList access, SystemCallback callback, std::uint32_t structuralOrder) {
+    ValidateStructuralWriteAllowed();
     if (!callback) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system callback must be callable");
     }
@@ -352,6 +375,111 @@ void World::RegisterSystem(SystemAccessList access, SystemCallback callback, std
             .Callback = std::move(callback),
             .StructuralOrder = structuralOrder,
     });
+}
+
+void World::RegisterSystem(SystemAccessList access,
+                           SystemCallback callback,
+                           SystemSchedule schedule,
+                           std::optional<std::uint32_t> structuralOrder) {
+    if (std::ranges::any_of(Systems_, [&schedule](const RegisteredSystem& system) {
+            return system.Schedule.has_value() && system.Schedule->Id == schedule.Id;
+        })) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system scheduling IDs must be unique");
+    }
+    if (structuralOrder.has_value()) {
+        RegisterSystem(std::move(access), std::move(callback), *structuralOrder);
+    } else {
+        RegisterSystem(std::move(access), std::move(callback));
+    }
+    Systems_.back().Schedule = std::move(schedule);
+}
+
+World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedules) const {
+    const std::size_t count = Systems_.size();
+    SystemExecutionGraph graph;
+    graph.Order.resize(count);
+    std::iota(graph.Order.begin(), graph.Order.end(), 0);
+    graph.Dependencies.resize(count);
+    const bool hasSchedules =
+            std::ranges::any_of(Systems_, [](const RegisteredSystem& system) { return system.Schedule.has_value(); });
+    if (!requireSchedules && !hasSchedules) {
+        return graph;
+    }
+
+    std::map<std::uint64_t, std::size_t> indices;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!Systems_[index].Schedule.has_value()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS scheduled execution requires a stable ID for every system");
+        }
+        indices.emplace(Systems_[index].Schedule->Id, index);
+    }
+    std::vector<std::vector<bool>> edges(count, std::vector<bool>(count, false));
+    auto addConstraint = [&](std::uint64_t before, std::uint64_t after) {
+        if (before == after || !indices.contains(before) || !indices.contains(after)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system ordering constraint is invalid");
+        }
+        edges[indices.at(before)][indices.at(after)] = true;
+    };
+    for (const auto& system: Systems_) {
+        for (const auto before: system.Schedule->Before) {
+            addConstraint(system.Schedule->Id, before);
+        }
+        for (const auto after: system.Schedule->After) {
+            addConstraint(after, system.Schedule->Id);
+        }
+    }
+
+    std::vector<std::size_t> incoming(count, 0);
+    for (const auto& outgoing: edges) {
+        for (std::size_t target = 0; target < count; ++target) {
+            incoming[target] += outgoing[target] ? 1 : 0;
+        }
+    }
+    std::vector<bool> visited(count, false);
+    graph.Order.clear();
+    for (std::size_t position = 0; position < count; ++position) {
+        std::optional<std::size_t> next;
+        for (const auto& [id, index]: indices) {
+            static_cast<void>(id);
+            if (!visited[index] && incoming[index] == 0) {
+                next = index;
+                break;
+            }
+        }
+        if (!next.has_value()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system ordering constraints contain a cycle");
+        }
+        visited[*next] = true;
+        graph.Order.push_back(*next);
+        for (std::size_t target = 0; target < count; ++target) {
+            if (edges[*next][target]) {
+                --incoming[target];
+            }
+        }
+    }
+
+    for (std::size_t left = 0; left < count; ++left) {
+        const std::size_t before = graph.Order[left];
+        for (std::size_t right = left + 1; right < count; ++right) {
+            const std::size_t after = graph.Order[right];
+            const bool conflicts = std::ranges::any_of(Systems_[before].Access, [&](const SystemAccess& lhs) {
+                return std::ranges::any_of(Systems_[after].Access, [&](const SystemAccess& rhs) {
+                    return lhs.Component == rhs.Component &&
+                           (lhs.Mode == ESystemAccessMode::WRITE || rhs.Mode == ESystemAccessMode::WRITE);
+                });
+            });
+            edges[before][after] = edges[before][after] || conflicts;
+        }
+    }
+    for (const std::size_t after: graph.Order) {
+        for (const std::size_t before: graph.Order) {
+            if (edges[before][after]) {
+                graph.Dependencies[after].push_back(before);
+            }
+        }
+    }
+    return graph;
 }
 
 const std::vector<SystemAccess>& World::GetSystemAccess(std::size_t index) const {
@@ -377,7 +505,7 @@ void World::BeginDeferredStructuralPhase(std::vector<DeferredProducer> producers
     }
 
     std::scoped_lock lock{DeferredStructuralMutex_};
-    if (IsCollectingSystemDeferredStructuralCommands_) {
+    if (IsRunningSystems_) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS create reservations must be planned before system execution");
     }
@@ -397,13 +525,11 @@ void World::BeginDeferredStructuralPhase(std::vector<DeferredProducer> producers
 World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder) {
     DeferredStructuralCommandBuffer buffer{*this, producerOrder};
     std::scoped_lock lock{DeferredStructuralMutex_};
-    if (IsCollectingSystemDeferredStructuralCommands_) {
-        if (!ActiveSystemStructuralOrder_.has_value()) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                                  "ECS system structural commands require an explicit structural order");
-        }
-        buffer.State_->SystemOrder = ActiveSystemStructuralOrder_;
-        buffer.State_->SystemInvocationId = ActiveSystemInvocationId_;
+    if (IsRunningSystems_) {
+        ValidateSystemDeferredCommandCollectionLocked();
+        const auto* invocation = GetCurrentSystemInvocation();
+        buffer.State_->SystemOrder = invocation->StructuralOrder;
+        buffer.State_->SystemInvocationId = invocation->Id;
     }
     if (const auto phase = PlannedDeferredEntityReservations_.find(buffer.State_->SystemOrder);
         phase != PlannedDeferredEntityReservations_.end()) {
@@ -423,9 +549,11 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
     ValidateDeferredStructuralCommandBuffer(buffer);
 
     std::scoped_lock lock{DeferredStructuralMutex_};
-    if (IsCollectingSystemDeferredStructuralCommands_) {
-        if (!ActiveSystemStructuralOrder_.has_value() || buffer.State_->SystemOrder != ActiveSystemStructuralOrder_ ||
-            buffer.State_->SystemInvocationId != ActiveSystemInvocationId_) {
+    auto* invocation = GetCurrentSystemInvocation();
+    if (IsRunningSystems_) {
+        if (invocation == nullptr || !invocation->StructuralOrder.has_value() ||
+            buffer.State_->SystemOrder != invocation->StructuralOrder ||
+            buffer.State_->SystemInvocationId != invocation->Id) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS worker buffer must be submitted by its owning structural system");
         }
@@ -433,7 +561,8 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS worker buffer must be submitted before its system returns");
     }
-    if (std::ranges::any_of(DeferredStructuralBatches_, [&](const DeferredCommandBatch& batch) {
+    const auto& batches = invocation != nullptr ? invocation->WorkerBatches : DeferredStructuralBatches_;
+    if (std::ranges::any_of(batches, [&](const DeferredCommandBatch& batch) {
             return batch.Source == (buffer.State_->SystemOrder.has_value() ? DeferredCommandBatch::ESource::SYSTEM
                                                                            : DeferredCommandBatch::ESource::EXTERNAL) &&
                    (!buffer.State_->SystemOrder.has_value() ||
@@ -455,7 +584,11 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 
     ReleaseUnusedDeferredEntityReservationsLocked(buffer.State_->EntityReservations,
                                                   buffer.State_->NextEntityReservation);
-    AppendDeferredCommandBatch(std::move(batch));
+    if (invocation != nullptr) {
+        invocation->WorkerBatches.push_back(std::move(batch));
+    } else {
+        AppendDeferredCommandBatch(std::move(batch));
+    }
     if (buffer.State_->HasClaimedReservations) {
         --OutstandingDeferredReservationBufferCount_;
         buffer.State_->HasClaimedReservations = false;
@@ -464,77 +597,156 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 }
 
 void World::RunSystems() {
-    for (auto& system: Systems_) {
-        ActiveDeferredStructuralCommands_.clear();
-        IsCollectingSystemDeferredStructuralCommands_ = true;
-        IsRunningSystems_ = true;
-        ActiveSystemThreadId_ = std::this_thread::get_id();
-        ActiveSystemStructuralOrder_ = system.StructuralOrder;
-        ++ActiveSystemInvocationId_;
+    RunSystemsImpl(nullptr);
+}
 
-        try {
-            system.Callback(*this);
-        } catch (...) {
-            std::scoped_lock lock{DeferredStructuralMutex_};
-            for (const auto& command: ActiveDeferredStructuralCommands_) {
-                ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
-                command->RollbackReservation(*this);
-            }
-            std::erase_if(DeferredStructuralBatches_, [&](DeferredCommandBatch& batch) {
-                if (batch.Source != DeferredCommandBatch::ESource::SYSTEM ||
-                    batch.SystemOrder != ActiveSystemStructuralOrder_) {
-                    return false;
-                }
-                for (const auto& command: batch.Commands) {
-                    ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
-                    command->RollbackReservation(*this);
-                }
-                return true;
+void World::RunSystems(NCommon::TaskSystem& taskSystem) {
+    if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS parallel execution must be coordinated by a host thread");
+    }
+    RunSystemsImpl(&taskSystem);
+}
+
+void World::ExecuteSystem(std::size_t index, SystemInvocation& invocation) {
+    auto* previous = CurrentSystemInvocation_;
+    CurrentSystemInvocation_ = &invocation;
+    try {
+        Systems_[index].Callback(*this);
+    } catch (...) {
+        invocation.Error = std::current_exception();
+        CurrentSystemInvocation_ = previous;
+        throw;
+    }
+    CurrentSystemInvocation_ = previous;
+}
+
+void World::DiscardSystemCommands(std::vector<SystemInvocation>& invocations) {
+    for (auto& invocation: invocations) {
+        RollbackDeferredStructuralCommands(invocation.Commands);
+        for (auto& batch: invocation.WorkerBatches) {
+            RollbackDeferredStructuralCommands(batch.Commands);
+        }
+        invocation.WorkerBatches.clear();
+    }
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    for (auto iterator = PlannedDeferredEntityReservations_.begin();
+         iterator != PlannedDeferredEntityReservations_.end();) {
+        if (!iterator->first.has_value()) {
+            ++iterator;
+            continue;
+        }
+        for (auto& [producerOrder, reservations]: iterator->second) {
+            static_cast<void>(producerOrder);
+            ReleaseUnusedDeferredEntityReservationsLocked(reservations, 0);
+        }
+        iterator = PlannedDeferredEntityReservations_.erase(iterator);
+    }
+    std::ranges::sort(FreeEntityIndices_);
+}
+
+void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    if (OutstandingDeferredReservationBufferCount_ != 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS deferred reservation buffers must be submitted or discarded before commit");
+    }
+    std::size_t batchCount = DeferredStructuralBatches_.size();
+    for (const auto& invocation: invocations) {
+        batchCount += invocation.WorkerBatches.size() + (invocation.Commands.empty() ? 0 : 1);
+    }
+    DeferredStructuralBatches_.reserve(batchCount);
+    for (auto& invocation: invocations) {
+        if (!invocation.Commands.empty()) {
+            AppendDeferredCommandBatch({
+                    .Source = DeferredCommandBatch::ESource::SYSTEM,
+                    .SystemOrder = *invocation.StructuralOrder,
+                    .ProducerOrder = *invocation.StructuralOrder,
+                    .Commands = std::move(invocation.Commands),
             });
-            if (const auto phase = PlannedDeferredEntityReservations_.find(ActiveSystemStructuralOrder_);
-                ActiveSystemStructuralOrder_.has_value() && phase != PlannedDeferredEntityReservations_.end()) {
-                for (auto& [producerOrder, reservations]: phase->second) {
-                    static_cast<void>(producerOrder);
-                    ReleaseUnusedDeferredEntityReservationsLocked(reservations, 0);
+        }
+        for (auto& batch: invocation.WorkerBatches) {
+            AppendDeferredCommandBatch(std::move(batch));
+        }
+        invocation.WorkerBatches.clear();
+    }
+}
+
+void World::RunSystemsImpl(NCommon::TaskSystem* taskSystem) {
+    const SystemExecutionGraph graph = BuildSystemExecutionGraph(taskSystem != nullptr);
+    std::vector<SystemInvocation> invocations(Systems_.size());
+    std::vector<NCommon::TaskHandle> tasks(Systems_.size());
+    std::vector<NCommon::TaskHandle> submitted;
+    submitted.reserve(Systems_.size());
+    if (IsRunningSystems_.exchange(true)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+    }
+    try {
+        for (const std::size_t index: graph.Order) {
+            invocations[index].Owner = this;
+            invocations[index].StructuralOrder = Systems_[index].StructuralOrder;
+            invocations[index].Id = ++NextSystemInvocationId_;
+        }
+        std::exception_ptr error;
+        if (taskSystem == nullptr) {
+            try {
+                for (const std::size_t index: graph.Order) {
+                    ExecuteSystem(index, invocations[index]);
                 }
-                PlannedDeferredEntityReservations_.erase(phase);
+            } catch (...) {
+                error = std::current_exception();
             }
-            IsRunningSystems_ = false;
-            IsCollectingSystemDeferredStructuralCommands_ = false;
-            ActiveSystemThreadId_.reset();
-            ActiveSystemStructuralOrder_.reset();
-            ActiveDeferredStructuralCommands_.clear();
+        } else {
+            try {
+                for (const std::size_t index: graph.Order) {
+                    std::vector<NCommon::TaskHandle> dependencies;
+                    dependencies.reserve(graph.Dependencies[index].size());
+                    for (const std::size_t dependency: graph.Dependencies[index]) {
+                        dependencies.push_back(tasks[dependency]);
+                    }
+                    tasks[index] = taskSystem->Submit(
+                            [&, index](NCommon::TaskContext&) { ExecuteSystem(index, invocations[index]); },
+                            dependencies);
+                    submitted.push_back(tasks[index]);
+                }
+            } catch (...) {
+                error = std::current_exception();
+            }
+            for (const auto& task: submitted) {
+                taskSystem->Wait(task);
+            }
+        }
+        if (error == nullptr) {
+            for (const std::size_t index: graph.Order) {
+                if (invocations[index].Error != nullptr) {
+                    error = invocations[index].Error;
+                    break;
+                }
+            }
+        }
+        if (error != nullptr) {
+            std::rethrow_exception(error);
+        }
+        PublishSystemCommands(invocations);
+        auto* previous = CommittingWorld_;
+        CommittingWorld_ = this;
+        try {
+            ApplyDeferredStructuralChanges();
+        } catch (...) {
+            CommittingWorld_ = previous;
             throw;
         }
-
+        CommittingWorld_ = previous;
+    } catch (...) {
+        DiscardSystemCommands(invocations);
         IsRunningSystems_ = false;
-        IsCollectingSystemDeferredStructuralCommands_ = false;
-        ActiveSystemThreadId_.reset();
-
-        {
-            std::scoped_lock lock{DeferredStructuralMutex_};
-            if (!ActiveDeferredStructuralCommands_.empty()) {
-                if (!ActiveSystemStructuralOrder_.has_value()) {
-                    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                                          "ECS system structural commands require an explicit structural order");
-                }
-                AppendDeferredCommandBatch({
-                        .Source = DeferredCommandBatch::ESource::SYSTEM,
-                        .SystemOrder = *ActiveSystemStructuralOrder_,
-                        .ProducerOrder = *ActiveSystemStructuralOrder_,
-                        .Commands = std::move(ActiveDeferredStructuralCommands_),
-                });
-            }
-        }
-        ActiveSystemStructuralOrder_.reset();
-        ActiveDeferredStructuralCommands_.clear();
+        throw;
     }
-
-    ApplyDeferredStructuralChanges();
+    IsRunningSystems_ = false;
 }
 
 void World::ApplyDeferredStructuralChanges() {
-    if (IsRunningSystems_ && !IsApplyingDeferredStructuralChanges_) {
+    if (IsRunningSystems_ && CommittingWorld_ != this) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS deferred structural changes cannot be explicitly committed during system execution");
     }
@@ -582,8 +794,6 @@ void World::ApplyDeferredStructuralChanges() {
         commands.swap(DeferredStructuralCommands_);
     }
 
-    IsApplyingDeferredStructuralChanges_ = true;
-
     std::size_t nextCommand = 0;
 
     try {
@@ -592,7 +802,6 @@ void World::ApplyDeferredStructuralChanges() {
             ++nextCommand;
         }
     } catch (...) {
-        IsApplyingDeferredStructuralChanges_ = false;
         {
             std::scoped_lock lock{DeferredStructuralMutex_};
             DeferredStructuralCommands_.insert(
@@ -607,10 +816,10 @@ void World::ApplyDeferredStructuralChanges() {
         throw;
     }
 
-    IsApplyingDeferredStructuralChanges_ = false;
     PendingDeferredEntityCreateCount_ = 0;
     PendingDeferredAppendEntities_.clear();
     ReservedDeferredEntityCount_ = 0;
+    std::ranges::sort(FreeEntityIndices_);
 }
 
 void World::ValidateAlive(Entity entity) const {
@@ -626,7 +835,7 @@ void World::ValidateSystemIndex(std::size_t index) const {
 }
 
 void World::ValidateStructuralWriteAllowed() const {
-    if (IsRunningSystems_ && !IsApplyingDeferredStructuralChanges_) {
+    if (IsRunningSystems_ && CommittingWorld_ != this) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS structural changes during system execution must be deferred");
     }
@@ -642,20 +851,21 @@ void World::ValidateDeferredStructuralCommandBuffer(const DeferredStructuralComm
 
 void World::PushDeferredCommand(std::unique_ptr<IDeferredCommand> command) {
     std::scoped_lock lock{DeferredStructuralMutex_};
-    if (IsCollectingSystemDeferredStructuralCommands_) {
+    if (IsRunningSystems_) {
         ValidateSystemDeferredCommandCollectionLocked();
-        ActiveDeferredStructuralCommands_.push_back(std::move(command));
+        GetCurrentSystemInvocation()->Commands.push_back(std::move(command));
         return;
     }
     DeferredStructuralCommands_.push_back(std::move(command));
 }
 
 void World::ValidateSystemDeferredCommandCollectionLocked() const {
-    if (!ActiveSystemThreadId_.has_value() || *ActiveSystemThreadId_ != std::this_thread::get_id()) {
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (invocation == nullptr) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS parallel workers must use producer-local deferred command buffers");
     }
-    if (!ActiveSystemStructuralOrder_.has_value()) {
+    if (!invocation->StructuralOrder.has_value()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS system structural commands require an explicit structural order");
     }
