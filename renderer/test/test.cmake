@@ -10,6 +10,7 @@ PRIVATE_DEPENDS(
     Engine
     Math
     Resources
+    Thread
 )
 
 TEST_LABELS(
