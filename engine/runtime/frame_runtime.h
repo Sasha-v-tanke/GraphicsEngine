@@ -57,6 +57,12 @@ public:
     }
 
     virtual void Draw(const FrameContext& frame) = 0;
+
+    // Same gating/draining contract as ScheduleExtract; frame storage stays live through the returned join.
+    [[nodiscard]] virtual NCommon::TaskHandle ScheduleDraw(const FrameContext& frame, NCommon::TaskContext&) {
+        Draw(frame);
+        return {};
+    }
 };
 
 [[nodiscard]] std::unique_ptr<IFrameRuntime> MakeDefaultFrameRuntime();

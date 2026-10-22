@@ -15,12 +15,12 @@ PUBLIC_DEPENDS(
     Graphics
     Math
     Resources
+    Thread
 )
 
 PRIVATE_DEPENDS(
     Ecs
     Engine
-    Thread
 )
 
 RECURSE(
