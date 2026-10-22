@@ -949,6 +949,7 @@ TEST(TaskSystem, CancelsDependentsWhenDependencyIsCancelled) {
     taskSystem.Cancel(dependency);
     blockerFinish.Open();
 
+    taskSystem.Wait(blocker);
     taskSystem.Wait(dependent);
 
     EXPECT_EQ(taskSystem.GetStatus(dependency), NCommon::ETaskStatus::CANCELLED);
