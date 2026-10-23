@@ -584,15 +584,21 @@ void VulkanSwapchain::Recreate(NWindow::WindowSize framebufferSize) {
         m_impl->Suspend();
         return;
     }
+    m_retired.reserve(m_retired.size() + 1);
     try {
         auto replacement =
                 std::make_unique<Impl>(m_device, m_physicalDevice, m_surface, framebufferSize, m_impl->GetHandle());
+        m_retired.push_back(std::move(m_impl));
         m_impl = std::move(replacement);
     } catch (...) {
         m_impl->Suspend();
         m_failed = true;
         throw;
     }
+}
+
+void VulkanSwapchain::ReleaseRetired() noexcept {
+    m_retired.clear();
 }
 
 bool VulkanSwapchain::IsSuspended() const noexcept {

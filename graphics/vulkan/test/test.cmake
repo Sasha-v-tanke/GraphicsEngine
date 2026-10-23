@@ -16,6 +16,10 @@ SOURCES(
 )
 
 if (GRAPHICS_ENGINE_BUILD_GLFW)
+    PRIVATE_DEPENDS(
+        GLFW
+    )
+
     SOURCES(
         glfw_surface_test.cpp
     )

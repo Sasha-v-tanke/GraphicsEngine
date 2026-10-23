@@ -9,14 +9,18 @@ Restoring a positive size, resize, acquire out-of-date, and acquire/present subo
 An out-of-date present still returns the completion of its successful graphics submission.
 
 Before replacement, `Render` polls the last graphics timeline point and returns `NOT_READY` while it is pending.
-Once graphics work completes, recreation drains the host-locked present queue to finish WSI semaphore uses.
-This queue wait occurs only on recreation; ordinary frames do not wait for device or queue idle.
-The device and frame ring survive replacement. Per-image present semaphores are replaced after WSI is safe,
-and old image views remain alive until the new swapchain and views have been created with `oldSwapchain`.
+The device and frame ring survive replacement. No queue/device idle wait occurs on recreation or ordinary frames.
+Old swapchains, views and per-image present semaphores are retained together. Once the first successfully presented
+image of the new chain is reacquired, its subsequent graphics completion proves that the acquire semaphore wait
+has completed and that the prior present has finished. Retired generations can then be freed. Recreation before
+this round trip retains all older generations until a subsequent chain provides the same proof.
+This follows the [Khronos recreation fallback](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html)
+for implementations without swapchain-maintenance present fences. Continuous resize can temporarily retain several
+generations. Shutdown keeps the existing device-idle teardown policy.
 
-Low-level `VulkanSwapchain::Recreate` requires that the caller has finished all GPU and presentation uses of
+Low-level `VulkanSwapchain::Recreate` requires that the caller has finished all GPU uses of
 the old images, except zero-size suspension, which retains the resources. When a clear/present path is attached,
-it is the sole recreation owner. Replacement failure latches a shutdown-required state because Vulkan may have
+it is the sole recreation owner and supplies the presentation retirement proof. Replacement failure latches a shutdown-required state because Vulkan may have
 retired the old swapchain even when creation fails. Device and surface must outlive both owners.
 
 `VulkanBackend` owns Vulkan loader, instance bootstrap, physical-device selection and logical-device
