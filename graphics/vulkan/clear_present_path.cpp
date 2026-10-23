@@ -98,7 +98,9 @@ VulkanClearPresentPath::VulkanClearPresentPath(const VulkanDevice& device,
     , m_submissions(device)
     , m_frames(device, maxActiveFrames)
     , m_frameResources(maxActiveFrames)
-    , m_presentResources(swapchain.GetImages().size()) {
+    , m_presentResources(swapchain.GetImages().size())
+    , m_framebufferSize{.Width = static_cast<int>(swapchain.GetPlan().Extent.width),
+                        .Height = static_cast<int>(swapchain.GetPlan().Extent.height)} {
 }
 
 VulkanClearPresentPath::~VulkanClearPresentPath() {
@@ -107,10 +109,53 @@ VulkanClearPresentPath::~VulkanClearPresentPath() {
     }
 }
 
+void VulkanClearPresentPath::SetFramebufferSize(NWindow::WindowSize framebufferSize) noexcept {
+    if (framebufferSize.Width != m_framebufferSize.Width || framebufferSize.Height != m_framebufferSize.Height) {
+        m_framebufferSize = framebufferSize;
+        m_recreationRequested = true;
+    }
+}
+
+bool VulkanClearPresentPath::TryRecreateSwapchain() {
+    if (m_lastSubmission.has_value() && !m_submissions.IsCompleted(*m_lastSubmission)) {
+        return false;
+    }
+    m_retiredPresentResources.reserve(m_retiredPresentResources.size() + 1);
+    m_swapchain.Recreate(m_framebufferSize);
+    m_retiredPresentResources.push_back(std::move(m_presentResources));
+    m_presentResources.resize(m_swapchain.GetImages().size());
+    m_firstPresentedImage.reset();
+    m_retirementCompletion.reset();
+    m_recreationRequested = m_swapchain.IsSuspended();
+    return true;
+}
+
+void VulkanClearPresentPath::ReleaseRetiredIfCompleted() {
+    if (m_retirementCompletion.has_value() && m_submissions.IsCompleted(*m_retirementCompletion)) {
+        m_retiredPresentResources.clear();
+        m_swapchain.ReleaseRetired();
+        m_retirementCompletion.reset();
+    }
+}
+
 VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex, VkClearColorValue clearColor) {
     if (m_failed) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Vulkan clear/present path requires shutdown after failure");
+    }
+    if (m_framebufferSize.Width <= 0 || m_framebufferSize.Height <= 0) {
+        m_swapchain.Recreate(m_framebufferSize);
+        m_recreationRequested = true;
+        return {.Status = EVulkanClearPresentStatus::SUSPENDED};
+    }
+    try {
+        ReleaseRetiredIfCompleted();
+        if (m_recreationRequested && !TryRecreateSwapchain()) {
+            return {.Status = EVulkanClearPresentStatus::NOT_READY};
+        }
+    } catch (...) {
+        m_failed = true;
+        throw;
     }
     if (m_swapchain.IsSuspended()) {
         return {.Status = EVulkanClearPresentStatus::SUSPENDED};
@@ -133,6 +178,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         const VulkanSwapchainAcquireResult acquired =
                 m_swapchain.AcquireNextImage(resources.ImageAvailable, VK_NULL_HANDLE, 0);
         if (acquired.Status == EVulkanSwapchainAcquireStatus::OUT_OF_DATE) {
+            m_recreationRequested = true;
             m_frames.ReleaseAcquired(acquire);
             return {.Status = EVulkanClearPresentStatus::OUT_OF_DATE};
         }
@@ -174,6 +220,11 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
                 .SignalSemaphores = {signalSemaphore},
         });
         submitted = true;
+        m_lastSubmission = completion;
+        if (m_firstPresentedImage == acquired.ImageIndex && !m_retiredPresentResources.empty() &&
+            !m_retirementCompletion.has_value()) {
+            m_retirementCompletion = completion;
+        }
         m_frames.MarkSubmitted(acquire, completion.Value);
         m_pendingCompletions.push_back({
                 .FrameIndex = frameIndex,
@@ -183,6 +234,13 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         const VulkanLockedQueue presentQueue = m_device.LockPresentQueue();
         const EVulkanSwapchainPresentStatus present =
                 m_swapchain.Present(presentQueue, acquired.ImageIndex, {presentResources->PresentReady});
+        if (!m_firstPresentedImage.has_value() && (present == EVulkanSwapchainPresentStatus::PRESENTED ||
+                                                   present == EVulkanSwapchainPresentStatus::SUBOPTIMAL)) {
+            m_firstPresentedImage = acquired.ImageIndex;
+        }
+        m_recreationRequested = acquired.Status == EVulkanSwapchainAcquireStatus::SUBOPTIMAL ||
+                                present == EVulkanSwapchainPresentStatus::SUBOPTIMAL ||
+                                present == EVulkanSwapchainPresentStatus::OUT_OF_DATE;
         return {
                 .Status = present == EVulkanSwapchainPresentStatus::OUT_OF_DATE ? EVulkanClearPresentStatus::OUT_OF_DATE
                                                                                 : EVulkanClearPresentStatus::PRESENTED,
@@ -198,6 +256,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
 }
 
 std::vector<VulkanFrameCompletionEvent> VulkanClearPresentPath::PollCompletedFrames() {
+    ReleaseRetiredIfCompleted();
     std::vector<VulkanFrameCompletionEvent> completed;
     while (!m_pendingCompletions.empty() && m_submissions.IsCompleted(m_pendingCompletions.front().Completion)) {
         completed.push_back(m_pendingCompletions.front());

@@ -73,6 +73,8 @@ public:
 
     ~VulkanSwapchain();
 
+    void Recreate(NWindow::WindowSize framebufferSize);
+
     [[nodiscard]] bool IsSuspended() const noexcept;
 
     [[nodiscard]] const VulkanSwapchainPlan& GetPlan() const noexcept;
@@ -92,7 +94,15 @@ public:
 private:
     class Impl;
 
+    void ReleaseRetired() noexcept;
+    friend class VulkanClearPresentPath;
+
+    const VulkanDevice& m_device;
+    VulkanPhysicalDeviceSelection m_physicalDevice;
+    VkSurfaceKHR m_surface = VK_NULL_HANDLE;
+    bool m_failed = false;
     std::unique_ptr<Impl> m_impl;
+    std::vector<std::unique_ptr<Impl>> m_retired;
 };
 
 } // namespace NVulkan

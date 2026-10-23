@@ -23,6 +23,8 @@
 extern char** environ;
 #endif
 
+#include <glfw.h>
+
 #include <graphics/vulkan/clear_present_path.h>
 #include <graphics/vulkan/device.h>
 #include <graphics/vulkan/glfw_surface.h>
@@ -32,6 +34,8 @@ extern char** environ;
 #include <graphics/vulkan/swapchain.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <window/engine/GLFW/window_engine.h>
+#include <window/internal/window_engine_access.h>
 #include <window/window.h>
 #include <window/window_config.h>
 #include <window/window_runtime.h>
@@ -79,6 +83,59 @@ struct CommandPoolDeleter {
 using UniqueSemaphore = std::unique_ptr<std::remove_pointer_t<VkSemaphore>, SemaphoreDeleter>;
 using UniqueFence = std::unique_ptr<std::remove_pointer_t<VkFence>, FenceDeleter>;
 using UniqueCommandPool = std::unique_ptr<std::remove_pointer_t<VkCommandPool>, CommandPoolDeleter>;
+
+class SwapchainResultOverride {
+public:
+    SwapchainResultOverride() {
+        OriginalAcquire = vkAcquireNextImageKHR;
+        OriginalPresent = vkQueuePresentKHR;
+        vkAcquireNextImageKHR = Acquire;
+        vkQueuePresentKHR = Present;
+    }
+
+    ~SwapchainResultOverride() {
+        vkAcquireNextImageKHR = OriginalAcquire;
+        vkQueuePresentKHR = OriginalPresent;
+        NextAcquire.reset();
+        NextPresent.reset();
+    }
+
+    inline static std::optional<VkResult> NextAcquire;
+    inline static std::optional<VkResult> NextPresent;
+
+private:
+    static VKAPI_ATTR VkResult VKAPI_CALL Acquire(VkDevice device,
+                                                  VkSwapchainKHR swapchain,
+                                                  std::uint64_t timeout,
+                                                  VkSemaphore semaphore,
+                                                  VkFence fence,
+                                                  std::uint32_t* imageIndex) {
+        if (NextAcquire == VK_ERROR_OUT_OF_DATE_KHR) {
+            NextAcquire.reset();
+            return VK_ERROR_OUT_OF_DATE_KHR;
+        }
+        const VkResult result = OriginalAcquire(device, swapchain, timeout, semaphore, fence, imageIndex);
+        if (NextAcquire.has_value() && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
+            const auto overridden = *NextAcquire;
+            NextAcquire.reset();
+            return overridden;
+        }
+        return result;
+    }
+
+    static VKAPI_ATTR VkResult VKAPI_CALL Present(VkQueue queue, const VkPresentInfoKHR* info) {
+        const VkResult result = OriginalPresent(queue, info);
+        if (NextPresent.has_value() && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
+            const auto overridden = *NextPresent;
+            NextPresent.reset();
+            return overridden;
+        }
+        return result;
+    }
+
+    inline static PFN_vkAcquireNextImageKHR OriginalAcquire = nullptr;
+    inline static PFN_vkQueuePresentKHR OriginalPresent = nullptr;
+};
 
 VulkanSwapchainSupport MakeSupport() {
     return {
@@ -302,7 +359,7 @@ char** GetEnvironment() {
 #endif
 }
 
-void RunSpawnedSmoke(std::string_view filter) {
+void RunSpawnedSmoke(std::string_view filter, int maxAttempts = 100) {
     const std::string executable = GetExecutablePath();
     ASSERT_FALSE(executable.empty());
     const std::string filterArg = std::string{"--gtest_filter="} + std::string{filter};
@@ -323,7 +380,7 @@ void RunSpawnedSmoke(std::string_view filter) {
     ASSERT_NE(pid, -1);
 
     int status = 0;
-    for (int attempt = 0; attempt < 100; ++attempt) {
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
         const pid_t result = waitpid(pid, &status, WNOHANG);
         ASSERT_NE(result, -1);
 
@@ -591,4 +648,130 @@ TEST(VulkanClearPresentPathChild, DISABLED_ClearsAndPresentsRepeatedFrames) {
 
 TEST(VulkanClearPresentPath, ClearsAndPresentsRepeatedFrames) {
     RunSpawnedSmoke("VulkanClearPresentPathChild.DISABLED_ClearsAndPresentsRepeatedFrames");
+}
+
+TEST(VulkanClearPresentPathChild, DISABLED_RecreatesAcrossResizeAndSuspension) {
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{MakeWindowConfig()};
+        auto& native =
+                dynamic_cast<NWindow::NEngine::NGlfw::IGlfwWindowEngine&>(NWindow::NInternal::GetWindowEngine(window))
+                        .GetGlfwWindow();
+        std::mutex validationMutex;
+        std::vector<std::string> validationErrors;
+        NVulkan::VulkanInstanceConfig config;
+        config.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
+        config.ValidationMode = NVulkan::EValidationMode::Required;
+        config.EnableDebugUtils = true;
+        config.DebugMessageHandler = [&](const NVulkan::VulkanDebugMessage& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                const std::lock_guard lock{validationMutex};
+                validationErrors.push_back(message.Message);
+            }
+        };
+        NVulkan::VulkanInstance instance{config};
+        const NVulkan::NGlfw::VulkanSurface surface{instance, window};
+        const auto physicalDevice = NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
+        {
+            const NVulkan::VulkanDevice device{physicalDevice};
+            const auto deviceHandle = device.GetHandle();
+            const SwapchainResultOverride resultOverride;
+            NVulkan::VulkanSwapchain swapchain{device, physicalDevice, surface.GetHandle(), {0, 0}};
+            for (const std::size_t slots: {1U, 3U}) {
+                NVulkan::VulkanClearPresentPath path{device, swapchain, slots};
+                std::uint64_t nextFrame = 0;
+                auto lastStatus = NVulkan::EVulkanClearPresentStatus::NOT_READY;
+                std::vector<NVulkan::VulkanFrameCompletionEvent> completed;
+                auto collect = [&] {
+                    auto events = path.PollCompletedFrames();
+                    completed.insert(completed.end(), events.begin(), events.end());
+                };
+                auto renderFrames = [&](std::uint64_t target) {
+                    for (int attempt = 0; nextFrame < target && attempt < 1000; ++attempt) {
+                        window.ProcessEvents();
+                        path.SetFramebufferSize(window.GetFramebufferSize());
+                        const auto result = path.Render(nextFrame, {.float32 = {0.2F, 0.3F, 0.4F, 1.0F}});
+                        lastStatus = result.Status;
+                        if (result.Completion.has_value()) {
+                            ++nextFrame;
+                        } else {
+                            EXPECT_NE(result.Status, NVulkan::EVulkanClearPresentStatus::PRESENTED);
+                            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                        }
+                    }
+                    EXPECT_EQ(nextFrame, target);
+                };
+                path.SetFramebufferSize({0, 0});
+                EXPECT_EQ(path.Render(0, {}).Status, NVulkan::EVulkanClearPresentStatus::SUSPENDED);
+                for (int cycle = 0; cycle < 4; ++cycle) {
+                    window.SetSize({96 + cycle * 16, 80 + cycle * 16});
+                    renderFrames(nextFrame + 3);
+                    const auto oldSwapchain = swapchain.GetHandle();
+                    EXPECT_NE(oldSwapchain, VK_NULL_HANDLE);
+                    glfwIconifyWindow(&native);
+                    window.ProcessEvents();
+                    path.SetFramebufferSize({0, 0});
+                    for (int suspendedFrame = 0; suspendedFrame < 3; ++suspendedFrame) {
+                        const auto result = path.Render(nextFrame, {});
+                        EXPECT_EQ(result.Status, NVulkan::EVulkanClearPresentStatus::SUSPENDED);
+                        EXPECT_FALSE(result.Completion.has_value());
+                    }
+                    EXPECT_EQ(swapchain.GetHandle(), oldSwapchain);
+                    collect();
+                    glfwRestoreWindow(&native);
+                    window.ProcessEvents();
+                    renderFrames(nextFrame + 2);
+                    EXPECT_FALSE(swapchain.IsSuspended());
+                    EXPECT_FALSE(swapchain.GetImages().empty());
+                    EXPECT_EQ(device.GetHandle(), deviceHandle);
+                    collect();
+                }
+                for (const auto acquireResult: {VK_ERROR_OUT_OF_DATE_KHR, VK_SUBOPTIMAL_KHR}) {
+                    const auto previous = swapchain.GetHandle();
+                    SwapchainResultOverride::NextAcquire = acquireResult;
+                    renderFrames(nextFrame + 1);
+                    EXPECT_FALSE(SwapchainResultOverride::NextAcquire.has_value());
+                    if (acquireResult == VK_SUBOPTIMAL_KHR) {
+                        renderFrames(nextFrame + 1);
+                    }
+                    EXPECT_NE(swapchain.GetHandle(), previous);
+                }
+                for (const auto presentResult: {VK_ERROR_OUT_OF_DATE_KHR, VK_SUBOPTIMAL_KHR}) {
+                    SwapchainResultOverride::NextPresent = presentResult;
+                    renderFrames(nextFrame + 1);
+                    EXPECT_FALSE(SwapchainResultOverride::NextPresent.has_value());
+                    EXPECT_EQ(lastStatus,
+                              presentResult == VK_ERROR_OUT_OF_DATE_KHR
+                                      ? NVulkan::EVulkanClearPresentStatus::OUT_OF_DATE
+                                      : NVulkan::EVulkanClearPresentStatus::PRESENTED);
+                    const auto previous = swapchain.GetHandle();
+                    renderFrames(nextFrame + 1);
+                    EXPECT_NE(swapchain.GetHandle(), previous);
+                }
+                for (int attempt = 0; completed.size() < nextFrame && attempt < 1000; ++attempt) {
+                    collect();
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+                ASSERT_EQ(completed.size(), nextFrame);
+                for (std::size_t index = 0; index < completed.size(); ++index) {
+                    EXPECT_EQ(completed[index].FrameIndex, index);
+                    EXPECT_GT(completed[index].Completion.Value, 0U);
+                }
+            }
+        }
+        const std::lock_guard lock{validationMutex};
+        EXPECT_TRUE(validationErrors.empty());
+        for (const auto& error: validationErrors) {
+            ADD_FAILURE() << error;
+        }
+    } catch (const NCommon::Exception& exception) {
+        if (IsEnvironmentFailure(exception)) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+        throw;
+    }
+}
+
+TEST(VulkanClearPresentPath, RecreatesAcrossResizeAndSuspension) {
+    RunSpawnedSmoke("VulkanClearPresentPathChild.DISABLED_RecreatesAcrossResizeAndSuspension", 300);
 }

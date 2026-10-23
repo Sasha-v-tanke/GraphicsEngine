@@ -1,5 +1,28 @@
 # Vulkan Backend
 
+## Presentation recreation
+
+The presentation owner forwards framebuffer changes to `VulkanClearPresentPath::SetFramebufferSize`.
+Calls to this method, `Render`, and `PollCompletedFrames` must be externally serialized.
+A zero size suspends acquire/present without discarding outstanding completion events or stopping simulation.
+Restoring a positive size, resize, acquire out-of-date, and acquire/present suboptimal request recreation.
+An out-of-date present still returns the completion of its successful graphics submission.
+
+Before replacement, `Render` polls the last graphics timeline point and returns `NOT_READY` while it is pending.
+The device and frame ring survive replacement. No queue/device idle wait occurs on recreation or ordinary frames.
+Old swapchains, views and per-image present semaphores are retained together. Once the first successfully presented
+image of the new chain is reacquired, its subsequent graphics completion proves that the acquire semaphore wait
+has completed and that the prior present has finished. Retired generations can then be freed. Recreation before
+this round trip retains all older generations until a subsequent chain provides the same proof.
+This follows the [Khronos recreation fallback](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html)
+for implementations without swapchain-maintenance present fences. Continuous resize can temporarily retain several
+generations. Shutdown keeps the existing device-idle teardown policy.
+
+Low-level `VulkanSwapchain::Recreate` requires that the caller has finished all GPU uses of
+the old images, except zero-size suspension, which retains the resources. When a clear/present path is attached,
+it is the sole recreation owner and supplies the presentation retirement proof. Replacement failure latches a shutdown-required state because Vulkan may have
+retired the old swapchain even when creation fails. Device and surface must outlive both owners.
+
 `VulkanBackend` owns Vulkan loader, instance bootstrap, physical-device selection and logical-device
 bootstrap for GraphicsEngine.
 
