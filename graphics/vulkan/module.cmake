@@ -1,6 +1,7 @@
 MODULE(VulkanBackend)
 
 API(
+    descriptor_manager.h
     device.h
     clear_present_path.h
     frame_context.h
@@ -13,6 +14,7 @@ API(
 )
 
 SOURCES(
+    descriptor_manager.cpp
     graphics_pipeline.h
     graphics_pipeline.cpp
     device.cpp

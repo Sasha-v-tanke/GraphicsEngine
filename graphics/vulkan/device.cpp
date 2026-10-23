@@ -158,6 +158,7 @@ public:
     explicit Impl(const VulkanPhysicalDeviceSelection& physicalDevice)
         : m_physicalDevice(physicalDevice.Handle)
         , m_plan(MakeVulkanDevicePlan(physicalDevice))
+        , m_descriptorLimits(physicalDevice.Capabilities.DescriptorLimits)
         , m_graphicsQueueFamilyIndex(physicalDevice.GraphicsQueueFamilyIndex)
         , m_presentQueueFamilyIndex(physicalDevice.PresentQueueFamilyIndex)
         , m_device(CreateDevice()) {
@@ -188,6 +189,10 @@ public:
 
     [[nodiscard]] const NGraphics::GraphicsCapabilities& GetGraphicsCapabilities() const noexcept {
         return m_plan.GraphicsCapabilities;
+    }
+
+    [[nodiscard]] const VulkanDescriptorLimits& GetDescriptorLimits() const noexcept {
+        return m_descriptorLimits;
     }
 
     [[nodiscard]] VulkanLockedQueue LockGraphicsQueue() const {
@@ -425,6 +430,7 @@ private:
 private:
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VulkanDevicePlan m_plan;
+    VulkanDescriptorLimits m_descriptorLimits;
     std::uint32_t m_graphicsQueueFamilyIndex = 0;
     std::uint32_t m_presentQueueFamilyIndex = 0;
     VkDevice m_device = VK_NULL_HANDLE;
@@ -445,6 +451,10 @@ VkDevice VulkanDevice::GetHandle() const noexcept {
 
 const NGraphics::GraphicsCapabilities& VulkanDevice::GetGraphicsCapabilities() const noexcept {
     return m_impl->GetGraphicsCapabilities();
+}
+
+const VulkanDescriptorLimits& VulkanDevice::GetDescriptorLimits() const noexcept {
+    return m_impl->GetDescriptorLimits();
 }
 
 VulkanLockedQueue VulkanDevice::LockGraphicsQueue() const {
