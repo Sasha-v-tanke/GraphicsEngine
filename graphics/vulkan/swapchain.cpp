@@ -341,7 +341,8 @@ public:
     Impl(const VulkanDevice& device,
          const VulkanPhysicalDeviceSelection& physicalDevice,
          VkSurfaceKHR surface,
-         NWindow::WindowSize framebufferSize)
+         NWindow::WindowSize framebufferSize,
+         VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE)
         : m_device(device.GetHandle())
         , m_plan(MakeVulkanSwapchainPlan(ReadVulkanSwapchainSupport(physicalDevice.Handle, surface),
                                          framebufferSize,
@@ -352,7 +353,7 @@ public:
         }
 
         try {
-            m_swapchain = CreateSwapchain(surface);
+            m_swapchain = CreateSwapchain(surface, oldSwapchain);
             m_images = CreateImages();
         } catch (...) {
             Destroy();
@@ -362,6 +363,11 @@ public:
 
     ~Impl() {
         Destroy();
+    }
+
+    void Suspend() noexcept {
+        m_plan.Suspended = true;
+        m_plan.Extent = {};
     }
 
     void Destroy() noexcept {
@@ -493,7 +499,7 @@ public:
     }
 
 private:
-    [[nodiscard]] VkSwapchainKHR CreateSwapchain(VkSurfaceKHR surface) const {
+    [[nodiscard]] VkSwapchainKHR CreateSwapchain(VkSurfaceKHR surface, VkSwapchainKHR oldSwapchain) const {
         const VkSwapchainCreateInfoKHR createInfo{
                 .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
                 .pNext = nullptr,
@@ -512,7 +518,7 @@ private:
                 .compositeAlpha = m_plan.CompositeAlpha,
                 .presentMode = m_plan.PresentMode,
                 .clipped = VK_TRUE,
-                .oldSwapchain = VK_NULL_HANDLE,
+                .oldSwapchain = oldSwapchain,
         };
 
         VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -562,10 +568,32 @@ VulkanSwapchain::VulkanSwapchain(const VulkanDevice& device,
                                  const VulkanPhysicalDeviceSelection& physicalDevice,
                                  VkSurfaceKHR surface,
                                  NWindow::WindowSize framebufferSize)
-    : m_impl(std::make_unique<Impl>(device, physicalDevice, surface, framebufferSize)) {
+    : m_device(device)
+    , m_physicalDevice(physicalDevice)
+    , m_surface(surface)
+    , m_impl(std::make_unique<Impl>(device, physicalDevice, surface, framebufferSize)) {
 }
 
 VulkanSwapchain::~VulkanSwapchain() = default;
+
+void VulkanSwapchain::Recreate(NWindow::WindowSize framebufferSize) {
+    if (m_failed) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Swapchain recreation requires shutdown after failure");
+    }
+    if (framebufferSize.Width <= 0 || framebufferSize.Height <= 0) {
+        m_impl->Suspend();
+        return;
+    }
+    try {
+        auto replacement =
+                std::make_unique<Impl>(m_device, m_physicalDevice, m_surface, framebufferSize, m_impl->GetHandle());
+        m_impl = std::move(replacement);
+    } catch (...) {
+        m_impl->Suspend();
+        m_failed = true;
+        throw;
+    }
+}
 
 bool VulkanSwapchain::IsSuspended() const noexcept {
     return m_impl->IsSuspended();

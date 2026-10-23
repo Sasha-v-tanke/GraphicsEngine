@@ -98,7 +98,9 @@ VulkanClearPresentPath::VulkanClearPresentPath(const VulkanDevice& device,
     , m_submissions(device)
     , m_frames(device, maxActiveFrames)
     , m_frameResources(maxActiveFrames)
-    , m_presentResources(swapchain.GetImages().size()) {
+    , m_presentResources(swapchain.GetImages().size())
+    , m_framebufferSize{.Width = static_cast<int>(swapchain.GetPlan().Extent.width),
+                        .Height = static_cast<int>(swapchain.GetPlan().Extent.height)} {
 }
 
 VulkanClearPresentPath::~VulkanClearPresentPath() {
@@ -107,10 +109,50 @@ VulkanClearPresentPath::~VulkanClearPresentPath() {
     }
 }
 
+void VulkanClearPresentPath::SetFramebufferSize(NWindow::WindowSize framebufferSize) noexcept {
+    if (framebufferSize.Width != m_framebufferSize.Width || framebufferSize.Height != m_framebufferSize.Height) {
+        m_framebufferSize = framebufferSize;
+        m_recreationRequested = true;
+    }
+}
+
+bool VulkanClearPresentPath::TryRecreateSwapchain() {
+    if (m_lastSubmission.has_value() && !m_submissions.IsCompleted(*m_lastSubmission)) {
+        return false;
+    }
+    if (m_swapchain.GetHandle() != VK_NULL_HANDLE) {
+        const VulkanLockedQueue queue = m_device.LockPresentQueue();
+        const VkResult result = vkQueueWaitIdle(queue.GetHandle());
+        if (result != VK_SUCCESS) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to drain Vulkan presentation queue: {}",
+                                  static_cast<int>(result));
+        }
+    }
+    m_swapchain.Recreate(m_framebufferSize);
+    m_presentResources.clear();
+    m_presentResources.resize(m_swapchain.GetImages().size());
+    m_recreationRequested = m_swapchain.IsSuspended();
+    return true;
+}
+
 VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex, VkClearColorValue clearColor) {
     if (m_failed) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Vulkan clear/present path requires shutdown after failure");
+    }
+    if (m_framebufferSize.Width <= 0 || m_framebufferSize.Height <= 0) {
+        m_swapchain.Recreate(m_framebufferSize);
+        m_recreationRequested = true;
+        return {.Status = EVulkanClearPresentStatus::SUSPENDED};
+    }
+    try {
+        if (m_recreationRequested && !TryRecreateSwapchain()) {
+            return {.Status = EVulkanClearPresentStatus::NOT_READY};
+        }
+    } catch (...) {
+        m_failed = true;
+        throw;
     }
     if (m_swapchain.IsSuspended()) {
         return {.Status = EVulkanClearPresentStatus::SUSPENDED};
@@ -133,6 +175,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         const VulkanSwapchainAcquireResult acquired =
                 m_swapchain.AcquireNextImage(resources.ImageAvailable, VK_NULL_HANDLE, 0);
         if (acquired.Status == EVulkanSwapchainAcquireStatus::OUT_OF_DATE) {
+            m_recreationRequested = true;
             m_frames.ReleaseAcquired(acquire);
             return {.Status = EVulkanClearPresentStatus::OUT_OF_DATE};
         }
@@ -174,6 +217,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
                 .SignalSemaphores = {signalSemaphore},
         });
         submitted = true;
+        m_lastSubmission = completion;
         m_frames.MarkSubmitted(acquire, completion.Value);
         m_pendingCompletions.push_back({
                 .FrameIndex = frameIndex,
@@ -183,6 +227,9 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         const VulkanLockedQueue presentQueue = m_device.LockPresentQueue();
         const EVulkanSwapchainPresentStatus present =
                 m_swapchain.Present(presentQueue, acquired.ImageIndex, {presentResources->PresentReady});
+        m_recreationRequested = acquired.Status == EVulkanSwapchainAcquireStatus::SUBOPTIMAL ||
+                                present == EVulkanSwapchainPresentStatus::SUBOPTIMAL ||
+                                present == EVulkanSwapchainPresentStatus::OUT_OF_DATE;
         return {
                 .Status = present == EVulkanSwapchainPresentStatus::OUT_OF_DATE ? EVulkanClearPresentStatus::OUT_OF_DATE
                                                                                 : EVulkanClearPresentStatus::PRESENTED,

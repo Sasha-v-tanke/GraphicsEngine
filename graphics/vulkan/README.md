@@ -1,5 +1,24 @@
 # Vulkan Backend
 
+## Presentation recreation
+
+The presentation owner forwards framebuffer changes to `VulkanClearPresentPath::SetFramebufferSize`.
+Calls to this method, `Render`, and `PollCompletedFrames` must be externally serialized.
+A zero size suspends acquire/present without discarding outstanding completion events or stopping simulation.
+Restoring a positive size, resize, acquire out-of-date, and acquire/present suboptimal request recreation.
+An out-of-date present still returns the completion of its successful graphics submission.
+
+Before replacement, `Render` polls the last graphics timeline point and returns `NOT_READY` while it is pending.
+Once graphics work completes, recreation drains the host-locked present queue to finish WSI semaphore uses.
+This queue wait occurs only on recreation; ordinary frames do not wait for device or queue idle.
+The device and frame ring survive replacement. Per-image present semaphores are replaced after WSI is safe,
+and old image views remain alive until the new swapchain and views have been created with `oldSwapchain`.
+
+Low-level `VulkanSwapchain::Recreate` requires that the caller has finished all GPU and presentation uses of
+the old images, except zero-size suspension, which retains the resources. When a clear/present path is attached,
+it is the sole recreation owner. Replacement failure latches a shutdown-required state because Vulkan may have
+retired the old swapchain even when creation fails. Device and surface must outlive both owners.
+
 `VulkanBackend` owns Vulkan loader, instance bootstrap, physical-device selection and logical-device
 bootstrap for GraphicsEngine.
 

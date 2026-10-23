@@ -37,12 +37,16 @@ public:
 
     ~VulkanClearPresentPath();
 
+    void SetFramebufferSize(NWindow::WindowSize framebufferSize) noexcept;
+
     [[nodiscard]] VulkanClearPresentResult Render(std::uint64_t frameIndex, VkClearColorValue clearColor);
 
     [[nodiscard]] std::vector<VulkanFrameCompletionEvent> PollCompletedFrames();
 
 private:
     struct FrameResources;
+
+    [[nodiscard]] bool TryRecreateSwapchain();
 
     [[nodiscard]] FrameResources& GetFrameResources(VulkanFrameContext& context);
 
@@ -56,6 +60,9 @@ private:
     std::vector<std::unique_ptr<FrameResources>> m_frameResources;
     std::vector<std::unique_ptr<FrameResources>> m_presentResources;
     std::deque<VulkanFrameCompletionEvent> m_pendingCompletions;
+    NWindow::WindowSize m_framebufferSize;
+    std::optional<VulkanQueueCompletion> m_lastSubmission;
+    bool m_recreationRequested = false;
     bool m_failed = false;
 };
 
