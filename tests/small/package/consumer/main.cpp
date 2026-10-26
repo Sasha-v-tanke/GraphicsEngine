@@ -20,10 +20,18 @@
 #include <GraphicsEngine/resources/resource_manager.h>
 #include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
+#include <GraphicsEngine/scene/scene_manager.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
 
 int main() {
+    NScene::SceneManager scenes;
+    const auto scene = scenes.CreateScene("package consumer");
+    scenes.Activate(scene);
+    if (!scenes.AcquireActive() || scenes.GetActiveHandle() != scene) {
+        return 1;
+    }
+    scenes.Unload(scene);
     NWindow::WindowRuntime runtime;
     NResources::ResourceManager resources;
 
