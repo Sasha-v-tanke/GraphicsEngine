@@ -3,6 +3,7 @@
 #include <memory>
 #include <utility>
 
+#include <application/runtime/presentation_runtime.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -44,11 +45,35 @@ FrameLoop::FrameLoop(const ApplicationConfig& config, std::unique_ptr<IEngineFac
     }()) {
 }
 
+FrameLoop::FrameLoop(const ApplicationConfig& config, std::unique_ptr<NGraphics::Graphics> graphics) {
+    auto runtime = std::make_unique<PresentationRuntime>(std::move(graphics));
+    m_presentation = runtime.get();
+    m_engine = NEngine::NRuntime::EngineFactory::Create(
+            {.MaxActiveFrames = config.MaxActiveFrames, .WorkerCount = config.WorkerCount},
+            std::move(runtime));
+}
+
+void FrameLoop::PumpPresentation(int width, int height) {
+    if (m_presentation) {
+        m_presentation->Pump(width, height);
+    }
+}
+
+FrameDiagnostics FrameLoop::GetDiagnostics() const {
+    auto diagnostics = m_presentation ? m_presentation->GetDiagnostics() : FrameDiagnostics{};
+    const auto recycled = m_engine->GetGpuRecycledFrameCount();
+    diagnostics.Recycled = recycled >= diagnostics.Abandoned ? recycled - diagnostics.Abandoned : 0;
+    return diagnostics;
+}
+
 FrameLoop::~FrameLoop() {
     Stop();
 }
 
 void FrameLoop::Start() {
+    if (m_presentation) {
+        m_presentation->Start();
+    }
     m_engine->Start();
     m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
 }
@@ -59,7 +84,14 @@ void FrameLoop::Stop() noexcept {
     }
 }
 
+void FrameLoop::CheckError() const {
+    if (const auto error = m_engine->GetLastError()) {
+        GRAPHICS_ENGINE_THROW(error->Code, "{}", error->Message);
+    }
+}
+
 void FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
+    CheckError();
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
         if (!m_engine->CanAcceptUpdate()) {
             return;

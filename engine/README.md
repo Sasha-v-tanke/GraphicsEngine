@@ -257,3 +257,10 @@ for retiring native backend objects before it reports terminal failure.
 ## Responsibility
 
 FrameScheduler является private runtime component Engine.
+
+The frame runtime's `Drain()` hook runs on the Stop caller after CPU tasks join and before Engine waits for
+registered GPU futures. Application presentation uses it to cancel unsubmitted intents and drain accepted
+submissions on the application thread; Stop never waits on a future whose main-thread producer is idle.
+GPU recycle diagnostics count registered completion frames; Application subtracts abandoned unsubmitted
+intents when reporting GPU-only counters. Normal frame reuse still requires both terminal CPU work and
+the exact registered completion.

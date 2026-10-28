@@ -3,6 +3,7 @@
 #include <memory>
 
 #include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/application/frame_diagnostics.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 #include <GraphicsEngine/window/window_size.h>
 
@@ -37,6 +38,8 @@ public:
     // Requests close through the owned Window. OnClose is emitted by Window close semantics, not by this call directly.
     void RequestShutdown();
 
+    [[nodiscard]] FrameDiagnostics GetFrameDiagnostics() const;
+
     [[nodiscard]] bool IsShutdownRequested() const;
 
 protected:
@@ -64,6 +67,7 @@ private:
     void RunFrame();
 
 private:
+    bool m_hasPresentation = false;
     std::unique_ptr<NWindow::WindowRuntime> m_windowRuntime;
     std::unique_ptr<NWindow::Window> m_window;
     std::unique_ptr<NRuntime::FrameLoop> m_frameLoop;

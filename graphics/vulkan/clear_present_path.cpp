@@ -138,7 +138,13 @@ void VulkanClearPresentPath::ReleaseRetiredIfCompleted() {
     }
 }
 
-VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex, VkClearColorValue clearColor) {
+bool VulkanClearPresentPath::IsCompleted(VulkanQueueCompletion completion) const {
+    return m_submissions.IsCompleted(completion);
+}
+
+VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex,
+                                                        VkClearColorValue clearColor,
+                                                        const std::function<void(VulkanQueueCompletion)>& onSubmitted) {
     if (m_failed) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Vulkan clear/present path requires shutdown after failure");
@@ -221,6 +227,10 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         });
         submitted = true;
         m_lastSubmission = completion;
+        // Publish ownership before any fallible bookkeeping or presentation operation.
+        if (onSubmitted) {
+            onSubmitted(completion);
+        }
         if (m_firstPresentedImage == acquired.ImageIndex && !m_retiredPresentResources.empty() &&
             !m_retirementCompletion.has_value()) {
             m_retirementCompletion = completion;

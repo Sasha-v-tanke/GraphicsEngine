@@ -756,3 +756,7 @@ GraphicsEngine::GraphicsEngine
 
 До определения отдельной versioning и compatibility policy GraphicsEngine не гарантирует ABI compatibility между
 версиями.
+
+## MVP-2 — First GPU Frame
+
+Clear-frame sample через Application/Engine/Graphics, ownership slots и инструкции запуска: [Application](application/README.md).

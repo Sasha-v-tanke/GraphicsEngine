@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -39,7 +40,11 @@ public:
 
     void SetFramebufferSize(NWindow::WindowSize framebufferSize) noexcept;
 
-    [[nodiscard]] VulkanClearPresentResult Render(std::uint64_t frameIndex, VkClearColorValue clearColor);
+    [[nodiscard]] VulkanClearPresentResult Render(std::uint64_t frameIndex,
+                                                  VkClearColorValue clearColor,
+                                                  const std::function<void(VulkanQueueCompletion)>& onSubmitted = {});
+
+    [[nodiscard]] bool IsCompleted(VulkanQueueCompletion completion) const;
 
     [[nodiscard]] std::vector<VulkanFrameCompletionEvent> PollCompletedFrames();
 

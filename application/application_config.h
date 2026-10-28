@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 
+#include <GraphicsEngine/graphics/presentation.h>
 #include <GraphicsEngine/window/window_config.h>
 
 namespace NApplication {
@@ -15,6 +17,9 @@ struct ApplicationConfig {
 
     // 0 uses TaskSystem normalization, currently one worker.
     std::size_t WorkerCount = 0;
+
+    // Optional clear presentation. Application supplies the single MaxActiveFrames value.
+    std::optional<NGraphics::PresentationConfig> Presentation = std::nullopt;
 };
 
 } // namespace NApplication
