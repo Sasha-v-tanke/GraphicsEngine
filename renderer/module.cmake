@@ -1,12 +1,14 @@
 MODULE(Renderer)
 
 API(
+    render_graph.h
     renderer.h
     render_components.h
     render_world.h
 )
 
 SOURCES(
+    render_graph.cpp
     extraction.cpp
     renderer.cpp
 )
