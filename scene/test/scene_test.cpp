@@ -200,6 +200,82 @@ TEST(Scene, WorkerLeaseRetainsWorldAfterManagerDestruction) {
     EXPECT_EQ(destroyed.load(), 1);
 }
 
+TEST(Scene, ParallelExtractionRetainsOldSceneAcrossSwitchAndUnload) {
+    for (const std::size_t workerCount: {1U, 4U}) {
+        SCOPED_TRACE(workerCount);
+        std::atomic<int> destroyed{0};
+        NResources::ResourceManager resources;
+        const auto mesh = resources.Request<NResources::MeshData>({"mesh", "parallel scene"});
+        resources.PublishReady(resources.BeginLoading(mesh), std::make_shared<NResources::MeshData>());
+        const auto material = resources.Request<NGraphics::Material>({"material", "parallel scene"});
+        resources.PublishReady(
+                resources.BeginLoading(material),
+                std::make_shared<NGraphics::Material>(NResources::ResourceIdentity{"pipeline", "shared"}));
+        NScene::SceneManager scenes;
+        const NScene::SceneHandle old = scenes.RegisterScene(std::make_unique<UserScene>(destroyed));
+        const NScene::SceneHandle next = scenes.CreateScene("next");
+        scenes.Activate(old);
+        std::shared_ptr<NScene::Scene> source = scenes.AcquireActive();
+        for (int index = 0; index < 1031; ++index) {
+            const NEcs::Entity entity = source->GetWorld().CreateEntity();
+            source->GetWorld().AddComponent<NRenderer::TransformComponent>(entity).Value.Translation.X =
+                    static_cast<float>(index);
+            source->GetWorld().AddComponent<NRenderer::RenderableComponent>(
+                    entity,
+                    NRenderer::RenderableComponent{.Mesh = mesh, .Material = material});
+        }
+        NEngine::NController::FrameScheduler scheduler{NEngine::EngineConfig{.MaxActiveFrames = 1}};
+        const NEngine::NController::FrameHandle frame = *scheduler.TryAcquireFrame();
+        scheduler.ArmFrame(frame);
+        scheduler.BeginUpdate(frame);
+        scheduler.EndUpdate(frame);
+        scheduler.SignalDraw(frame);
+        scheduler.BeginFinalize(frame);
+        std::promise<void> scheduled;
+        std::future<void> started = scheduled.get_future();
+        std::promise<void> release;
+        const std::shared_future<void> released = release.get_future().share();
+        NCommon::TaskSystem tasks{workerCount};
+        NCommon::TaskHandle join;
+        const NRenderer::RenderWorld* snapshot = nullptr;
+        const NCommon::TaskHandle root = tasks.Submit(
+                [source = std::move(source), &resources, &scheduler, frame, &join, &snapshot, &scheduled, released](
+                        NCommon::TaskContext& task) {
+                    join = NRenderer::NInternal::ScheduleRenderWorldExtraction(
+                            source->GetWorld(),
+                            resources,
+                            scheduler.GetFrameStorage(frame),
+                            task,
+                            [source, &snapshot](const NRenderer::RenderWorld& result) { snapshot = &result; },
+                            17);
+                    // Chunks depend on this root. Hold them pending until the owner publishes switch/unload.
+                    scheduled.set_value();
+                    ASSERT_EQ(released.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+                });
+        EXPECT_EQ(started.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+        scenes.Activate(next);
+        scenes.Unload(old);
+        EXPECT_FALSE(scenes.IsRegistered(old));
+        EXPECT_EQ(scenes.GetActiveHandle(), next);
+        EXPECT_EQ(destroyed.load(), 0);
+        release.set_value();
+        tasks.Wait(root);
+        ASSERT_EQ(tasks.GetStatus(root), NCommon::ETaskStatus::COMPLETED);
+        ASSERT_TRUE(join.IsValid());
+        tasks.Wait(join);
+        ASSERT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::COMPLETED);
+        EXPECT_EQ(destroyed.load(), 1);
+        ASSERT_NE(snapshot, nullptr);
+        ASSERT_EQ(snapshot->GetObjects().size(), 1031);
+        for (std::size_t index = 0; index < snapshot->GetObjects().size(); ++index) {
+            EXPECT_FLOAT_EQ(snapshot->GetObjects()[index].WorldTransform.Translation.X, static_cast<float>(index));
+        }
+        EXPECT_TRUE(resources.TryAcquire(mesh).has_value());
+        scheduler.CompleteFrame(frame);
+        scheduler.RecycleFrame(frame);
+    }
+}
+
 TEST(Scene, UnloadingOldScenePreservesFrameSnapshotAndSharedResources) {
     using namespace NRenderer;
     NResources::ResourceManager resources;
