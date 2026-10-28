@@ -17,6 +17,7 @@
 #include <GraphicsEngine/renderer/renderer.h>
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>
+#include <GraphicsEngine/resources/mesh_loader.h>
 #include <GraphicsEngine/resources/resource_manager.h>
 #include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
@@ -123,6 +124,19 @@ int main() {
             NResources::LoadImage(resources, NResources::ResourceIdentity{"image", "package.ppm"}, imagePath);
     const std::shared_ptr<const NResources::ImageData> loadedImageData = resources.GetCpuResource(loadedImage);
     std::filesystem::remove(imagePath);
+
+    const std::filesystem::path meshPath = std::filesystem::temp_directory_path() / "graphics-engine-package-mesh.obj";
+    {
+        std::ofstream file{meshPath};
+        file << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    }
+    const auto loadedMesh =
+            NResources::LoadMesh(resources, NResources::ResourceIdentity{"mesh", "package.obj"}, meshPath);
+    const auto meshLease = resources.TryAcquire(loadedMesh);
+    std::filesystem::remove(meshPath);
+    if (!meshLease || (*meshLease)->GetVertices().size() != 3 || (*meshLease)->GetIndices().size() != 3) {
+        return 1;
+    }
 
     return config.Window.Size.Width == 640 && config.Window.Size.Height == 480 && origin.W == 1.0F &&
                            world.IsAlive(entity) && artifact && validSpirV &&

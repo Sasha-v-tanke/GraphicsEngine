@@ -5,12 +5,14 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/renderer/render_components.h>
 #include <GraphicsEngine/renderer/render_world.h>
 #include <GraphicsEngine/renderer/renderer.h>
+#include <GraphicsEngine/resources/mesh_data.h>
 #include <GraphicsEngine/resources/resource_identity.h>
 #include <GraphicsEngine/resources/resource_manager.h>
 #include <engine/controller/frame_scheduler.h>
@@ -18,19 +20,6 @@
 #include <gtest/gtest.h>
 #include <renderer/extraction.h>
 #include <tests/common/test_error.h>
-
-namespace NResources {
-
-class MeshData final {
-public:
-    explicit MeshData(int revision = 0) noexcept
-        : Revision(revision) {
-    }
-
-    int Revision = 0;
-};
-
-} // namespace NResources
 
 namespace {
 
@@ -47,13 +36,20 @@ using NResources::MeshData;
 using NResources::ResourceIdentity;
 using NResources::ResourceManager;
 
-template<typename T>
-NResources::ResourceHandle<T>
-MakeReadyResource(ResourceManager& resources, ResourceIdentity identity, int revision = 0) {
-    const NResources::ResourceHandle<T> handle = resources.Request<T>(std::move(identity));
-    const NResources::ResourceOperation<T> operation = resources.BeginLoading(handle);
+std::shared_ptr<MeshData> MakeMeshPayload(int revision = 0) {
+    std::vector<NResources::MeshVertex> vertices(3);
+    vertices[0].Position[0] = static_cast<float>(revision);
+    return std::make_shared<MeshData>(std::move(vertices),
+                                      std::vector<std::uint32_t>{0, 1, 2},
+                                      std::vector<std::uint8_t>(3));
+}
 
-    resources.PublishReady(operation, std::make_shared<T>(revision));
+NResources::ResourceHandle<MeshData>
+MakeReadyMesh(ResourceManager& resources, ResourceIdentity identity, int revision = 0) {
+    const NResources::ResourceHandle<MeshData> handle = resources.Request<MeshData>(std::move(identity));
+    const NResources::ResourceOperation<MeshData> operation = resources.BeginLoading(handle);
+
+    resources.PublishReady(operation, MakeMeshPayload(revision));
 
     return handle;
 }
@@ -121,9 +117,9 @@ TEST(RenderWorld, RequiresDrawCheckpointBeforeExtraction) {
 TEST(RenderWorld, IsolatesWorldAndResourceMutationsAfterExtraction) {
     ResourceManager resources;
     const NResources::ResourceHandle<MeshData> firstMesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "first"}, 1);
+            MakeReadyMesh(resources, ResourceIdentity{"mesh", "first"}, 1);
     const NResources::ResourceHandle<MeshData> secondMesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "second"}, 2);
+            MakeReadyMesh(resources, ResourceIdentity{"mesh", "second"}, 2);
     const NResources::ResourceHandle<Material> material =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "first"}, 3);
 
@@ -191,7 +187,7 @@ TEST(RenderWorld, IsolatesWorldAndResourceMutationsAfterExtraction) {
     EXPECT_FLOAT_EQ(renderObject.WorldTransform.Translation.X, 1.0F);
     EXPECT_EQ(renderObject.Mesh.GetResource(), firstMesh);
     EXPECT_EQ(renderObject.Material.GetResource(), material);
-    EXPECT_EQ(renderObject.Mesh->Revision, 1);
+    EXPECT_EQ(renderObject.Mesh->GetVertices().front().Position[0], 1);
     EXPECT_EQ(renderObject.Material->GetPipeline(), (ResourceIdentity{"pipeline", "material-3"}));
 }
 
@@ -199,7 +195,7 @@ TEST(RenderWorld, RetainsResourceVersionUntilFrameRecycle) {
     ResourceManager resources;
     const NResources::ResourceHandle<MeshData> mesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "retained"});
     const NResources::ResourceOperation<MeshData> firstMeshOperation = resources.BeginLoading(mesh);
-    auto firstMeshPayload = std::make_shared<MeshData>(1);
+    auto firstMeshPayload = MakeMeshPayload(1);
     std::weak_ptr<const MeshData> firstMeshLifetime = firstMeshPayload;
 
     resources.PublishReady(firstMeshOperation, firstMeshPayload);
@@ -230,7 +226,7 @@ TEST(RenderWorld, RetainsResourceVersionUntilFrameRecycle) {
     const std::uint64_t retainedVersion = renderObject.Mesh.GetVersion();
 
     EXPECT_EQ(renderObject.Mesh.GetResource(), mesh);
-    EXPECT_EQ(renderObject.Mesh->Revision, 1);
+    EXPECT_EQ(renderObject.Mesh->GetVertices().front().Position[0], 1);
 
     firstMeshPayload.reset();
 
@@ -243,16 +239,16 @@ TEST(RenderWorld, RetainsResourceVersionUntilFrameRecycle) {
 
     const NResources::ResourceOperation<MeshData> secondMeshOperation = resources.BeginLoading(mesh);
 
-    resources.PublishReady(secondMeshOperation, std::make_shared<MeshData>(2));
+    resources.PublishReady(secondMeshOperation, MakeMeshPayload(2));
 
     std::optional<NResources::ResourceLease<MeshData>> currentMesh = resources.TryAcquire(mesh);
 
     ASSERT_TRUE(currentMesh.has_value());
     EXPECT_NE(currentMesh->GetVersion(), retainedVersion);
-    EXPECT_EQ((*currentMesh)->Revision, 2);
+    EXPECT_EQ((*currentMesh)->GetVertices().front().Position[0], 2);
 
     EXPECT_EQ(renderObject.Mesh.GetVersion(), retainedVersion);
-    EXPECT_EQ(renderObject.Mesh->Revision, 1);
+    EXPECT_EQ(renderObject.Mesh->GetVertices().front().Position[0], 1);
     EXPECT_FALSE(firstMeshLifetime.expired());
 
     scheduler.CompleteFrame(frame);
@@ -265,7 +261,7 @@ TEST(RenderWorld, RetainsResourceVersionAcrossMultipleFrameSlots) {
     ResourceManager resources;
     const NResources::ResourceHandle<MeshData> mesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "shared"});
     const NResources::ResourceOperation<MeshData> meshOperation = resources.BeginLoading(mesh);
-    auto meshPayload = std::make_shared<MeshData>(1);
+    auto meshPayload = MakeMeshPayload(1);
     std::weak_ptr<const MeshData> meshLifetime = meshPayload;
 
     resources.PublishReady(meshOperation, meshPayload);
@@ -325,7 +321,7 @@ TEST(RenderWorld, SkipsNewConsumersAfterResourceUnload) {
     const NResources::ResourceHandle<MeshData> mesh = resources.Request<MeshData>(ResourceIdentity{"mesh", "unloaded"});
     const NResources::ResourceOperation<MeshData> meshOperation = resources.BeginLoading(mesh);
 
-    resources.PublishReady(meshOperation, std::make_shared<MeshData>(1));
+    resources.PublishReady(meshOperation, MakeMeshPayload(1));
 
     const NResources::ResourceHandle<Material> material =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "unloaded"}, 1);
@@ -357,7 +353,7 @@ TEST(RenderWorld, SkipsNewConsumersAfterResourceUnload) {
 TEST(RenderWorld, RejectsStalePublicResourceHandleDuringExtraction) {
     ResourceManager resources;
     const NResources::ResourceHandle<MeshData> staleMesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "stale"}, 1);
+            MakeReadyMesh(resources, ResourceIdentity{"mesh", "stale"}, 1);
     const NResources::ResourceHandle<Material> material =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "stale"}, 1);
 
@@ -389,8 +385,7 @@ TEST(RenderWorld, RejectsStalePublicResourceHandleDuringExtraction) {
 
 TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
     ResourceManager resources;
-    const NResources::ResourceHandle<MeshData> mesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "slot"});
+    const NResources::ResourceHandle<MeshData> mesh = MakeReadyMesh(resources, ResourceIdentity{"mesh", "slot"});
     const NResources::ResourceHandle<Material> material =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "slot"});
 
@@ -435,8 +430,7 @@ TEST(RenderWorld, BindsSnapshotLifetimeToFrameSlotGeneration) {
 
 TEST(Renderer, ProducesNoDrawCommandsWithoutViews) {
     ResourceManager resources;
-    const NResources::ResourceHandle<MeshData> mesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "no-view"});
+    const NResources::ResourceHandle<MeshData> mesh = MakeReadyMesh(resources, ResourceIdentity{"mesh", "no-view"});
     const NResources::ResourceHandle<Material> material =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "no-view"});
 
@@ -465,8 +459,7 @@ TEST(Renderer, ProducesNoDrawCommandsWithoutViews) {
 
 TEST(Renderer, BuildsDrawCommandsForEveryViewObjectPair) {
     ResourceManager resources;
-    const NResources::ResourceHandle<MeshData> mesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "visible"}, 7);
+    const NResources::ResourceHandle<MeshData> mesh = MakeReadyMesh(resources, ResourceIdentity{"mesh", "visible"}, 7);
     const NResources::ResourceHandle<Material> material =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "visible"}, 8);
 
@@ -522,10 +515,8 @@ TEST(Renderer, BuildsDrawCommandsForEveryViewObjectPair) {
 
 TEST(Renderer, SortsDrawCommandsDeterministically) {
     ResourceManager resources;
-    const NResources::ResourceHandle<MeshData> firstMesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "a"}, 1);
-    const NResources::ResourceHandle<MeshData> secondMesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "b"}, 2);
+    const NResources::ResourceHandle<MeshData> firstMesh = MakeReadyMesh(resources, ResourceIdentity{"mesh", "a"}, 1);
+    const NResources::ResourceHandle<MeshData> secondMesh = MakeReadyMesh(resources, ResourceIdentity{"mesh", "b"}, 2);
     const NResources::ResourceHandle<Material> firstMaterial =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "a"}, 3);
     const NResources::ResourceHandle<Material> secondMaterial =
@@ -576,8 +567,7 @@ TEST(Renderer, SortsDrawCommandsDeterministically) {
 
 TEST(Renderer, UsesObjectIdAsFinalSortTieBreak) {
     ResourceManager resources;
-    const NResources::ResourceHandle<MeshData> mesh =
-            MakeReadyResource<MeshData>(resources, ResourceIdentity{"mesh", "tie"}, 1);
+    const NResources::ResourceHandle<MeshData> mesh = MakeReadyMesh(resources, ResourceIdentity{"mesh", "tie"}, 1);
     const NResources::ResourceHandle<Material> material =
             MakeReadyMaterial(resources, ResourceIdentity{"material", "tie"}, 2);
 
@@ -647,7 +637,7 @@ const RenderWorld* ExtractParallel(const NEcs::World& world,
 
 TEST(RenderWorld, ParallelExtractionMatchesSerialAcrossUnevenChunksAndFrameSlots) {
     ResourceManager resources;
-    const auto mesh = MakeReadyResource<MeshData>(resources, {"mesh", "parallel"}, 7);
+    const auto mesh = MakeReadyMesh(resources, {"mesh", "parallel"}, 7);
     const auto material = MakeReadyMaterial(resources, {"material", "parallel"}, 8);
     NEcs::World world;
     for (int index = 0; index < 1031; ++index) {
@@ -710,7 +700,7 @@ TEST(RenderWorld, ParallelExtractionDoesNotPublishOnChunkFailure) {
     FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 1}};
     ResourceManager resources;
     ResourceManager otherResources;
-    const auto foreignMesh = MakeReadyResource<MeshData>(otherResources, {"mesh", "foreign"});
+    const auto foreignMesh = MakeReadyMesh(otherResources, {"mesh", "foreign"});
     const auto material = MakeReadyMaterial(resources, {"material", "valid"});
     NEcs::World world;
     for (int index = 0; index < 1031; ++index) {
@@ -923,8 +913,8 @@ const NRenderer::RenderPlan* PrepareParallel(const RenderWorld& world,
 
 TEST(Renderer, ParallelPreparationMatchesSerialAndBatchesCompatibleInstances) {
     ResourceManager resources;
-    const auto firstMesh = MakeReadyResource<MeshData>(resources, {"mesh", "first"}, 1);
-    const auto secondMesh = MakeReadyResource<MeshData>(resources, {"mesh", "second"}, 2);
+    const auto firstMesh = MakeReadyMesh(resources, {"mesh", "first"}, 1);
+    const auto secondMesh = MakeReadyMesh(resources, {"mesh", "second"}, 2);
     const auto firstMaterial = MakeReadyMaterial(resources, {"material", "first"}, 1);
     const auto secondMaterial = MakeReadyMaterial(resources, {"material", "second"}, 2);
     NEcs::World world;
@@ -1009,7 +999,7 @@ TEST(Renderer, EmptyParallelPreparationPublishesNoBatches) {
 class ParallelPreparationRuntime final: public NEngine::NRuntime::IFrameRuntime {
 public:
     explicit ParallelPreparationRuntime(int objectCount = 2053) {
-        const auto mesh = MakeReadyResource<MeshData>(Resources, {"mesh", "preparation"});
+        const auto mesh = MakeReadyMesh(Resources, {"mesh", "preparation"});
         const auto material = MakeReadyMaterial(Resources, {"material", "preparation"});
         const auto camera = World.CreateEntity();
         World.AddComponent<TransformComponent>(camera);

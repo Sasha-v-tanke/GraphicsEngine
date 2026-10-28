@@ -232,6 +232,8 @@ set(
     "GraphicsEngine/math/vector.h"
     "GraphicsEngine/resources/image_data.h"
     "GraphicsEngine/resources/image_loader.h"
+    "GraphicsEngine/resources/mesh_data.h"
+    "GraphicsEngine/resources/mesh_loader.h"
     "GraphicsEngine/resources/resource_handle.h"
     "GraphicsEngine/resources/resource_identity.h"
     "GraphicsEngine/resources/resource_lease.h"

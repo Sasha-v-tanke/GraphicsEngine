@@ -3,6 +3,8 @@ MODULE(Resources)
 API(
     image_data.h
     image_loader.h
+    mesh_data.h
+    mesh_loader.h
     resource_handle.h
     resource_identity.h
     resource_lease.h
@@ -15,6 +17,7 @@ API(
 
 SOURCES(
     image_loader.cpp
+    mesh_loader.cpp
     resource_manager.cpp
     shader_artifact_loader.cpp
 )
@@ -25,6 +28,7 @@ PUBLIC_DEPENDS(
 
 PRIVATE_DEPENDS(
     StbImage
+    TinyObj
 )
 
 RECURSE(
