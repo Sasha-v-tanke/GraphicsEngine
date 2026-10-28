@@ -8,9 +8,17 @@
 #include <span>
 #include <vector>
 
-#include <GraphicsEngine/graphics/graphics.h>
+#include <GraphicsEngine/graphics/buffer.h>
+#include <GraphicsEngine/graphics/graphics_pipeline.h>
+#include <GraphicsEngine/graphics/image.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 #include <GraphicsEngine/renderer/renderer.h>
+
+namespace NGraphics {
+
+class Graphics;
+
+} // namespace NGraphics
 
 namespace NRenderer {
 

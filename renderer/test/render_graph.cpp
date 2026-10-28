@@ -7,6 +7,7 @@
 #include <GraphicsEngine/renderer/render_graph.h>
 #include <graphics/backend/backend.h>
 #include <graphics/backend/factory.h>
+#include <graphics/graphics.h>
 #include <gtest/gtest.h>
 #include <tests/common/test_error.h>
 

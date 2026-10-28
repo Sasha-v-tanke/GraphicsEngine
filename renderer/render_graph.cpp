@@ -8,6 +8,7 @@
 #include <queue>
 #include <utility>
 
+#include <GraphicsEngine/graphics/graphics.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
 
