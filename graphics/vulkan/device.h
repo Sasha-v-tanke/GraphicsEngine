@@ -9,6 +9,7 @@
 
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/graphics/image.h>
+#include <GraphicsEngine/graphics/vulkan/descriptor_manager.h>
 #include <GraphicsEngine/graphics/vulkan/physical_device.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
@@ -54,6 +55,7 @@ public:
     [[nodiscard]] VkDevice GetHandle() const noexcept;
 
     [[nodiscard]] const NGraphics::GraphicsCapabilities& GetGraphicsCapabilities() const noexcept;
+    [[nodiscard]] const VulkanDescriptorLimits& GetDescriptorLimits() const noexcept;
 
     [[nodiscard]] VulkanLockedQueue LockGraphicsQueue() const;
 
