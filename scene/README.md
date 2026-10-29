@@ -27,3 +27,9 @@ After extraction joins, RenderWorld contains copied render-facing data and retai
 It no longer reads Scene/World. Consequently a switch or unload can release the old Scene while its snapshot remains
 valid through that slot's CPU/GPU completion. Shared Resources are not unloaded by SceneManager; their owner controls
 logical unload, and frame/submission retention controls version lifetime.
+
+Shutdown must stop new scene dispatch/publication and join World update/extraction work before releasing the services
+those jobs use. Destroying SceneManager drops its registrations, but does not cancel workers or invalidate their leases.
+A Scene is destroyed on the thread releasing its last shared owner, which can be a worker. User scene state and component
+destructors must therefore support that thread; keep thread-affine cleanup at an explicit owner-thread shutdown boundary
+while retaining the Scene until readers have joined. Do not call back into a manager during its destruction.
