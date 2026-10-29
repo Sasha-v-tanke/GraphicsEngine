@@ -53,6 +53,39 @@ subresource range, and sampling state are explicit, while native image, view, sa
 backend-private. CPU `ImageData` can feed later upload code without changing the resource-manager identity or load-state
 contract.
 
+## Meshes
+
+`LoadMesh(ResourceManager&, ResourceIdentity, const std::filesystem::path&)` imports OBJ through tinyobjloader into
+an immutable CPU `MeshData`, using the existing request/loading/ready/failure operation generations. This synchronous
+source-import adapter performs blocking file I/O and must not run on a frame worker. Async I/O and cooked artifacts
+remain separate layers; no Graphics/Vulkan dependency, GPU allocation, upload, material creation or draw occurs here.
+
+`MeshVertex` contains `Position` / `Normal` as `std::array<float, 3>` and `Texcoord` as `std::array<float, 2>`.
+`MeshData` exposes const vertex and uint32 index arrays with triangle-list topology. `GetAttributeMasks()` has one byte
+per vertex: `NORMAL_PRESENT` and `TEXCOORD_PRESENT` record which attributes came from OBJ. Missing normal/UV values
+are zero and their presence bits are cleared, including mixed-presence faces. Masks are CPU provenance metadata and
+are separate from the vertex stream. A later upload/pipeline layer chooses its GPU layout explicitly.
+
+Triangulation is enabled. Vertices are deduplicated by the original position/normal/texcoord index tuple (including
+missing-attribute sentinels), in first-encounter order through triangulated faces. UV and normal seams remain distinct;
+hash-table iteration never determines output order. Coordinates, normal magnitudes, winding and UV orientation are
+preserved. No normal/tangent/UV generation, coordinate conversion or texture flip is performed.
+
+The supported subset is `v`, `vn`, `vt` and polygon `f` records. Indices must refer to already declared attributes;
+positive and relative negative indices are accepted. Positions require three components; optional homogeneous weight
+and vertex colors are ignored. Normals require three components; texcoords accept one to three (missing V is zero,
+optional W is ignored). Comments, UTF-8 BOM and CRLF are accepted. Line continuations are unsupported. Other directives
+are ignored: groups/objects flatten into a single geometry payload in face order; smoothing, lines, points, material
+assignments and `.mtl` files are not imported or opened. Submeshes and cooked mesh processing remain separate work.
+
+Malformed/empty geometry, nonfinite/out-of-range numbers, invalid indices, discarded polygons and uint32 size overflow
+publish `FAILED` with identity/path context; no partial payload becomes READY. Allocation failures are reported through
+the existing error model. Duplicate READY/LOADING/UNLOADING identities return their current handle without file I/O;
+FAILED identities may retry. Callers coordinate load/unload for an identity using the existing ResourceManager rules;
+stale operation publication is rejected. `ResourceLease<MeshData>` keeps a published CPU version alive across logical
+unload and later reload. Tests cover geometry/order/winding, tuple seams, per-vertex masks, invalid inputs, cache,
+retry, retained versions, stale operations and count limits without large allocations.
+
 ## Materials
 
 Material resources are typed CPU resources backed by `NGraphics::Material`.
