@@ -44,8 +44,7 @@ bool IsRead(EResourceUsage usage) {
 }
 
 bool IsWrite(EResourceUsage usage) {
-    return usage == EResourceUsage::COLOR_ATTACHMENT_WRITE || usage == EResourceUsage::DEPTH_STENCIL_WRITE ||
-           usage == EResourceUsage::TRANSFER_DESTINATION;
+    return usage == EResourceUsage::COLOR_ATTACHMENT_WRITE || usage == EResourceUsage::DEPTH_STENCIL_WRITE;
 }
 
 bool IsDepth(NGraphics::EPixelFormat format) {
@@ -100,6 +99,7 @@ NGraphics::EPixelFormat PixelFormat(NGraphics::EImageFormat format) {
 }
 
 GraphImageDescription DescribeImage(const NGraphics::ImageDescriptor& image) {
+    Require(image.MipLevels == 1, "RenderGraph imports require a single mip until subresource tracking is supported");
     return {image.Extent, PixelFormat(image.Format), NGraphics::ESampleCount::X1, image.Usage};
 }
 
@@ -475,11 +475,13 @@ CompiledGraph RenderGraphBuilder::Compile() const {
         if (pass.DepthAttachment) {
             checkLoad(*pass.DepthAttachment);
         }
-        for (const GraphResourceUse& write: pass.Writes) {
-            initialized[Resolve(write.Resource)] = true;
-        }
         const auto applyStore = [&](const GraphAttachment& attachment) {
-            initialized[Resolve(attachment.Resource)] = attachment.Store == EAttachmentStore::STORE;
+            const std::size_t resource = Resolve(attachment.Resource);
+            // A draw may touch only part of the image; neither a declared write
+            // nor STORE proves defined contents after a discard load.
+            const bool hasDefinedContents = attachment.Load == EAttachmentLoad::CLEAR ||
+                                            (attachment.Load == EAttachmentLoad::LOAD && initialized[resource]);
+            initialized[resource] = attachment.Store == EAttachmentStore::STORE && hasDefinedContents;
         };
         for (const GraphAttachment& attachment: pass.ColorAttachments) {
             applyStore(attachment);

@@ -22,7 +22,10 @@ references; dropping or invalidating the target rejects subsequent compile/recor
 `GraphicsPassDescription` declares reads/writes, color/depth attachments and copied `DrawCommandData` packets. Existing
 `RenderPlan::GetDrawCommands()` can be copied into `DrawCommands`. No mutable World, RenderWorld or backend objects are
 passed to execution callbacks. Attachment metadata is resolved from imports, avoiding contradictory format/extent copies.
-Load/store/clear intent is explicit; `LOAD` reads existing contents and `DISCARD` store invalidates them.
+Load/store/clear intent is explicit. `CLEAR` defines the whole attachment; `LOAD` requires and preserves defined contents.
+`DISCARD` load invalidates prior contents, and `STORE` alone does not initialize them. Draw packets do not prove full
+attachment coverage: output from a discard-load pass remains undefined even when draws exist. A subsequent clear can
+define it before any read/export. `DISCARD` store always invalidates contents.
 
 ## Compilation and inspection
 
@@ -64,9 +67,12 @@ not implemented or claimed by this CPU boundary change.
 ## Current limits and extension points
 
 One graphics queue; imported swapchain/persistent resources; one or more graphics passes. Graphics imports currently
-support the existing single-sample 2D RGBA8/BGRA8/D32 descriptors; swapchain formats include sRGB as declared by WSI.
+support single-mip, single-sample 2D RGBA8/BGRA8/D32 descriptors; multi-mip imports are rejected until subresource-aware
+declarations/tracking exist. Swapchain formats include sRGB as declared by WSI.
 Native device support and limits are rechecked by the executor. Resource usage vocabulary deliberately contains only the
-supported MVP subset; transfers describe resource state intent, not an independent copy-command API. No transient
+supported MVP subset; transfer usages describe external import/export states, not an independent copy-command API.
+`TRANSFER_DESTINATION` writes in graphics passes are rejected until an actual transfer execution payload exists; changing
+resource state never produces data. No transient
 allocation/aliasing, culling, compute passes, queue ownership transfers or parallel secondary recording is implemented.
 
 Future transient declarations can extend the resource registry, while lifetimes, culling, queue assignments and recording

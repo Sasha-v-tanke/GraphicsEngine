@@ -464,4 +464,72 @@ TEST(RenderGraph, SimultaneousFrameSlotsAndDestroyedBuilderKeepIndependentPlans)
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)first.GetResource(second.GetResources()[0].Id); });
 }
 
+TEST(RenderGraph, DiscardLoadCannotInitializeOrPreserveWholeAttachmentContents) {
+    for (const bool hasDraws: {false, true}) {
+        for (const EResourceUsage initial: {EResourceUsage::UNDEFINED, EResourceUsage::PRESENT}) {
+            RenderGraphBuilder builder{FRAME};
+            const auto target = Target();
+            const auto image = builder.ImportSwapchain(target, initial);
+            auto pass = ColorPass(image, EAttachmentLoad::DISCARD);
+            if (hasDraws) {
+                pass.DrawCommands.emplace_back();
+            }
+            (void)builder.AddGraphicsPass(pass);
+            ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)builder.Compile(); });
+        }
+    }
+}
+
+TEST(RenderGraph, ReadAfterDiscardLoadRequiresSubsequentClear) {
+    auto graphics = MakeGraphics();
+    const auto handle = graphics.CreateImage(ImageDescription());
+    RenderGraphBuilder builder{FRAME};
+    const auto image =
+            builder.ImportImage(graphics, handle, EResourceUsage::SAMPLED_READ, EResourceUsage::SAMPLED_READ);
+    (void)builder.AddGraphicsPass(ColorPass(image, EAttachmentLoad::DISCARD));
+    GraphicsPassDescription sample;
+    sample.Reads.push_back({image, EResourceUsage::SAMPLED_READ});
+    (void)builder.AddGraphicsPass(sample);
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)builder.Compile(); });
+}
+
+TEST(RenderGraph, DiscardLoadFollowedByClearProducesDefinedOutput) {
+    RenderGraphBuilder builder{FRAME};
+    const auto target = Target();
+    const auto image = builder.ImportSwapchain(target, EResourceUsage::UNDEFINED);
+    (void)builder.AddGraphicsPass(ColorPass(image, EAttachmentLoad::DISCARD));
+    (void)builder.AddGraphicsPass(ColorPass(image, EAttachmentLoad::CLEAR));
+    EXPECT_NO_THROW((void)builder.Compile());
+}
+
+TEST(RenderGraph, RejectsMultiMipImportUntilSubresourceTrackingIsSupported) {
+    auto graphics = MakeGraphics();
+    auto description = ImageDescription();
+    description.MipLevels = 2;
+    const auto image = graphics.CreateImage(description);
+    RenderGraphBuilder builder{FRAME};
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+        (void)builder.ImportImage(graphics, image, EResourceUsage::UNDEFINED, EResourceUsage::SAMPLED_READ);
+    });
+}
+
+TEST(RenderGraph, TransferDestinationStateIsNotAWritePayload) {
+    auto graphics = MakeGraphics();
+    const NGraphics::BufferDescriptor description{
+            .SizeBytes = 64,
+            .Usage = NGraphics::EBufferUsage::Vertex | NGraphics::EBufferUsage::TransferDestination,
+            .Access = NGraphics::EBufferAccess::GpuRead | NGraphics::EBufferAccess::GpuWrite,
+    };
+    const auto handle = graphics.CreateBuffer(description);
+    RenderGraphBuilder builder{FRAME};
+    const auto buffer = builder.ImportBuffer(graphics, handle, EResourceUsage::UNDEFINED, EResourceUsage::VERTEX_READ);
+    GraphicsPassDescription transfer;
+    transfer.Writes.push_back({buffer, EResourceUsage::TRANSFER_DESTINATION});
+    (void)builder.AddGraphicsPass(transfer);
+    GraphicsPassDescription read;
+    read.Reads.push_back({buffer, EResourceUsage::VERTEX_READ});
+    (void)builder.AddGraphicsPass(read);
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)builder.Compile(); });
+}
+
 } // namespace
