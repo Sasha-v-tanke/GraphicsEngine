@@ -1,9 +1,13 @@
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <glfw.h>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <application/application.h>

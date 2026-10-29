@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <stdexcept>
@@ -26,7 +27,7 @@ public:
     bool FailAfterSubmit = false;
     bool DeviceLost = false;
     bool Suspended = false;
-    const NGraphics::GraphicsCapabilities& GetCapabilities() const noexcept override {
+    [[nodiscard]] const NGraphics::GraphicsCapabilities& GetCapabilities() const noexcept override {
         return Capabilities;
     }
     std::uint64_t SubmitFrame(NGraphics::FrameSubmission) override {
@@ -57,7 +58,7 @@ public:
                 .CompletionValue = ++NextValue,
                 .Failure = FailAfterSubmit ? std::make_exception_ptr(std::runtime_error{"present failed"}) : nullptr};
     }
-    bool IsCompleted(std::uint64_t value) const override {
+    [[nodiscard]] bool IsCompleted(std::uint64_t value) const override {
         if (DeviceLost) {
             throw std::runtime_error{"device lost"};
         }
@@ -98,8 +99,11 @@ struct Fixture {
         : Scheduler({.MaxActiveFrames = count}) {
         auto backend = std::make_unique<ScriptedBackend>();
         Backend = backend.get();
-        Runtime = std::make_unique<NApplication::NRuntime::PresentationRuntime>(std::unique_ptr<NGraphics::Graphics>{
-                new NGraphics::Graphics{NGraphics::NBackend::CreateGraphicsForBackend(std::move(backend))}});
+        // Graphics is nonmovable: direct new preserves guaranteed copy elision, unlike make_unique.
+        // NOLINTNEXTLINE(modernize-make-unique)
+        std::unique_ptr<NGraphics::Graphics> graphics{
+                new NGraphics::Graphics{NGraphics::NBackend::CreateGraphicsForBackend(std::move(backend))}};
+        Runtime = std::make_unique<NApplication::NRuntime::PresentationRuntime>(std::move(graphics));
         Runtime->Start();
     }
     NEngine::NController::FrameHandle Enqueue() {

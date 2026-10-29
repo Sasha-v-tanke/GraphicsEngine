@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <exception>
 #include <limits>
 #include <utility>
@@ -41,7 +42,7 @@ public:
         m_capabilities.MaxFramesInFlight = static_cast<std::uint32_t>(config.MaxActiveFrames);
     }
 
-    const GraphicsCapabilities& GetCapabilities() const noexcept override {
+    [[nodiscard]] const GraphicsCapabilities& GetCapabilities() const noexcept override {
         return m_capabilities;
     }
 
@@ -90,7 +91,7 @@ public:
         m_path.SetFramebufferSize({.Width = width, .Height = height});
     }
 
-    bool IsCompleted(std::uint64_t value) const override {
+    [[nodiscard]] bool IsCompleted(std::uint64_t value) const override {
         return m_path.IsCompleted({.Value = value});
     }
 
@@ -140,6 +141,8 @@ std::unique_ptr<Graphics> CreatePresentationGraphics(NWindow::Window& window, co
     if (config.MaxActiveFrames == 0 || config.MaxActiveFrames > std::numeric_limits<std::uint32_t>::max()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid presentation frame count");
     }
+    // Graphics is nonmovable; direct new preserves guaranteed copy elision.
+    // NOLINTNEXTLINE(modernize-make-unique)
     return std::unique_ptr<Graphics>{
             new Graphics{NBackend::CreateGraphicsForBackend(std::make_unique<PresentationBackend>(window, config))}};
 }
