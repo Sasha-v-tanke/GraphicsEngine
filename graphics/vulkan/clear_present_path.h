@@ -40,6 +40,9 @@ public:
 
     void SetFramebufferSize(NWindow::WindowSize framebufferSize) noexcept;
 
+    // Retries before submission consume no frame. OUT_OF_DATE may carry an accepted GPU completion.
+    // onSubmitted runs immediately after native submit, before fallible bookkeeping/present; it must not throw.
+    // The caller must retain that completion if Render subsequently throws, and stop using the failed path.
     [[nodiscard]] VulkanClearPresentResult Render(std::uint64_t frameIndex,
                                                   VkClearColorValue clearColor,
                                                   const std::function<void(VulkanQueueCompletion)>& onSubmitted = {});
