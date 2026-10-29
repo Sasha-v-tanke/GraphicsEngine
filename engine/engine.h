@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -23,6 +25,36 @@ enum class EEngineState {
     STOPPED,
 };
 
+// Non-owning identity of a reserved frame. Run/owner and slot generation prevent
+// delayed external completion from admitting work into a recycled frame or a new Run.
+class FrameKey final {
+public:
+    [[nodiscard]] bool IsValid() const noexcept {
+        return m_owner != 0;
+    }
+    [[nodiscard]] std::uint64_t GetRunGeneration() const noexcept {
+        return m_runGeneration;
+    }
+    [[nodiscard]] std::uint64_t GetFrameSequence() const noexcept {
+        return m_frameSequence;
+    }
+    [[nodiscard]] std::size_t GetSlotIndex() const noexcept {
+        return m_slotIndex;
+    }
+    [[nodiscard]] std::uint64_t GetGeneration() const noexcept {
+        return m_generation;
+    }
+    [[nodiscard]] friend bool operator==(FrameKey, FrameKey) noexcept = default;
+
+private:
+    std::uint64_t m_owner = 0;
+    std::uint64_t m_runGeneration = 0;
+    std::uint64_t m_frameSequence = 0;
+    std::size_t m_slotIndex = 0;
+    std::uint64_t m_generation = 0;
+    friend class Engine;
+};
+
 class Engine final: private NCommon::NonTransferable {
 public:
     explicit Engine(EngineConfig config = {});
@@ -31,6 +63,19 @@ public:
     void Start();
 
     void Stop() noexcept;
+
+    // Reserves physical storage before publishing user work. No worker task is
+    // queued until CompleteUserUpdate. Nullopt is backpressure, not a reservation.
+    [[nodiscard]] std::optional<FrameKey> TryBeginFrame();
+    // Completion is exactly once. Stale/duplicate/stopped signals return false.
+    [[nodiscard]] bool CompleteUserUpdate(FrameKey frame);
+    // Only an uncompleted user reservation may be aborted; never cancels live CPU/GPU users.
+    [[nodiscard]] bool AbortFrame(FrameKey frame);
+
+    [[nodiscard]] std::uint64_t GetProgressVersion() const;
+    // Main/orchestration only; bounded wait keeps platform/GPU maintenance live.
+    // Capture version before attempting admission to avoid lost notifications.
+    void WaitForProgress(std::uint64_t version, std::chrono::milliseconds timeout) const;
 
     bool Update();
 
