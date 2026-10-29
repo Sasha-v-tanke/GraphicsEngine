@@ -3,6 +3,9 @@
 `Renderer` owns the backend-independent render-facing boundary. Mutable simulation state remains in `NEcs::World`;
 render preparation consumes only an immutable `RenderWorld`.
 
+`RenderGraphBuilder` compiles semantic pass/resource declarations into an immutable frame execution plan.
+See [RenderGraph contract](render_graph.md) for import lifetime, validation and executor integration.
+
 ## Render components
 
 `TransformComponent`, `CameraComponent` and `RenderableComponent` are high-level components stored in `World`.

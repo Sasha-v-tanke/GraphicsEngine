@@ -14,6 +14,7 @@
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <GraphicsEngine/math/transform.h>
+#include <GraphicsEngine/renderer/render_graph.h>
 #include <GraphicsEngine/renderer/renderer.h>
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>
@@ -26,6 +27,9 @@
 #include <GraphicsEngine/window/window_type.h>
 
 int main() {
+    NRenderer::RenderGraphBuilder graphBuilder{{.Generation = 1}};
+    const NRenderer::CompiledGraph graph = graphBuilder.Compile();
+    graph.ValidateResources({.Generation = 1});
     NScene::SceneManager scenes;
     const auto scene = scenes.CreateScene("package consumer");
     scenes.Activate(scene);

@@ -1,6 +1,7 @@
 TEST_SUITE(Renderer)
 
 SOURCES(
+    render_graph.cpp
     render_world_test.cpp
 )
 

@@ -244,6 +244,7 @@ set(
     "GraphicsEngine/resources/shader_artifact_loader.h"
     "GraphicsEngine/renderer/renderer.h"
     "GraphicsEngine/renderer/render_components.h"
+    "GraphicsEngine/renderer/render_graph.h"
     "GraphicsEngine/renderer/render_world.h"
     "GraphicsEngine/window/window.h"
     "GraphicsEngine/window/window_config.h"
