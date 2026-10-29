@@ -270,3 +270,25 @@ allocating completion bookkeeping. Application's pre-registered promise therefor
 failures safely. Timeline completion controls GPU frame storage; the existing per-image semaphore and
 swapchain retirement protocol independently controls WSI lifetime. See application/README.md for the
 end-to-end MVP-2 flow, diagnostics, shutdown and sample commands.
+
+## Dynamic rendering passes (FEATURE-0066)
+
+`VulkanRenderingScope` records color attachment passes with `vkCmdBeginRendering` / `vkCmdEndRendering`.
+It owns only the recording scope, not attachments, command buffers or submissions. The clear presentation
+path now uses this same recording primitive and COLOR_ATTACHMENT_OPTIMAL / color-output barriers.
+Swapchain views and extent are selected at recording time, including after recreation. There are no
+permanent VkRenderPass/VkFramebuffer objects. Format and sample compatibility remain in the existing
+backend-independent GraphicsPipelineDescriptor; VulkanGraphicsPipeline already consumes
+VkPipelineRenderingCreateInfo. The caller ensures attachment extent/layers/formats/samples match the pass
+and pipeline and retains resources until submission completion. Scope end performs no barriers or submit.
+
+Secondary-command-buffer contents select VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT.
+The eventual worker recorder supplies matching VkCommandBufferInheritanceRenderingInfo and owns its
+command pools per frame/worker. Depth/stencil attachment recording is deferred until a pass consumes it;
+the existing depth pipeline metadata is preserved. RenderGraph execution and triangle/textured integration
+remain FEATURE-0031/0067 responsibilities.
+
+Contract tests verify runtime attachment selection, clear/load/store settings, resize extent, secondary
+contents, rejection before recording and balanced scope end on exceptions. Existing ApplicationPresentation
+and swapchain lifecycle heavy tests now exercise the real dynamic color pass with validation through
+resize, suspension/restore, WSI statuses and repeated frame recycling.

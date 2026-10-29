@@ -13,6 +13,8 @@ API(
 )
 
 SOURCES(
+    rendering_scope.h
+    rendering_scope.cpp
     graphics_pipeline.h
     graphics_pipeline.cpp
     device.cpp
