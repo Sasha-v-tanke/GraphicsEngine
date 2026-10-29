@@ -70,15 +70,22 @@ FrameLoop::~FrameLoop() {
     Stop();
 }
 
-void FrameLoop::Start() {
-    if (m_presentation) {
-        m_presentation->Start();
+void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
+    m_mainExecutor.Start(std::move(wakeup));
+    try {
+        if (m_presentation) {
+            m_presentation->Start();
+        }
+        m_engine->Start();
+        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+    } catch (...) {
+        m_mainExecutor.Stop();
+        throw;
     }
-    m_engine->Start();
-    m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
 }
 
 void FrameLoop::Stop() noexcept {
+    m_mainExecutor.Stop();
     if (m_engine != nullptr) {
         m_engine->Stop();
     }
@@ -90,14 +97,19 @@ void FrameLoop::CheckError() const {
     }
 }
 
-void FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
+bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
     CheckError();
+    bool progressed = m_mainExecutor.Drain() != 0;
+    if (callbacks.IsShutdownRequested()) {
+        return progressed;
+    }
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
         if (!m_engine->CanAcceptUpdate()) {
-            return;
+            return progressed;
         }
 
         callbacks.OnUpdate();
+        progressed = true;
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
     }
 
@@ -105,18 +117,22 @@ void FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
         EngineUpdateCheckpoint();
 
         if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
-            return;
+            return progressed;
         }
     }
 
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_DRAW) {
         callbacks.OnDraw();
+        progressed = true;
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_DRAW;
     }
 
     if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_DRAW) {
+        const EFrameCheckpoint before = m_frameCheckpoint;
         EngineDrawCheckpoint();
+        progressed = progressed || before != m_frameCheckpoint;
     }
+    return progressed;
 }
 
 void FrameLoop::EngineUpdateCheckpoint() {

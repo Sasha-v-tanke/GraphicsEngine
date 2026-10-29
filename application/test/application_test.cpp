@@ -1,8 +1,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -12,6 +14,7 @@
 
 #include <application/application.h>
 #include <application/application_config.h>
+#include <application/runtime/application_access.h>
 #include <application/runtime/frame_loop.h>
 #include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
@@ -28,6 +31,7 @@ using namespace std::chrono_literals;
 struct FakeWindowState {
     NWindow::NEngine::IWindowEventSink* Sink = nullptr;
     void (*OnProcessEvents)(FakeWindowState& state) = nullptr;
+    std::function<void()> EventAction;
     bool ShouldClose = false;
     bool EmitCloseOnNextProcessEvents = false;
     int ProcessEventsCount = 0;
@@ -82,6 +86,9 @@ public:
         m_state.Events.emplace_back("window.events");
         ++m_state.ProcessEventsCount;
 
+        if (m_state.EventAction) {
+            m_state.EventAction();
+        }
         if (m_state.OnProcessEvents != nullptr) {
             m_state.OnProcessEvents(m_state);
         }
@@ -415,6 +422,12 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     ASSERT_TRUE(blockingEngineFactory.Runtime->WaitDrawCountAtLeast(1, 1s));
     frameLoop.Step(callbacks);
     frameLoop.Step(callbacks);
+    bool mainCommandRan = false;
+    auto& executor = frameLoop.GetMainExecutor();
+    auto completion = executor.Post(executor.GetGeneration(), [&] { mainCommandRan = true; });
+    frameLoop.Step(callbacks);
+    EXPECT_TRUE(mainCommandRan);
+    EXPECT_EQ(completion.Wait(), NApplication::NRuntime::EMainCommandState::COMPLETED);
 
     EXPECT_EQ(m_state.Events,
               (std::vector<std::string>{
@@ -547,6 +560,106 @@ TEST_F(ApplicationTest, DestroysWindowAfterApplicationDestruction) {
 
     EXPECT_EQ(m_state.DestroyedCount, 1);
     EXPECT_EQ(m_state.Events.back(), "window.destroy");
+}
+
+TEST_F(ApplicationTest, MainCommandClosePrecedesFrameCallbacksAndSkipsPendingAcrossRestart) {
+    using NApplication::NRuntime::EMainCommandState;
+    using NApplication::NRuntime::MainCompletion;
+    RecordingApplication application{MakeConfig(), m_state};
+    auto& executor = NApplication::NRuntime::ApplicationAccess::GetMainExecutor(application);
+    std::optional<MainCompletion> close;
+    std::optional<MainCompletion> pending;
+    m_state.EventAction = [&] {
+        close = executor.Post(executor.GetGeneration(), [&] { application.RequestShutdown(); });
+        pending = executor.Post(executor.GetGeneration(), [] { ADD_FAILURE() << "Pending command ran after close"; });
+    };
+    application.Run();
+    ASSERT_TRUE(close.has_value());
+    EXPECT_EQ(close->Wait(), EMainCommandState::COMPLETED);
+    EXPECT_EQ(pending->Wait(), EMainCommandState::SKIPPED);
+    EXPECT_EQ(m_state.Events, (std::vector<std::string>{"window.events", "window.request-close", "user.close"}));
+    const auto previous = executor.GetGeneration();
+    m_state.ShouldClose = false;
+    m_state.EventAction = [&] {
+        auto stale = executor.Post(previous, [] { ADD_FAILURE() << "Previous Run command ran"; });
+        EXPECT_EQ(stale.Wait(), EMainCommandState::SKIPPED);
+        close = executor.Post(executor.GetGeneration(), [&] { application.RequestShutdown(); });
+    };
+    application.Run();
+    EXPECT_GT(executor.GetGeneration(), previous);
+    EXPECT_EQ(close->Wait(), EMainCommandState::COMPLETED);
+}
+
+TEST_F(ApplicationTest, EventWaitIsWokenByProducerWithoutDispatchingOnProducerThread) {
+    FakeWindowEngine window{m_state};
+    std::thread producer{[&] { window.WakeEventLoop(); }};
+    producer.join();
+    const auto start = std::chrono::steady_clock::now();
+    window.WaitEvents(2s);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, 1s);
+    EXPECT_EQ(m_state.ProcessEventsCount, 1);
+}
+
+class MainWaitingRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    NApplication::NRuntime::MainExecutor* Executor = nullptr;
+    std::promise<void> Queued;
+    std::atomic<bool> Skipped{false};
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+    }
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+        auto command = Executor->Post(Executor->GetGeneration(), [] { ADD_FAILURE(); });
+        Queued.set_value();
+        Skipped = command.Wait() == NApplication::NRuntime::EMainCommandState::SKIPPED;
+    }
+};
+
+class MainWaitingFactory final: public NApplication::NRuntime::IEngineFactory {
+public:
+    MainWaitingRuntime* Runtime = nullptr;
+    std::unique_ptr<NEngine::Engine> Create(NEngine::EngineConfig config) override {
+        auto runtime = std::make_unique<MainWaitingRuntime>();
+        Runtime = runtime.get();
+        return NEngine::NRuntime::EngineFactory::Create(config, std::move(runtime));
+    }
+};
+
+TEST_F(ApplicationTest, StopSkipsMainCommandsBeforeJoiningSingleWorker) {
+    auto factory = std::make_unique<MainWaitingFactory>();
+    MainWaitingFactory& reference = *factory;
+    NApplication::NRuntime::FrameLoop loop{MakeConfig(), std::move(factory)};
+    reference.Runtime->Executor = &loop.GetMainExecutor();
+    auto queued = reference.Runtime->Queued.get_future();
+    RecordingFrameLoopCallbacks callbacks{m_state.Events};
+    loop.Start();
+    loop.Step(callbacks);
+    EXPECT_EQ(queued.wait_for(2s), std::future_status::ready);
+    loop.Stop();
+    EXPECT_TRUE(reference.Runtime->Skipped.load());
+}
+
+TEST_F(ApplicationTest, WindowCloseIsProcessedBetweenBoundedMainBatches) {
+    using NApplication::NRuntime::ApplicationAccess;
+    using NApplication::NRuntime::EMainCommandState;
+    using NApplication::NRuntime::MainCompletion;
+    using NApplication::NRuntime::MainExecutor;
+    RecordingApplication application{MakeConfig(), m_state};
+    MainExecutor& executor = ApplicationAccess::GetMainExecutor(application);
+    std::vector<MainCompletion> commands;
+    std::size_t ran = 0;
+    m_state.EventAction = [&] {
+        if (m_state.ProcessEventsCount == 1) {
+            for (std::size_t index = 0; index < MainExecutor::DISPATCH_BATCH + 5; ++index) {
+                commands.push_back(executor.Post(executor.GetGeneration(), [&] { ++ran; }));
+            }
+        } else {
+            m_state.EmitCloseOnNextProcessEvents = true;
+        }
+    };
+    application.Run();
+    EXPECT_EQ(ran, MainExecutor::DISPATCH_BATCH);
+    EXPECT_EQ(commands.back().Wait(), EMainCommandState::SKIPPED);
+    EXPECT_EQ(m_state.ProcessEventsCount, 2);
 }
 
 } // namespace
