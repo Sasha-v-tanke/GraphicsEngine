@@ -138,11 +138,18 @@ void VulkanClearPresentPath::ReleaseRetiredIfCompleted() {
     }
 }
 
-VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex, VkClearColorValue clearColor) {
+bool VulkanClearPresentPath::IsCompleted(VulkanQueueCompletion completion) const {
+    return m_submissions.IsCompleted(completion);
+}
+
+VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex,
+                                                        VkClearColorValue clearColor,
+                                                        const std::function<void(VulkanQueueCompletion)>& onSubmitted) {
     if (m_failed) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Vulkan clear/present path requires shutdown after failure");
     }
+    // Suspension preserves the previous swapchain and its in-flight WSI uses without consuming a frame.
     if (m_framebufferSize.Width <= 0 || m_framebufferSize.Height <= 0) {
         m_swapchain.Recreate(m_framebufferSize);
         m_recreationRequested = true;
@@ -161,6 +168,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         return {.Status = EVulkanClearPresentStatus::SUSPENDED};
     }
 
+    // The native ring checks the exact previous timeline value before resetting this slot's command pool.
     const VulkanFrameContextAcquire acquire{
             .FrameIndex = frameIndex,
             .FrameSlotIndex = static_cast<std::size_t>(frameIndex % m_frames.GetSize()),
@@ -192,6 +200,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
             return {.Status = EVulkanClearPresentStatus::NOT_READY};
         }
 
+        // WSI wait semaphores belong to acquired images; GPU timeline completion alone cannot retire them.
         std::unique_ptr<FrameResources>& presentResources = m_presentResources[acquired.ImageIndex];
         if (presentResources == nullptr) {
             auto created = std::make_unique<FrameResources>();
@@ -221,6 +230,10 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         });
         submitted = true;
         m_lastSubmission = completion;
+        // Publish ownership before any fallible bookkeeping or presentation operation.
+        if (onSubmitted) {
+            onSubmitted(completion);
+        }
         if (m_firstPresentedImage == acquired.ImageIndex && !m_retiredPresentResources.empty() &&
             !m_retirementCompletion.has_value()) {
             m_retirementCompletion = completion;
@@ -241,6 +254,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
         m_recreationRequested = acquired.Status == EVulkanSwapchainAcquireStatus::SUBOPTIMAL ||
                                 present == EVulkanSwapchainPresentStatus::SUBOPTIMAL ||
                                 present == EVulkanSwapchainPresentStatus::OUT_OF_DATE;
+        // OUT_OF_DATE after submit still returns the token that pins the runtime frame storage.
         return {
                 .Status = present == EVulkanSwapchainPresentStatus::OUT_OF_DATE ? EVulkanClearPresentStatus::OUT_OF_DATE
                                                                                 : EVulkanClearPresentStatus::PRESENTED,

@@ -254,3 +254,19 @@ Global Vulkan entry points are loaded with `volkInitialize()`. After successful
 instance creation, `volkLoadInstanceOnly()` loads instance-level dispatch.
 After successful logical-device creation, `volkLoadDevice()` loads device-level
 dispatch.
+
+## Public clear presentation integration
+
+`CreatePresentationGraphics(Window&, PresentationConfig)` composes one instance, GLFW surface, selected
+device, swapchain and VulkanClearPresentPath behind the public Graphics facade. The factory requires
+Vulkan/GLFW and the Window outlives Graphics. Public application/sample code contains no native handles.
+`TrySubmitFrame` returns a status and an independent CompletionPoint: OUT_OF_DATE may still carry an
+accepted submission. Inspect the completion before handling Failure. Retry a non-submitted frame with
+the same logical/slot identity. This clear-only profile rejects resource/graph operations until graph execution
+is integrated; it does not replace the separate Vulkan resource primitives.
+
+The clear path publishes its timeline token immediately after SubmitGraphics returns, before present or
+allocating completion bookkeeping. Application's pre-registered promise therefore retains post-submit
+failures safely. Timeline completion controls GPU frame storage; the existing per-image semaphore and
+swapchain retirement protocol independently controls WSI lifetime. See application/README.md for the
+end-to-end MVP-2 flow, diagnostics, shutdown and sample commands.

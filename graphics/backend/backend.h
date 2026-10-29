@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 #include <graphics/buffer.h>
 #include <graphics/frame_submission.h>
@@ -12,12 +13,23 @@
 
 namespace NGraphics::NBackend {
 
+struct BackendFrameResult {
+    EFrameSubmissionStatus Status = EFrameSubmissionStatus::NOT_READY;
+    std::uint64_t CompletionValue = 0;
+    std::exception_ptr Failure = {};
+};
+
 class IGraphicsBackend: public NCommon::NonTransferable {
 public:
     virtual ~IGraphicsBackend() = default;
 
     [[nodiscard]] virtual const GraphicsCapabilities& GetCapabilities() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t SubmitFrame(FrameSubmission submission) = 0;
+    [[nodiscard]] virtual BackendFrameResult TrySubmitFrame(FrameSubmission submission) {
+        return {.Status = EFrameSubmissionStatus::PRESENTED, .CompletionValue = SubmitFrame(std::move(submission))};
+    }
+    virtual void SetPresentationSize(int, int) {
+    }
     [[nodiscard]] virtual bool IsCompleted(std::uint64_t completionValue) const = 0;
     [[nodiscard]] virtual std::uint64_t CreateBuffer(const BufferDescriptor& descriptor) = 0;
     virtual void DestroyBuffer(std::uint64_t bufferValue, std::optional<std::uint64_t> completedAfter) noexcept = 0;

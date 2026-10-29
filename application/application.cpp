@@ -1,8 +1,13 @@
 #include "application.h"
 
+#include <chrono>
 #include <memory>
+#include <thread>
 
 #include <application/runtime/frame_loop.h>
+#include <graphics/presentation.h>
+#include <lib/common/error/error.h>
+#include <lib/common/error/exception.h>
 #include <window/window.h>
 #include <window/window_runtime.h>
 
@@ -51,9 +56,23 @@ private:
 };
 
 Application::Application(const ApplicationConfig& config)
-    : m_windowRuntime(std::make_unique<NWindow::WindowRuntime>())
+    : m_hasPresentation(config.Presentation.has_value())
+    , m_windowRuntime(std::make_unique<NWindow::WindowRuntime>())
     , m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
-    , m_frameLoop(std::make_unique<NRuntime::FrameLoop>(config)) {
+    , m_frameLoop([this, &config] {
+        (void)this;
+        if (!config.Presentation) {
+            return std::make_unique<NRuntime::FrameLoop>(config);
+        }
+#if defined(GRAPHICS_ENGINE_HAS_PRESENTATION)
+        auto presentation = *config.Presentation;
+        presentation.MaxActiveFrames = config.MaxActiveFrames;
+        return std::make_unique<NRuntime::FrameLoop>(config,
+                                                     NGraphics::CreatePresentationGraphics(*m_window, presentation));
+#else
+        GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Presentation requires Vulkan and GLFW");
+#endif
+    }()) {
 }
 
 Application::~Application() {
@@ -79,10 +98,15 @@ void Application::Run() {
     }
 
     m_frameLoop->Stop();
+    m_frameLoop->CheckError();
 }
 
 void Application::RequestShutdown() {
     m_window->RequestClose();
+}
+
+FrameDiagnostics Application::GetFrameDiagnostics() const {
+    return m_frameLoop->GetDiagnostics();
 }
 
 bool Application::IsShutdownRequested() const {
@@ -119,8 +143,14 @@ void Application::RunFrame() {
         return;
     }
 
+    const auto size = m_window->GetFramebufferSize();
+    m_frameLoop->PumpPresentation(size.Width, size.Height);
     FrameLoopCallbacks callbacks{*this};
     m_frameLoop->Step(callbacks);
+    // Bounded platform/completion maintenance; admission retries never repeat user callbacks.
+    if (m_hasPresentation) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
 }
 
 } // namespace NApplication

@@ -235,6 +235,24 @@ CompletionPoint Graphics::SubmitFrame(FrameSubmission submission) {
     return CompletionPoint{m_ownerId, value};
 }
 
+FrameSubmissionResult Graphics::TrySubmitFrame(FrameSubmission submission) {
+    if (submission.FrameSlotIndex >= m_backend->GetCapabilities().MaxFramesInFlight ||
+        (submission.RequiresPresentation && !m_backend->GetCapabilities().Presentation)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid presentation frame submission");
+    }
+    const auto result = m_backend->TrySubmitFrame(std::move(submission));
+    return {
+            .Status = result.Status,
+            .Completion = result.CompletionValue == 0 ? CompletionPoint{}
+                                                      : CompletionPoint{m_ownerId, result.CompletionValue},
+            .Failure = result.Failure,
+    };
+}
+
+void Graphics::SetPresentationSize(int width, int height) {
+    m_backend->SetPresentationSize(width, height);
+}
+
 bool Graphics::IsCompleted(CompletionPoint completion) const {
     ValidateCompletionOwner(completion);
     return m_backend->IsCompleted(completion.m_value);

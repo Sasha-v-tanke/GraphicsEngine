@@ -200,6 +200,7 @@ set(
     expectedPublicHeaders
     "GraphicsEngine/application/application.h"
     "GraphicsEngine/application/application_config.h"
+    "GraphicsEngine/application/frame_diagnostics.h"
     "GraphicsEngine/ecs/entity.h"
     "GraphicsEngine/ecs/system_access.h"
     "GraphicsEngine/ecs/world.h"
@@ -216,6 +217,7 @@ set(
     "GraphicsEngine/graphics/shader.h"
     "GraphicsEngine/graphics/image.h"
     "GraphicsEngine/graphics/material.h"
+    "GraphicsEngine/graphics/presentation.h"
     "GraphicsEngine/lib/common/error/assert.h"
     "GraphicsEngine/lib/common/error/error.h"
     "GraphicsEngine/lib/common/error/exception.h"

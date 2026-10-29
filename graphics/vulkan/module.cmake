@@ -47,6 +47,7 @@ if (GRAPHICS_ENGINE_BUILD_GLFW)
 
     SOURCES(
         glfw_surface.cpp
+        presentation.cpp
     )
 
     PUBLIC_DEPENDS(

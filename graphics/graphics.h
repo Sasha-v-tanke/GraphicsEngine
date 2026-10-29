@@ -33,6 +33,9 @@ public:
     [[nodiscard]] const GraphicsCapabilities& GetCapabilities() const noexcept;
 
     [[nodiscard]] CompletionPoint SubmitFrame(FrameSubmission submission);
+    // Nonblocking acquire; retries retain the same frame identity. Inspect Completion before Failure.
+    [[nodiscard]] FrameSubmissionResult TrySubmitFrame(FrameSubmission submission);
+    void SetPresentationSize(int width, int height);
     [[nodiscard]] bool IsCompleted(CompletionPoint completion) const;
 
     [[nodiscard]] BufferHandle CreateBuffer(const BufferDescriptor& descriptor);

@@ -32,6 +32,7 @@ extern char** environ;
 #include <graphics/vulkan/physical_device.h>
 #include <graphics/vulkan/resource_state.h>
 #include <graphics/vulkan/swapchain.h>
+#include <graphics/vulkan/test/wsi_result_override.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <window/engine/GLFW/window_engine.h>
@@ -84,58 +85,7 @@ using UniqueSemaphore = std::unique_ptr<std::remove_pointer_t<VkSemaphore>, Sema
 using UniqueFence = std::unique_ptr<std::remove_pointer_t<VkFence>, FenceDeleter>;
 using UniqueCommandPool = std::unique_ptr<std::remove_pointer_t<VkCommandPool>, CommandPoolDeleter>;
 
-class SwapchainResultOverride {
-public:
-    SwapchainResultOverride() {
-        OriginalAcquire = vkAcquireNextImageKHR;
-        OriginalPresent = vkQueuePresentKHR;
-        vkAcquireNextImageKHR = Acquire;
-        vkQueuePresentKHR = Present;
-    }
-
-    ~SwapchainResultOverride() {
-        vkAcquireNextImageKHR = OriginalAcquire;
-        vkQueuePresentKHR = OriginalPresent;
-        NextAcquire.reset();
-        NextPresent.reset();
-    }
-
-    inline static std::optional<VkResult> NextAcquire;
-    inline static std::optional<VkResult> NextPresent;
-
-private:
-    static VKAPI_ATTR VkResult VKAPI_CALL Acquire(VkDevice device,
-                                                  VkSwapchainKHR swapchain,
-                                                  std::uint64_t timeout,
-                                                  VkSemaphore semaphore,
-                                                  VkFence fence,
-                                                  std::uint32_t* imageIndex) {
-        if (NextAcquire == VK_ERROR_OUT_OF_DATE_KHR) {
-            NextAcquire.reset();
-            return VK_ERROR_OUT_OF_DATE_KHR;
-        }
-        const VkResult result = OriginalAcquire(device, swapchain, timeout, semaphore, fence, imageIndex);
-        if (NextAcquire.has_value() && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
-            const auto overridden = *NextAcquire;
-            NextAcquire.reset();
-            return overridden;
-        }
-        return result;
-    }
-
-    static VKAPI_ATTR VkResult VKAPI_CALL Present(VkQueue queue, const VkPresentInfoKHR* info) {
-        const VkResult result = OriginalPresent(queue, info);
-        if (NextPresent.has_value() && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
-            const auto overridden = *NextPresent;
-            NextPresent.reset();
-            return overridden;
-        }
-        return result;
-    }
-
-    inline static PFN_vkAcquireNextImageKHR OriginalAcquire = nullptr;
-    inline static PFN_vkQueuePresentKHR OriginalPresent = nullptr;
-};
+using NVulkan::NTest::SwapchainResultOverride;
 
 VulkanSwapchainSupport MakeSupport() {
     return {

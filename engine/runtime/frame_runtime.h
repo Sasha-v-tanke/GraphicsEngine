@@ -58,6 +58,10 @@ public:
 
     virtual void Draw(const FrameContext& frame) = 0;
 
+    // Called by Stop on the caller after CPU producers finish, before waiting for registered completions.
+    virtual void Drain() noexcept {
+    }
+
     // Same gating/draining contract as ScheduleExtract; frame storage stays live through the returned join.
     [[nodiscard]] virtual NCommon::TaskHandle ScheduleDraw(const FrameContext& frame, NCommon::TaskContext&) {
         Draw(frame);

@@ -111,6 +111,7 @@ public:
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
             m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
             m_nextDrawFrameIndex = 0;
+            m_gpuRecycledFrameCount = 0;
             m_updateAdmissionOpen = true;
             ++m_lifecycleGeneration;
             m_lifecycleGenerationSnapshot.store(m_lifecycleGeneration, std::memory_order_release);
@@ -158,6 +159,8 @@ public:
         } catch (...) {
             SetLastError(MakeRuntimeError(std::current_exception()));
         }
+
+        m_frameRuntime->Drain();
 
         if (m_frameRecords != nullptr) {
             for (std::size_t index = 0; index < m_frameScheduler->GetMaxActiveFrames(); ++index) {
@@ -277,6 +280,11 @@ public:
         RequireRunningLocked("accept update");
 
         return m_updateAdmissionOpen;
+    }
+
+    [[nodiscard]] std::uint64_t GetGpuRecycledFrameCount() const {
+        std::lock_guard lock{m_mutex};
+        return m_gpuRecycledFrameCount;
     }
 
     [[nodiscard]] EEngineState GetState() const noexcept {
@@ -536,6 +544,9 @@ private:
 
             if (!failed) {
                 m_frameScheduler->RecycleFrame(record.Frame);
+                if (completion.valid()) {
+                    ++m_gpuRecycledFrameCount;
+                }
             } else {
                 try {
                     m_frameScheduler->AbortFrame(record.Frame);
@@ -597,6 +608,7 @@ private:
     std::unique_ptr<FrameRuntimeRecord[]> m_frameRecords;
     std::uint64_t m_nextDrawFrameIndex = 0;
     bool m_updateAdmissionOpen = true;
+    std::uint64_t m_gpuRecycledFrameCount = 0;
 };
 
 Engine::Engine(EngineConfig config)
@@ -627,6 +639,10 @@ bool Engine::Draw() {
 
 bool Engine::CanAcceptUpdate() const {
     return m_impl->CanAcceptUpdate();
+}
+
+std::uint64_t Engine::GetGpuRecycledFrameCount() const {
+    return m_impl->GetGpuRecycledFrameCount();
 }
 
 EEngineState Engine::GetState() const noexcept {

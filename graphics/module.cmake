@@ -11,6 +11,7 @@ API(
     shader.h
     image.h
     material.h
+    presentation.h
 )
 
 SOURCES(

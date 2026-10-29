@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -36,6 +37,8 @@ public:
     bool Draw();
 
     [[nodiscard]] bool CanAcceptUpdate() const;
+
+    [[nodiscard]] std::uint64_t GetGpuRecycledFrameCount() const;
 
     [[nodiscard]] EEngineState GetState() const noexcept;
 
