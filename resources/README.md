@@ -98,3 +98,41 @@ snapshots may retain their acquired material version until the frame resource re
 Native descriptor allocation and backend alignment/limit validation are not part of the Resources contract. Concrete
 Graphics backends translate material bindings into their private descriptor infrastructure during submission and must
 retain the resolved concrete resource dependencies for GPU lifetime.
+
+## Resource I/O
+
+`ResourceIo` reads raw bytes on a fixed pool of dedicated threads. `Read(path, completion)` returns a copyable,
+retained `ResourceIoRequest` immediately; neither submission nor result observation performs filesystem I/O on the caller.
+This service does not decode image/OBJ, mutate ResourceManager, allocate GPU objects or add polling tasks to TaskSystem.
+`WorkerCount` limits concurrent reads; `MaxPendingReads` limits all accepted work including active reads and completions.
+A full or stopped service rejects admission with INVALID_STATE. `MaxReadBytes` caps each result; defaults are two I/O
+threads, 64 pending operations and 64 MiB per read. Retained results belong to callers and are not an eviction cache.
+
+`GetResult()` returns null while pending, then an immutable retained result containing the path, SUCCEEDED/FAILED/CANCELLED
+status and either shared bytes or contextual ErrorInfo. Empty regular files succeed with empty bytes. Missing/nonregular
+files, read errors and oversized data fail without publishing partial bytes. The filesystem implementation reads in chunks
+and rejects nonregular files before opening them; it cannot prevent external path replacement or interrupt a blocked OS
+call. Paths therefore refer to trusted ordinary assets. Optional `ReadFunction` injection provides another I/O source or a
+deterministic test backend; it must be thread-safe, honor its stop token and obey the byte limit (also checked on return).
+
+Accepted requests deliver at most one read invocation and exactly one completion invocation, including failure/cancellation.
+Completion runs on an I/O thread, outside service locks, after result publication. It should only hand off retained bytes,
+for example by calling `TaskSystem::Submit([result](TaskContext&) { /* parse result->Bytes */ })` on success. Decode work
+then runs on a compute worker; the I/O thread never waits for it. The caller must keep TaskSystem and callback captures
+alive until I/O shutdown has drained completions. No TaskSystem/Engine lifetime is implicitly owned by this service.
+Completion exceptions are contained and exposed separately by `GetCompletionFailure()`; they do not revoke read results.
+
+`Cancel()` requests cooperative cancellation and is harmless on an empty or completed handle. A queued cancellation skips
+the reader entirely. Active reads stop at the backend's next safe point and discard partial bytes; a cancellation racing
+terminal publication may lose to completion. Result and request handles remain valid after the service is destroyed.
+
+`Shutdown()` rejects further admissions, requests cancellation, drains all accepted requests/callbacks and joins threads.
+It is idempotent and supports concurrent owner-side calls. Destruction performs the same shutdown. Call it from the owner
+thread, never a compute worker, I/O callback or cancellation handler; shutdown waits for active OS calls and completions.
+Self-join from an I/O thread is rejected. Destroying the service from its own callback is forbidden. Lifecycle ordering is
+stop resource producers -> ResourceIo shutdown -> drain decode work -> TaskSystem shutdown. Read/observation/cancellation
+are thread-safe while the service is alive; service destruction requires external lifetime coordination.
+
+Tests use controlled delayed readers to verify compute-worker progress, TaskSystem handoff, cancellation, queue/concurrency
+limits, failure isolation, retained results and shutdown with pending work. Full async ResourceManager pipeline integration
+remains IMPROVE-0025; GPU staging is FEATURE-0069.

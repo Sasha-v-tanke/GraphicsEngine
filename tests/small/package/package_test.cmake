@@ -236,6 +236,7 @@ set(
     "GraphicsEngine/resources/mesh_loader.h"
     "GraphicsEngine/resources/resource_handle.h"
     "GraphicsEngine/resources/resource_identity.h"
+    "GraphicsEngine/resources/resource_io.h"
     "GraphicsEngine/resources/resource_lease.h"
     "GraphicsEngine/resources/resource_manager.h"
     "GraphicsEngine/resources/resource_state.h"

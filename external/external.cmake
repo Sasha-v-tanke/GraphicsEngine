@@ -1,3 +1,4 @@
+include_external(system_threads)
 include_external(glm)
 include_external(tiny_obj)
 include_external(stb_image)
