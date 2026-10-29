@@ -113,7 +113,7 @@ FrameDiagnostics PresentationRuntime::GetDiagnostics() {
     return m_diagnostics;
 }
 
-void PresentationRuntime::FailAll(std::exception_ptr error) noexcept {
+void PresentationRuntime::FailAll(const std::exception_ptr& error) noexcept {
     for (auto& [_, frame]: m_queued) {
         frame->Promise.set_exception(error);
     }

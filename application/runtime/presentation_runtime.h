@@ -33,7 +33,7 @@ private:
         std::exception_ptr Failure = {};
     };
     void CompletePending();
-    void FailAll(std::exception_ptr error) noexcept;
+    void FailAll(const std::exception_ptr& error) noexcept;
 
     std::unique_ptr<NGraphics::Graphics> m_graphics;
     std::mutex m_mutex;

@@ -38,3 +38,10 @@ The sample presents 240 colored clear frames and prints submitted/completed/recy
 slots and resize, requires validation, and fails on every ERROR including teardown. Unsupported initialization
 explicitly skips; runtime errors do not skip. CPU contract tests cover suspension, retry identities, worker
 ordering, post-submit present failure and device loss.
+
+Supplementary heavy lifecycle tests use the same FrameLoop/Engine/Graphics pump with controlled platform
+intake: native iconify plus explicit zero extent, restore and resumed submissions, for N=1 and N=3.
+They also inject NOT_READY, OUT_OF_DATE and SUBOPTIMAL at the Vulkan dispatch boundary; successful
+acquire/present still call the real driver. These deterministic status cases are separate from the
+unmodified public Application smoke. Both check validation through teardown and clean-stop counters;
+the lifecycle cases additionally restart the clean frame loop and verify recycling again.

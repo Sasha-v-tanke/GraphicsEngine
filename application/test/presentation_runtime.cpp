@@ -21,6 +21,7 @@ public:
     std::uint64_t CompletedValue = 0;
     std::uint64_t NextValue = 0;
     int NotReadyCount = 0;
+    int OutOfDateCount = 0;
     bool FailBeforeSubmit = false;
     bool FailAfterSubmit = false;
     bool DeviceLost = false;
@@ -45,6 +46,10 @@ public:
         }
         if (NotReadyCount > 0) {
             --NotReadyCount;
+            return {.Status = NGraphics::EFrameSubmissionStatus::NOT_READY};
+        }
+        if (OutOfDateCount > 0) {
+            --OutOfDateCount;
             return {.Status = NGraphics::EFrameSubmissionStatus::OUT_OF_DATE};
         }
         return {.Status = FailAfterSubmit ? NGraphics::EFrameSubmissionStatus::FAILED
@@ -113,9 +118,14 @@ TEST(PresentationRuntime, RetainsFrameAndIdentityAcrossBackpressureAndSuspension
     Fixture fixture;
     const auto frame = fixture.Enqueue();
     const auto completion = fixture.Scheduler.GetGpuCompletion(frame);
-    fixture.Backend->NotReadyCount = 2;
+    fixture.Backend->NotReadyCount = 1;
+    fixture.Backend->OutOfDateCount = 1;
     fixture.Runtime->Pump(64, 64);
+    EXPECT_EQ(fixture.Backend->NotReadyCount, 0);
+    EXPECT_EQ(fixture.Backend->OutOfDateCount, 1);
+    EXPECT_EQ(completion.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
     fixture.Runtime->Pump(64, 64);
+    EXPECT_EQ(fixture.Backend->OutOfDateCount, 0);
     fixture.Runtime->Pump(0, 0);
     EXPECT_EQ(fixture.Runtime->GetDiagnostics().Submitted, 0);
     EXPECT_EQ(completion.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
@@ -129,6 +139,20 @@ TEST(PresentationRuntime, RetainsFrameAndIdentityAcrossBackpressureAndSuspension
     fixture.Backend->CompletedValue = 1;
     fixture.Runtime->Pump(64, 64);
     EXPECT_NO_THROW(completion.get());
+    fixture.Scheduler.BeginGpu(frame);
+    fixture.Scheduler.CompleteGpu(frame);
+    fixture.Scheduler.RecycleFrame(frame);
+    const auto reused = fixture.Enqueue();
+    EXPECT_EQ(reused.GetSlotIndex(), frame.GetSlotIndex());
+    EXPECT_EQ(reused.GetFrameIndex(), frame.GetFrameIndex() + 1);
+    const auto nextCompletion = fixture.Scheduler.GetGpuCompletion(reused);
+    EXPECT_EQ(nextCompletion.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
+    fixture.Runtime->Pump(64, 64);
+    EXPECT_EQ(fixture.Backend->Attempts.back().FrameIndex, reused.GetFrameIndex());
+    EXPECT_EQ(nextCompletion.wait_for(std::chrono::seconds{0}), std::future_status::timeout);
+    fixture.Backend->CompletedValue = 2;
+    fixture.Runtime->Pump(64, 64);
+    EXPECT_NO_THROW(nextCompletion.get());
     fixture.Runtime->Drain();
 }
 
