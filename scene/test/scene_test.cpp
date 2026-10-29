@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <future>
 #include <memory>
 #include <string>
@@ -73,6 +74,12 @@ TEST(Scene, RejectsNullStaleAndForeignHandles) {
     NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { static_cast<void>(manager.Acquire(old)); });
     EXPECT_FALSE(other.IsRegistered(replacement));
     NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { other.Activate(replacement); });
+    NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { other.Unload(replacement); });
+    NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { static_cast<void>(other.Acquire(replacement)); });
+    NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { manager.Activate({}); });
+    NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { manager.Unload({}); });
+    EXPECT_TRUE(manager.IsRegistered(replacement));
+    EXPECT_FALSE(manager.GetActiveHandle().has_value());
     NTest::ExpectError(NCommon::EError::NOT_FOUND, [&] { static_cast<void>(manager.Acquire({})); });
 }
 
@@ -122,13 +129,22 @@ TEST(Scene, AcquiredSceneOutlivesRegistryUnloadAndManager) {
 TEST(Scene, RegistryOperationsRejectOtherThreads) {
     NScene::SceneManager manager;
     const auto handle = manager.CreateScene();
+    manager.Activate(handle);
     auto task = std::async(std::launch::async, [&] {
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(manager.CreateScene()); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                           [&] { static_cast<void>(manager.RegisterScene(std::make_unique<NScene::Scene>())); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(manager.IsRegistered(handle)); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(manager.GetActiveHandle()); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(manager.AcquireActive()); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { manager.Deactivate(); });
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { manager.Activate(handle); });
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { manager.Unload(handle); });
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(manager.Acquire(handle)); });
     });
     task.get();
     EXPECT_TRUE(manager.IsRegistered(handle));
+    EXPECT_EQ(manager.GetActiveHandle(), handle);
 }
 
 TEST(Scene, WorkerLeaseRetainsWorldAcrossLogicalUnload) {
@@ -156,6 +172,108 @@ TEST(Scene, WorkerLeaseRetainsWorldAcrossLogicalUnload) {
     tasks.Wait(task);
     EXPECT_EQ(tasks.GetStatus(task), NCommon::ETaskStatus::COMPLETED);
     EXPECT_EQ(destroyed.load(), 1);
+}
+
+TEST(Scene, WorkerLeaseRetainsWorldAfterManagerDestruction) {
+    std::atomic<int> destroyed{0};
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    NCommon::TaskSystem tasks{1};
+    NCommon::TaskHandle task;
+    {
+        NScene::SceneManager manager;
+        const NScene::SceneHandle handle = manager.RegisterScene(std::make_unique<UserScene>(destroyed));
+        std::shared_ptr<NScene::Scene> scene = manager.Acquire(handle);
+        const NEcs::Entity entity = scene->GetWorld().CreateEntity();
+        scene->GetWorld().AddComponent<int>(entity, 91);
+        task = tasks.Submit([scene = std::move(scene), entity, released](NCommon::TaskContext&) {
+            ASSERT_EQ(released.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            EXPECT_EQ(scene->GetWorld().GetComponent<int>(entity), 91);
+            EXPECT_EQ(scene->GetName(), "user scene");
+        });
+        // Destroy a still-registered SceneManager while the worker owns the only remaining lease.
+    }
+    EXPECT_EQ(destroyed.load(), 0);
+    release.set_value();
+    tasks.Wait(task);
+    EXPECT_EQ(tasks.GetStatus(task), NCommon::ETaskStatus::COMPLETED);
+    EXPECT_EQ(destroyed.load(), 1);
+}
+
+TEST(Scene, ParallelExtractionRetainsOldSceneAcrossSwitchAndUnload) {
+    for (const std::size_t workerCount: {1U, 4U}) {
+        SCOPED_TRACE(workerCount);
+        std::atomic<int> destroyed{0};
+        NResources::ResourceManager resources;
+        const auto mesh = resources.Request<NResources::MeshData>({"mesh", "parallel scene"});
+        resources.PublishReady(resources.BeginLoading(mesh), std::make_shared<NResources::MeshData>());
+        const auto material = resources.Request<NGraphics::Material>({"material", "parallel scene"});
+        resources.PublishReady(
+                resources.BeginLoading(material),
+                std::make_shared<NGraphics::Material>(NResources::ResourceIdentity{"pipeline", "shared"}));
+        NScene::SceneManager scenes;
+        const NScene::SceneHandle old = scenes.RegisterScene(std::make_unique<UserScene>(destroyed));
+        const NScene::SceneHandle next = scenes.CreateScene("next");
+        scenes.Activate(old);
+        std::shared_ptr<NScene::Scene> source = scenes.AcquireActive();
+        for (int index = 0; index < 1031; ++index) {
+            const NEcs::Entity entity = source->GetWorld().CreateEntity();
+            source->GetWorld().AddComponent<NRenderer::TransformComponent>(entity).Value.Translation.X =
+                    static_cast<float>(index);
+            source->GetWorld().AddComponent<NRenderer::RenderableComponent>(
+                    entity,
+                    NRenderer::RenderableComponent{.Mesh = mesh, .Material = material});
+        }
+        NEngine::NController::FrameScheduler scheduler{NEngine::EngineConfig{.MaxActiveFrames = 1}};
+        const NEngine::NController::FrameHandle frame = *scheduler.TryAcquireFrame();
+        scheduler.ArmFrame(frame);
+        scheduler.BeginUpdate(frame);
+        scheduler.EndUpdate(frame);
+        scheduler.SignalDraw(frame);
+        scheduler.BeginFinalize(frame);
+        std::promise<void> scheduled;
+        std::future<void> started = scheduled.get_future();
+        std::promise<void> release;
+        const std::shared_future<void> released = release.get_future().share();
+        NCommon::TaskSystem tasks{workerCount};
+        NCommon::TaskHandle join;
+        const NRenderer::RenderWorld* snapshot = nullptr;
+        const NCommon::TaskHandle root = tasks.Submit(
+                [source = std::move(source), &resources, &scheduler, frame, &join, &snapshot, &scheduled, released](
+                        NCommon::TaskContext& task) {
+                    join = NRenderer::NInternal::ScheduleRenderWorldExtraction(
+                            source->GetWorld(),
+                            resources,
+                            scheduler.GetFrameStorage(frame),
+                            task,
+                            [source, &snapshot](const NRenderer::RenderWorld& result) { snapshot = &result; },
+                            17);
+                    // Chunks depend on this root. Hold them pending until the owner publishes switch/unload.
+                    scheduled.set_value();
+                    ASSERT_EQ(released.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+                });
+        EXPECT_EQ(started.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+        scenes.Activate(next);
+        scenes.Unload(old);
+        EXPECT_FALSE(scenes.IsRegistered(old));
+        EXPECT_EQ(scenes.GetActiveHandle(), next);
+        EXPECT_EQ(destroyed.load(), 0);
+        release.set_value();
+        tasks.Wait(root);
+        ASSERT_EQ(tasks.GetStatus(root), NCommon::ETaskStatus::COMPLETED);
+        ASSERT_TRUE(join.IsValid());
+        tasks.Wait(join);
+        ASSERT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::COMPLETED);
+        EXPECT_EQ(destroyed.load(), 1);
+        ASSERT_NE(snapshot, nullptr);
+        ASSERT_EQ(snapshot->GetObjects().size(), 1031);
+        for (std::size_t index = 0; index < snapshot->GetObjects().size(); ++index) {
+            EXPECT_FLOAT_EQ(snapshot->GetObjects()[index].WorldTransform.Translation.X, static_cast<float>(index));
+        }
+        EXPECT_TRUE(resources.TryAcquire(mesh).has_value());
+        scheduler.CompleteFrame(frame);
+        scheduler.RecycleFrame(frame);
+    }
 }
 
 TEST(Scene, UnloadingOldScenePreservesFrameSnapshotAndSharedResources) {
