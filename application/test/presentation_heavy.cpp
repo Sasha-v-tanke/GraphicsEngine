@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <future>
 #include <glfw.h>
 #include <iostream>
 #include <memory>
@@ -214,4 +215,34 @@ TEST(ApplicationPresentation, SingleFrameRingZeroExtentRestoreAndControlledWsiSt
 TEST(ApplicationPresentation, MultipleFrameRingZeroExtentRestoreAndControlledWsiStatuses) {
     RunPresentationLifecycle(3);
 }
+TEST(ApplicationPresentation, MainCommandWakesNativeWindowEventWait) {
+    NWindow::WindowRuntime runtime;
+    NWindow::WindowConfig config{NWindow::EWindowType::GLFW};
+    config.Size = {.Width = 160, .Height = 120};
+    NWindow::Window window{config};
+    auto& native = NWindow::NInternal::GetWindowEngine(window);
+    NApplication::NRuntime::MainExecutor executor;
+    const auto generation = executor.Start({&native, [](void* engine) noexcept {
+                                                static_cast<NWindow::NEngine::IWindowEngine*>(engine)->WakeEventLoop();
+                                            }});
+    window.ProcessEvents();
+    const std::thread::id owner = std::this_thread::get_id();
+    bool ran = false;
+    auto producer = std::async(std::launch::async, [&] {
+        auto completion = executor.Post(generation, [&] {
+            EXPECT_EQ(std::this_thread::get_id(), owner);
+            ran = true;
+        });
+        return completion.Wait();
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (executor.GetPendingCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+        native.WaitEvents(std::chrono::milliseconds{100});
+    }
+    EXPECT_EQ(executor.Drain(), 1);
+    executor.Stop();
+    EXPECT_EQ(producer.get(), NApplication::NRuntime::EMainCommandState::COMPLETED);
+    EXPECT_TRUE(ran);
+}
+
 } // namespace

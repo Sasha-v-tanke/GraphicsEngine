@@ -7,6 +7,7 @@
 #include <application/application_config.h>
 #include <application/frame_diagnostics.h>
 #include <application/runtime/engine_factory.h>
+#include <application/runtime/main_executor.h>
 #include <engine/engine.h>
 #include <graphics/graphics.h>
 
@@ -21,6 +22,9 @@ public:
     virtual void OnUpdate() = 0;
 
     virtual void OnDraw() = 0;
+    [[nodiscard]] virtual bool IsShutdownRequested() const {
+        return false;
+    }
 };
 
 class FrameLoop final: public NCommon::NonTransferable {
@@ -35,7 +39,10 @@ public:
 
     ~FrameLoop();
 
-    void Start();
+    void Start(MainExecutor::Wakeup wakeup = {});
+    [[nodiscard]] MainExecutor& GetMainExecutor() noexcept {
+        return m_mainExecutor;
+    }
 
     void Stop() noexcept;
     void CheckError() const;
@@ -58,6 +65,7 @@ private:
     };
 
 private:
+    MainExecutor m_mainExecutor;
     std::unique_ptr<IEngineFactory> m_engineFactory;
     std::unique_ptr<NEngine::Engine> m_engine;
     PresentationRuntime* m_presentation = nullptr;
