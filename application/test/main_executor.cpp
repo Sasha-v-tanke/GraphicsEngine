@@ -33,7 +33,7 @@ TEST(MainExecutor, FifoMoveOnlyFailureAndBoundedDispatch) {
     auto last = executor.Post(generation, [&order] { order.push_back(3); });
     EXPECT_EQ(wakes.load(), 3);
     EXPECT_EQ(first.GetState(), EMainCommandState::QUEUED);
-    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { first.Wait(); });
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)first.Wait(); });
     EXPECT_EQ(executor.Drain(2), 2);
     EXPECT_EQ(first.Wait(), EMainCommandState::COMPLETED);
     EXPECT_EQ(failed.Wait(), EMainCommandState::FAILED);
@@ -54,6 +54,7 @@ TEST(MainExecutor, ConcurrentProducersHaveNoLossAndPreserveEachProducerOrder) {
     std::vector<int> next(producers);
     std::vector<std::vector<MainCompletion>> completions(producers);
     std::vector<std::thread> threads;
+    threads.reserve(8);
     for (std::size_t producer = 0; producer < producers; ++producer) {
         threads.emplace_back([&, producer] {
             for (int index = 0; index < commands; ++index) {
@@ -106,6 +107,7 @@ TEST(MainExecutor, StopWakesAllWaitersAndRejectsOldRunGeneration) {
     const auto old = executor.Start();
     auto skipped = executor.Post(old, [] { ADD_FAILURE() << "Stopped command ran"; });
     std::vector<std::future<EMainCommandState>> waiters;
+    waiters.reserve(8);
     for (int index = 0; index < 8; ++index) {
         waiters.push_back(std::async(std::launch::async, [skipped] { return skipped.Wait(); }));
     }
@@ -132,6 +134,7 @@ TEST(MainExecutor, ConcurrentStopAndPostAlwaysPublishTerminalCompletion) {
         std::barrier start{9};
         std::vector<std::vector<MainCompletion>> completions(8);
         std::vector<std::thread> threads;
+        threads.reserve(8);
         for (std::size_t producer = 0; producer < 8; ++producer) {
             threads.emplace_back([&, producer] {
                 start.arrive_and_wait();

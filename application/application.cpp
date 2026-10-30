@@ -53,7 +53,7 @@ public:
         m_application.OnDraw();
     }
 
-    bool IsShutdownRequested() const override {
+    [[nodiscard]] bool IsShutdownRequested() const override {
         return m_application.IsShutdownRequested();
     }
 

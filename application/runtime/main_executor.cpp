@@ -60,7 +60,7 @@ MainExecutor::Generation MainExecutor::Start(Wakeup wakeup) {
     if (m_running || m_draining || m_stopping != 0 || m_generation == std::numeric_limits<Generation>::max()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Main executor cannot start in its current state");
     }
-    m_wakeup = std::move(wakeup);
+    m_wakeup = wakeup;
     ++m_generation;
     m_running = true;
     return m_generation;

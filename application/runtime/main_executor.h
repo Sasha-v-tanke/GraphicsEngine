@@ -30,7 +30,7 @@ class MainCompletion final {
 public:
     [[nodiscard]] EMainCommandState GetState() const;
     [[nodiscard]] std::exception_ptr GetFailure() const;
-    EMainCommandState Wait() const;
+    [[nodiscard]] EMainCommandState Wait() const;
 
 private:
     struct State {

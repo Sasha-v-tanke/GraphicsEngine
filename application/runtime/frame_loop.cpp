@@ -71,7 +71,7 @@ FrameLoop::~FrameLoop() {
 }
 
 void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
-    m_mainExecutor.Start(std::move(wakeup));
+    m_mainExecutor.Start(wakeup);
     try {
         if (m_presentation) {
             m_presentation->Start();

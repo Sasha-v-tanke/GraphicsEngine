@@ -20,7 +20,7 @@ public:
     virtual void OnUpdate() = 0;
 
     virtual void OnDraw() = 0;
-    virtual bool IsShutdownRequested() const {
+    [[nodiscard]] virtual bool IsShutdownRequested() const {
         return false;
     }
 };
