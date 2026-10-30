@@ -433,7 +433,6 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
               (std::vector<std::string>{
                       "user.update",
                       "user.draw",
-                      "user.update",
               }));
 
     blockingEngineFactory.Runtime->FinishFirstDraw();
@@ -617,23 +616,29 @@ public:
 class MainWaitingFactory final: public NApplication::NRuntime::IEngineFactory {
 public:
     MainWaitingRuntime* Runtime = nullptr;
+    NEngine::Engine* Engine = nullptr;
     std::unique_ptr<NEngine::Engine> Create(NEngine::EngineConfig config) override {
         auto runtime = std::make_unique<MainWaitingRuntime>();
         Runtime = runtime.get();
-        return NEngine::NRuntime::EngineFactory::Create(config, std::move(runtime));
+        auto engine = NEngine::NRuntime::EngineFactory::Create(config, std::move(runtime));
+        Engine = engine.get();
+        return engine;
     }
 };
 
 TEST_F(ApplicationTest, StopSkipsMainCommandsBeforeJoiningSingleWorker) {
     auto factory = std::make_unique<MainWaitingFactory>();
     MainWaitingFactory& reference = *factory;
-    NApplication::NRuntime::FrameLoop loop{MakeConfig(), std::move(factory)};
+    auto config = MakeConfig();
+    config.MaxActiveFrames = 1;
+    NApplication::NRuntime::FrameLoop loop{config, std::move(factory)};
     reference.Runtime->Executor = &loop.GetMainExecutor();
     auto queued = reference.Runtime->Queued.get_future();
     RecordingFrameLoopCallbacks callbacks{m_state.Events};
     loop.Start();
     loop.Step(callbacks);
     EXPECT_EQ(queued.wait_for(2s), std::future_status::ready);
+    EXPECT_FALSE(reference.Engine->TryBeginFrame().has_value());
     loop.Stop();
     EXPECT_TRUE(reference.Runtime->Skipped.load());
 }

@@ -1,5 +1,6 @@
 #include "frame_loop.h"
 
+#include <chrono>
 #include <memory>
 #include <utility>
 
@@ -77,6 +78,7 @@ void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
             m_presentation->Start();
         }
         m_engine->Start();
+        m_reservedFrame.reset();
         m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
     } catch (...) {
         m_mainExecutor.Stop();
@@ -88,6 +90,7 @@ void FrameLoop::Stop() noexcept {
     m_mainExecutor.Stop();
     if (m_engine != nullptr) {
         m_engine->Stop();
+        m_reservedFrame.reset();
     }
 }
 
@@ -98,24 +101,31 @@ void FrameLoop::CheckError() const {
 }
 
 bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
+    m_progressVersion = m_engine->GetProgressVersion();
     CheckError();
     bool progressed = m_mainExecutor.Drain() != 0;
     if (callbacks.IsShutdownRequested()) {
         return progressed;
     }
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
-        if (!m_engine->CanAcceptUpdate()) {
+        m_reservedFrame = m_engine->TryBeginFrame();
+        if (!m_reservedFrame) {
             return progressed;
         }
-
-        callbacks.OnUpdate();
-        progressed = true;
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
+        try {
+            callbacks.OnUpdate();
+            progressed = true;
+        } catch (...) {
+            (void)m_engine->AbortFrame(*m_reservedFrame);
+            m_reservedFrame.reset();
+            m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+            throw;
+        }
     }
 
     if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
         EngineUpdateCheckpoint();
-
         if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
             return progressed;
         }
@@ -135,12 +145,18 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
     return progressed;
 }
 
+void FrameLoop::WaitForProgress() const {
+    // CPU-only internal callers may wait on Engine notifications. The Application event loop instead waits on Window
+    // with this same maintenance bound so both native events and main-command publication can wake it immediately.
+    m_engine->WaitForProgress(m_progressVersion, std::chrono::milliseconds{8});
+}
+
 void FrameLoop::EngineUpdateCheckpoint() {
     if (m_frameCheckpoint != EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application update checkpoint is out of order");
     }
 
-    if (m_engine->Update()) {
+    if (m_reservedFrame && m_engine->CompleteUserUpdate(*m_reservedFrame)) {
         m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_DRAW;
     }
 }
@@ -151,6 +167,7 @@ void FrameLoop::EngineDrawCheckpoint() {
     }
 
     if (m_engine->Draw()) {
+        m_reservedFrame.reset();
         m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
     }
 }

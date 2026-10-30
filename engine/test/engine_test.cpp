@@ -850,4 +850,211 @@ TEST(Engine, LatchesDrawRuntimeErrorWithoutCompletingFrame) {
     EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
 }
 
+class ReservationRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ++Updates;
+    }
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+        if (Updates.load() <= Draws.load()) {
+            ++OrderingErrors;
+        }
+        ++Draws;
+    }
+    std::atomic<int> Updates = 0;
+    std::atomic<int> Draws = 0;
+    std::atomic<int> OrderingErrors = 0;
+};
+
+std::optional<NEngine::FrameKey> BeginEventually(NEngine::Engine& engine) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto version = engine.GetProgressVersion();
+        if (auto key = engine.TryBeginFrame()) {
+            return key;
+        }
+        engine.WaitForProgress(version, 1ms);
+    }
+    return std::nullopt;
+}
+
+TEST(EngineReservation, RequiresCompletionBeforeSchedulingAndIgnoresDuplicateSignals) {
+    for (std::uint32_t slots: {1U, 2U, 3U}) {
+        for (std::size_t workers: {1U, 2U}) {
+            auto runtime = std::make_unique<ReservationRuntime>();
+            auto& observed = *runtime;
+            auto engine = NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = slots, .WorkerCount = workers},
+                                                                   std::move(runtime));
+            engine->Start();
+            const auto key = engine->TryBeginFrame();
+            ASSERT_TRUE(key);
+            EXPECT_TRUE(key->IsValid());
+            EXPECT_EQ(key->GetFrameSequence(), 0);
+            EXPECT_FALSE(engine->CanAcceptUpdate());
+            EXPECT_FALSE(engine->TryBeginFrame());
+            EXPECT_EQ(observed.Updates.load(), 0);
+            ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)engine->Draw(); });
+            std::atomic<int> completions = 0;
+            std::array<std::thread, 4> signals;
+            for (std::thread& signal: signals) {
+                signal = std::thread{[&] {
+                    if (engine->CompleteUserUpdate(*key)) {
+                        ++completions;
+                    }
+                }};
+            }
+            for (std::thread& signal: signals) {
+                signal.join();
+            }
+            EXPECT_EQ(completions.load(), 1);
+            EXPECT_FALSE(engine->AbortFrame(*key));
+            EXPECT_TRUE(engine->Draw());
+            engine->Stop();
+            EXPECT_EQ(observed.Updates.load(), 1);
+            EXPECT_EQ(observed.Draws.load(), 1);
+            EXPECT_EQ(observed.OrderingErrors.load(), 0);
+        }
+    }
+}
+
+TEST(EngineReservation, AbortedReservationReleasesCheckpointAndRejectsStaleGeneration) {
+    NEngine::Engine engine{{.MaxActiveFrames = 1, .WorkerCount = 1}};
+    engine.Start();
+    const auto old = engine.TryBeginFrame();
+    ASSERT_TRUE(old);
+    EXPECT_TRUE(engine.AbortFrame(*old));
+    EXPECT_FALSE(engine.AbortFrame(*old));
+    const auto next = engine.TryBeginFrame();
+    ASSERT_TRUE(next);
+    EXPECT_EQ(next->GetSlotIndex(), old->GetSlotIndex());
+    EXPECT_GT(next->GetGeneration(), old->GetGeneration());
+    EXPECT_EQ(next->GetFrameSequence(), old->GetFrameSequence() + 1);
+    EXPECT_FALSE(engine.CompleteUserUpdate(*old));
+    EXPECT_TRUE(engine.CompleteUserUpdate(*next));
+    EXPECT_TRUE(engine.Draw());
+    engine.Stop();
+}
+
+TEST(EngineReservation, StopAbortsUnsignalledReservationAndRestartRejectsOldRunAndForeignKeys) {
+    NEngine::Engine engine{{.MaxActiveFrames = 1, .WorkerCount = 1}};
+    NEngine::Engine other{{.MaxActiveFrames = 1, .WorkerCount = 1}};
+    engine.Start();
+    other.Start();
+    const auto old = engine.TryBeginFrame();
+    ASSERT_TRUE(old);
+    EXPECT_FALSE(other.CompleteUserUpdate(*old));
+    EXPECT_FALSE(engine.CompleteUserUpdate({}));
+    engine.Stop();
+    EXPECT_FALSE(engine.CompleteUserUpdate(*old));
+    engine.Start();
+    const auto next = engine.TryBeginFrame();
+    ASSERT_TRUE(next);
+    EXPECT_NE(next->GetRunGeneration(), old->GetRunGeneration());
+    EXPECT_FALSE(engine.CompleteUserUpdate(*old));
+    EXPECT_FALSE(engine.AbortFrame(*old));
+    EXPECT_TRUE(engine.CompleteUserUpdate(*next));
+    EXPECT_TRUE(engine.Draw());
+    engine.Stop();
+}
+
+TEST(EngineReservation, GpuBackpressureDoesNotReserveAnotherFrame) {
+    for (std::uint32_t slots: {1U, 2U, 3U}) {
+        auto runtime = std::make_unique<GpuFrameRuntime>();
+        auto& gpu = *runtime;
+        auto engine = NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = slots, .WorkerCount = 1},
+                                                               std::move(runtime));
+        const FinishGpuGuard guard{gpu};
+        engine->Start();
+        for (std::size_t index = 0; index < slots; ++index) {
+            const auto key = BeginEventually(*engine);
+            ASSERT_TRUE(key);
+            EXPECT_TRUE(engine->CompleteUserUpdate(*key));
+            EXPECT_TRUE(engine->Draw());
+            ASSERT_EQ(gpu.Submissions[index].wait_for(2s), std::future_status::ready);
+        }
+        EXPECT_FALSE(engine->TryBeginFrame());
+        EXPECT_EQ(gpu.Destroyed.load(), 0);
+        gpu.Signals[0].set_value();
+        const auto next = BeginEventually(*engine);
+        ASSERT_TRUE(next);
+        EXPECT_EQ(next->GetFrameSequence(), slots);
+        EXPECT_EQ(gpu.Destroyed.load(), 1);
+        EXPECT_TRUE(engine->AbortFrame(*next));
+        gpu.Finish();
+        engine->Stop();
+    }
+}
+
+TEST(EngineReservation, ProgressWaitReleasesMutexAndWakesOnAbortWithoutLostSignal) {
+    NEngine::Engine engine{{.MaxActiveFrames = 1, .WorkerCount = 1}};
+    engine.Start();
+    const auto key = engine.TryBeginFrame();
+    ASSERT_TRUE(key);
+    const auto version = engine.GetProgressVersion();
+    auto waiter = std::async(std::launch::async, [&] { engine.WaitForProgress(version, 2s); });
+    EXPECT_EQ(waiter.wait_for(20ms), std::future_status::timeout);
+    EXPECT_TRUE(engine.AbortFrame(*key));
+    EXPECT_EQ(waiter.wait_for(1s), std::future_status::ready);
+    // Capturing the old version also works when progress precedes wait registration.
+    auto lateWaiter = std::async(std::launch::async, [&] { engine.WaitForProgress(version, 2s); });
+    EXPECT_EQ(lateWaiter.wait_for(100ms), std::future_status::ready);
+    engine.Stop();
+}
+
+TEST(EngineReservation, WorkerCannotWaitForAdmission) {
+    NEngine::Engine engine{{.MaxActiveFrames = 1, .WorkerCount = 1}};
+    engine.Start();
+    NCommon::TaskSystem tasks{1};
+    const auto task = tasks.Submit([&](NCommon::TaskContext&) {
+        ExpectError(NCommon::EError::INVALID_STATE, [&] { engine.WaitForProgress(engine.GetProgressVersion(), 1s); });
+    });
+    tasks.Wait(task);
+    engine.Stop();
+}
+
+TEST(EngineReservation, ReservationWaitsForExtractionBeforeUserMutationCanBegin) {
+    auto runtime = std::make_unique<BlockingExtractionFrameRuntime>();
+    auto& extraction = *runtime;
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 2, .WorkerCount = 2}, std::move(runtime));
+    const FinishExtractionGuard guard{extraction};
+    engine->Start();
+    const auto key = engine->TryBeginFrame();
+    ASSERT_TRUE(key);
+    EXPECT_TRUE(engine->CompleteUserUpdate(*key));
+    EXPECT_TRUE(engine->Draw());
+    ASSERT_TRUE(extraction.WaitExtractionEntered(2s));
+    EXPECT_FALSE(engine->TryBeginFrame());
+    extraction.FinishExtraction();
+    const auto next = BeginEventually(*engine);
+    ASSERT_TRUE(next);
+    EXPECT_TRUE(engine->AbortFrame(*next));
+    engine->Stop();
+}
+
+TEST(EngineReservation, ConcurrentStopAndExternalCompletionDrainOrIgnoreTheSignal) {
+    for (int attempt = 0; attempt < 25; ++attempt) {
+        auto runtime = std::make_unique<ReservationRuntime>();
+        auto& observed = *runtime;
+        auto engine =
+                NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 1}, std::move(runtime));
+        engine->Start();
+        const auto key = engine->TryBeginFrame();
+        ASSERT_TRUE(key);
+        std::thread signal{[&] { (void)engine->CompleteUserUpdate(*key); }};
+        engine->Stop();
+        signal.join();
+        EXPECT_EQ(engine->GetState(), NEngine::EEngineState::STOPPED);
+        EXPECT_LE(observed.Updates.load(), 1);
+        EXPECT_EQ(observed.Draws.load(), 0);
+        EXPECT_FALSE(engine->CompleteUserUpdate(*key));
+        engine->Start();
+        const auto restarted = engine->TryBeginFrame();
+        ASSERT_TRUE(restarted);
+        EXPECT_FALSE(engine->CompleteUserUpdate(*key));
+        EXPECT_TRUE(engine->AbortFrame(*restarted));
+        engine->Stop();
+    }
+}
+
 } // namespace

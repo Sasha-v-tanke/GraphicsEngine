@@ -6,6 +6,7 @@ API(
     mesh_data.h
     mesh_loader.h
     resource_handle.h
+    resource_io.h
     resource_identity.h
     resource_lease.h
     resource_manager.h
@@ -18,6 +19,7 @@ API(
 SOURCES(
     image_loader.cpp
     mesh_loader.cpp
+    resource_io.cpp
     resource_manager.cpp
     shader_artifact_loader.cpp
 )
@@ -27,6 +29,7 @@ PUBLIC_DEPENDS(
 )
 
 PRIVATE_DEPENDS(
+    SystemThreads
     StbImage
     TinyObj
 )

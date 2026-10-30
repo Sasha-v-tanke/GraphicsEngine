@@ -158,7 +158,7 @@ void Application::RunFrame() {
     const bool progressed = m_frameLoop->Step(callbacks);
     // Bounded platform/completion maintenance; admission retries never repeat user callbacks.
     if (!m_window->ShouldClose() && (!progressed || m_hasPresentation)) {
-        NWindow::NInternal::GetWindowEngine(*m_window).WaitEvents(std::chrono::milliseconds{1});
+        NWindow::NInternal::GetWindowEngine(*m_window).WaitEvents(std::chrono::milliseconds{progressed ? 1 : 8});
     }
 }
 

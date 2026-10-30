@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <application/application_config.h>
 #include <application/frame_diagnostics.h>
@@ -46,6 +48,7 @@ public:
     void CheckError() const;
 
     bool Step(IFrameLoopCallbacks& callbacks);
+    void WaitForProgress() const;
 
     void EngineUpdateCheckpoint();
 
@@ -67,6 +70,8 @@ private:
     std::unique_ptr<NEngine::Engine> m_engine;
     PresentationRuntime* m_presentation = nullptr;
     EFrameCheckpoint m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+    std::optional<NEngine::FrameKey> m_reservedFrame;
+    std::uint64_t m_progressVersion = 0;
 };
 
 } // namespace NApplication::NRuntime
