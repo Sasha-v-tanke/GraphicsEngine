@@ -420,7 +420,6 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
               (std::vector<std::string>{
                       "user.update",
                       "user.draw",
-                      "user.update",
               }));
 
     blockingEngineFactory.Runtime->FinishFirstDraw();

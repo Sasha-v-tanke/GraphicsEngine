@@ -1,5 +1,6 @@
 #include "frame_loop.h"
 
+#include <chrono>
 #include <memory>
 #include <utility>
 
@@ -75,12 +76,14 @@ void FrameLoop::Start() {
         m_presentation->Start();
     }
     m_engine->Start();
+    m_reservedFrame.reset();
     m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
 }
 
 void FrameLoop::Stop() noexcept {
     if (m_engine != nullptr) {
         m_engine->Stop();
+        m_reservedFrame.reset();
     }
 }
 
@@ -90,22 +93,30 @@ void FrameLoop::CheckError() const {
     }
 }
 
-void FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
+bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
+    m_progressVersion = m_engine->GetProgressVersion();
     CheckError();
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
-        if (!m_engine->CanAcceptUpdate()) {
-            return;
+        m_reservedFrame = m_engine->TryBeginFrame();
+        if (!m_reservedFrame) {
+            return false;
         }
-
-        callbacks.OnUpdate();
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
+        try {
+            callbacks.OnUpdate();
+        } catch (...) {
+            (void)m_engine->AbortFrame(*m_reservedFrame);
+            m_reservedFrame.reset();
+            m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+            throw;
+        }
     }
 
     if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
         EngineUpdateCheckpoint();
 
         if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
-            return;
+            return false;
         }
     }
 
@@ -117,6 +128,13 @@ void FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
     if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_DRAW) {
         EngineDrawCheckpoint();
     }
+    return true;
+}
+
+void FrameLoop::WaitForProgress() const {
+    // The timeout bounds platform event latency and maintains legacy GPU futures
+    // and failed/cancelled async joins that do not provide a wake callback yet.
+    m_engine->WaitForProgress(m_progressVersion, std::chrono::milliseconds{8});
 }
 
 void FrameLoop::EngineUpdateCheckpoint() {
@@ -124,7 +142,7 @@ void FrameLoop::EngineUpdateCheckpoint() {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application update checkpoint is out of order");
     }
 
-    if (m_engine->Update()) {
+    if (m_reservedFrame && m_engine->CompleteUserUpdate(*m_reservedFrame)) {
         m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_DRAW;
     }
 }
@@ -135,6 +153,7 @@ void FrameLoop::EngineDrawCheckpoint() {
     }
 
     if (m_engine->Draw()) {
+        m_reservedFrame.reset();
         m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
     }
 }

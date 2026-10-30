@@ -1,8 +1,10 @@
 #include "engine.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -59,6 +61,17 @@ namespace {
     }
 }
 
+[[nodiscard]] std::uint64_t AcquireEngineIdentity() {
+    static std::atomic<std::uint64_t> next{1};
+    std::uint64_t value = next.load(std::memory_order_relaxed);
+    do {
+        if (value == std::numeric_limits<std::uint64_t>::max()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::OUT_OF_MEMORY, "Engine identity space exhausted");
+        }
+    } while (!next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed));
+    return value;
+}
+
 [[nodiscard]] bool IsTerminalTaskStatus(NCommon::ETaskStatus status) noexcept {
     return status == NCommon::ETaskStatus::COMPLETED || status == NCommon::ETaskStatus::FAILED ||
            status == NCommon::ETaskStatus::CANCELLED;
@@ -107,6 +120,9 @@ public:
         m_lastError.reset();
 
         try {
+            if (m_lifecycleGeneration == std::numeric_limits<std::uint64_t>::max()) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Engine run generation space exhausted");
+            }
             m_taskSystem = std::make_unique<NCommon::TaskSystem>(m_config.WorkerCount);
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
             m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
@@ -116,6 +132,7 @@ public:
             ++m_lifecycleGeneration;
             m_lifecycleGenerationSnapshot.store(m_lifecycleGeneration, std::memory_order_release);
             m_state = EEngineState::RUNNING;
+            NotifyProgressLocked();
         } catch (...) {
             RollbackStartLocked();
             throw;
@@ -149,6 +166,7 @@ public:
             m_stopInProgress = true;
             m_activeStopGeneration = observedGeneration;
             m_state = EEngineState::STOPPING;
+            NotifyProgressLocked();
             taskSystem = std::move(m_taskSystem);
         }
 
@@ -190,46 +208,59 @@ public:
             m_stopInProgress = false;
             m_completedStopGeneration = m_activeStopGeneration;
             m_stopCondition.notify_all();
+            NotifyProgressLocked();
         }
     }
 
+    [[nodiscard]] std::optional<FrameKey> TryBeginFrame() {
+        std::lock_guard lock{m_mutex};
+        return TryBeginFrameLocked();
+    }
+
+    [[nodiscard]] bool CompleteUserUpdate(FrameKey key) {
+        std::lock_guard lock{m_mutex};
+        return CompleteUserUpdateLocked(key);
+    }
+
+    [[nodiscard]] bool AbortFrame(FrameKey key) {
+        std::lock_guard lock{m_mutex};
+        FrameRuntimeRecord* record = ResolveReservationLocked(key);
+        if (record == nullptr || record->HasUpdateTask) {
+            return false;
+        }
+        m_frameScheduler->AbortFrame(record->Frame);
+        m_nextDrawFrameIndex = record->Frame.GetFrameIndex() + 1;
+        *record = {};
+        m_updateAdmissionOpen = true;
+        NotifyProgressLocked();
+        return true;
+    }
+
+    [[nodiscard]] std::uint64_t GetProgressVersion() const {
+        std::lock_guard lock{m_mutex};
+        return m_progressVersion;
+    }
+
+    void WaitForProgress(std::uint64_t version, std::chrono::milliseconds timeout) const {
+        if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "A worker cannot wait for frame admission");
+        }
+        std::unique_lock lock{m_mutex};
+        m_progressCondition.wait_for(lock, timeout, [this, version] {
+            return m_progressVersion != version || m_state != EEngineState::RUNNING;
+        });
+    }
+
     bool Update() {
-        NController::FrameHandle frame;
         std::lock_guard lock{m_mutex};
         RequireRunningLocked("update");
-        ReapTerminalFrameRecordsLocked(*m_taskSystem);
-        RequireRunningLocked("update");
-
-        if (!m_updateAdmissionOpen) {
-            return false;
+        const FrameRuntimeRecord& pending =
+                m_frameRecords[static_cast<std::size_t>(m_nextDrawFrameIndex % m_frameScheduler->GetMaxActiveFrames())];
+        if (pending.HasReservation && !pending.HasDrawTask && pending.HasUpdateTask) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application update checkpoint is out of order");
         }
-
-        std::optional<NController::FrameHandle> acquiredFrame = m_frameScheduler->TryAcquireFrame();
-
-        if (!acquiredFrame.has_value()) {
-            return false;
-        }
-
-        frame = *acquiredFrame;
-        m_frameScheduler->ArmFrame(frame);
-
-        NCommon::TaskHandle updateTask;
-
-        try {
-            updateTask = m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunUpdate(frame); });
-        } catch (...) {
-            SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            m_state = EEngineState::STOPPING;
-            m_frameScheduler->AbortFrame(frame);
-            throw;
-        }
-
-        FrameRuntimeRecord& record = GetFrameRecordLocked(frame);
-        record.Frame = frame;
-        record.UpdateTask = std::move(updateTask);
-        record.HasUpdateTask = true;
-
-        return true;
+        const std::optional<FrameKey> key = TryBeginFrameLocked();
+        return key.has_value() && CompleteUserUpdateLocked(*key);
     }
 
     bool Draw() {
@@ -308,12 +339,75 @@ public:
 private:
     struct FrameRuntimeRecord {
         NController::FrameHandle Frame;
+        FrameKey Key;
+        bool HasReservation = false;
         NCommon::TaskHandle UpdateTask;
         NCommon::TaskHandle AsyncTask;
         NCommon::TaskHandle DrawTask;
         bool HasUpdateTask = false;
         bool HasDrawTask = false;
     };
+
+    void NotifyProgressLocked() {
+        ++m_progressVersion;
+        m_progressCondition.notify_all();
+    }
+
+    [[nodiscard]] FrameRuntimeRecord* ResolveReservationLocked(FrameKey key) {
+        if (m_state != EEngineState::RUNNING || !key.IsValid() || key.m_owner != m_ownerIdentity ||
+            key.m_runGeneration != m_lifecycleGeneration || key.m_slotIndex >= m_config.MaxActiveFrames) {
+            return nullptr;
+        }
+        FrameRuntimeRecord& record = m_frameRecords[key.m_slotIndex];
+        return record.HasReservation && record.Key == key ? &record : nullptr;
+    }
+
+    [[nodiscard]] std::optional<FrameKey> TryBeginFrameLocked() {
+        RequireRunningLocked("begin frame");
+        ReapTerminalFrameRecordsLocked(*m_taskSystem);
+        RequireRunningLocked("begin frame");
+        if (!m_updateAdmissionOpen) {
+            return std::nullopt;
+        }
+        const std::optional<NController::FrameHandle> frame = m_frameScheduler->TryAcquireFrame();
+        if (!frame) {
+            return std::nullopt;
+        }
+        FrameKey key;
+        key.m_owner = m_ownerIdentity;
+        key.m_runGeneration = m_lifecycleGeneration;
+        key.m_frameSequence = frame->GetFrameIndex();
+        key.m_slotIndex = frame->GetSlotIndex();
+        key.m_generation = frame->GetGeneration();
+        FrameRuntimeRecord& record = GetFrameRecordLocked(*frame);
+        record.Frame = *frame;
+        record.Key = key;
+        record.HasReservation = true;
+        m_updateAdmissionOpen = false;
+        return key;
+    }
+
+    [[nodiscard]] bool CompleteUserUpdateLocked(FrameKey key) {
+        FrameRuntimeRecord* record = ResolveReservationLocked(key);
+        if (record == nullptr || record->HasUpdateTask) {
+            return false;
+        }
+        const NController::FrameHandle frame = record->Frame;
+        try {
+            m_frameScheduler->ArmFrame(frame);
+            record->UpdateTask = m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunUpdate(frame); });
+            record->HasUpdateTask = true;
+        } catch (...) {
+            SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
+            m_state = EEngineState::STOPPING;
+            m_frameScheduler->AbortFrame(frame);
+            *record = {};
+            NotifyProgressLocked();
+            throw;
+        }
+        NotifyProgressLocked();
+        return true;
+    }
 
     static int ToInt(EEngineState state) noexcept {
         return static_cast<int>(state);
@@ -427,6 +521,7 @@ private:
         {
             std::lock_guard lock{m_mutex};
             m_updateAdmissionOpen = true;
+            NotifyProgressLocked();
         }
 
         const auto preparation = frameRuntime.ScheduleDraw(context, task);
@@ -450,10 +545,12 @@ private:
         CompleteDraw(frame, frameScheduler);
     }
 
-    static void CompleteDraw(NController::FrameHandle frame, NController::FrameScheduler& frameScheduler) {
+    void CompleteDraw(NController::FrameHandle frame, NController::FrameScheduler& frameScheduler) {
         if (!frameScheduler.GetGpuCompletion(frame).valid()) {
             frameScheduler.CompleteFrame(frame);
         }
+        std::lock_guard lock{m_mutex};
+        NotifyProgressLocked();
     }
 
     void LatchRuntimeFailure(NController::FrameHandle frame, const std::exception_ptr& error) noexcept {
@@ -481,6 +578,7 @@ private:
 
     void SetLastErrorLocked(NCommon::ErrorInfo error) {
         m_lastError = std::move(error);
+        NotifyProgressLocked();
     }
 
     [[nodiscard]] FrameRuntimeRecord& GetFrameRecordLocked(NController::FrameHandle frame) {
@@ -566,7 +664,7 @@ private:
         for (std::size_t index = 0; index < m_frameScheduler->GetMaxActiveFrames(); ++index) {
             FrameRuntimeRecord& record = m_frameRecords[index];
 
-            if (!record.HasUpdateTask) {
+            if (!record.HasReservation) {
                 continue;
             }
 
@@ -590,11 +688,14 @@ private:
     }
 
 private:
+    const std::uint64_t m_ownerIdentity = AcquireEngineIdentity();
     const EngineConfig m_config;
     std::unique_ptr<NRuntime::IFrameRuntime> m_frameRuntime;
 
     mutable std::mutex m_mutex;
     std::condition_variable m_stopCondition;
+    mutable std::condition_variable m_progressCondition;
+    std::uint64_t m_progressVersion = 0;
     EEngineState m_state = EEngineState::CREATED;
     bool m_stopInProgress = false;
     std::uint64_t m_lifecycleGeneration = 0;
@@ -627,6 +728,22 @@ void Engine::Start() {
 
 void Engine::Stop() noexcept {
     m_impl->Stop();
+}
+
+std::optional<FrameKey> Engine::TryBeginFrame() {
+    return m_impl->TryBeginFrame();
+}
+bool Engine::CompleteUserUpdate(FrameKey frame) {
+    return m_impl->CompleteUserUpdate(frame);
+}
+bool Engine::AbortFrame(FrameKey frame) {
+    return m_impl->AbortFrame(frame);
+}
+std::uint64_t Engine::GetProgressVersion() const {
+    return m_impl->GetProgressVersion();
+}
+void Engine::WaitForProgress(std::uint64_t version, std::chrono::milliseconds timeout) const {
+    m_impl->WaitForProgress(version, timeout);
 }
 
 bool Engine::Update() {
