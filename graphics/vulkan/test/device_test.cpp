@@ -1,4 +1,5 @@
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -31,6 +32,7 @@ extern char** environ;
 #include <graphics/vulkan/instance.h>
 #include <graphics/vulkan/memory.h>
 #include <graphics/vulkan/physical_device.h>
+#include <graphics/vulkan/pipeline_manager.h>
 #include <graphics/vulkan/resource_conversion.h>
 #include <graphics/vulkan/submission_manager.h>
 #include <graphics/vulkan/upload_manager.h>
@@ -47,6 +49,42 @@ extern char** environ;
 namespace {
 
 constexpr std::string_view PortabilitySubsetExtension = "VK_KHR_portability_subset";
+
+// Observe real driver calls while preserving validation coverage.
+class PipelineCreationProbe final: public NCommon::NonTransferable {
+public:
+    PipelineCreationProbe() {
+        Original = vkCreateGraphicsPipelines;
+        Calls = 0;
+        CacheCalls = 0;
+        FailNext = false;
+        vkCreateGraphicsPipelines = Create;
+    }
+    ~PipelineCreationProbe() {
+        vkCreateGraphicsPipelines = Original;
+    }
+    inline static std::atomic<int> Calls = 0;
+    inline static std::atomic<int> CacheCalls = 0;
+    inline static std::atomic<bool> FailNext = false;
+
+private:
+    static VKAPI_ATTR VkResult VKAPI_CALL Create(VkDevice device,
+                                                 VkPipelineCache cache,
+                                                 std::uint32_t count,
+                                                 const VkGraphicsPipelineCreateInfo* info,
+                                                 const VkAllocationCallbacks* allocator,
+                                                 VkPipeline* pipelines) {
+        ++Calls;
+        if (cache != VK_NULL_HANDLE) {
+            ++CacheCalls;
+        }
+        if (FailNext.exchange(false)) {
+            return VK_ERROR_UNKNOWN;
+        }
+        return Original(device, cache, count, info, allocator, pipelines);
+    }
+    inline static PFN_vkCreateGraphicsPipelines Original = nullptr;
+};
 
 NVulkan::VulkanPhysicalDeviceSelection MakeSelection() {
     NVulkan::VulkanPhysicalDeviceSelection selection{
@@ -310,6 +348,54 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
                 const NVulkan::VulkanGraphicsPipeline pipeline{device, physicalDevice, pipelineDescriptor};
                 EXPECT_NE(pipeline.GetHandle(), VK_NULL_HANDLE);
                 EXPECT_NE(pipeline.GetLayout(), VK_NULL_HANDLE);
+            }
+
+            {
+                const PipelineCreationProbe probe;
+                const NGraphics::PipelineKey key{pipelineDescriptor};
+                const NVulkan::VulkanGraphicsPipeline* first = nullptr;
+                {
+                    NVulkan::VulkanPipelineManager manager{device, physicalDevice};
+                    EXPECT_EQ(manager.FindReady(key), nullptr);
+                    EXPECT_EQ(PipelineCreationProbe::Calls, 0);
+                    first = &manager.Prepare(key);
+                    EXPECT_EQ(manager.FindReady(key), first);
+                    auto reordered = pipelineDescriptor;
+                    std::swap(reordered.Shaders[0], reordered.Shaders[1]);
+                    EXPECT_EQ(&manager.Prepare(NGraphics::PipelineKey{reordered}), first);
+                    std::array<const NVulkan::VulkanGraphicsPipeline*, 4> prepared{};
+                    std::vector<std::jthread> workers;
+                    auto variant = pipelineDescriptor;
+                    variant.RasterState.CullMode = NGraphics::ECullMode::NONE;
+                    const NGraphics::PipelineKey variantKey{variant};
+                    workers.reserve(prepared.size());
+                    for (const NVulkan::VulkanGraphicsPipeline*& pipeline: prepared) {
+                        workers.emplace_back(
+                                [&manager, &variantKey, &pipeline] { pipeline = &manager.Prepare(variantKey); });
+                    }
+                    workers.clear();
+                    for (const auto* pipeline: prepared) {
+                        EXPECT_EQ(pipeline, prepared[0]);
+                        EXPECT_NE(pipeline, first);
+                    }
+                    EXPECT_EQ(manager.GetPipelineCount(), 2U);
+                    EXPECT_EQ(PipelineCreationProbe::Calls, 2);
+                    EXPECT_EQ(PipelineCreationProbe::CacheCalls, 2);
+                    variant.Topology = NGraphics::EPrimitiveTopology::LINE_LIST;
+                    const NGraphics::PipelineKey failedKey{variant};
+                    PipelineCreationProbe::FailNext = true;
+                    EXPECT_THROW((void)manager.Prepare(failedKey), NCommon::Exception);
+                    EXPECT_EQ(manager.FindReady(failedKey), nullptr);
+                    EXPECT_EQ(manager.GetPipelineCount(), 2U);
+                    EXPECT_NE(manager.Prepare(failedKey).GetHandle(), VK_NULL_HANDLE);
+                    EXPECT_EQ(manager.GetPipelineCount(), 3U);
+                    EXPECT_EQ(PipelineCreationProbe::Calls, 4);
+                }
+                // A new manager has no stale device/cache entries. No GPU uses were submitted.
+                NVulkan::VulkanPipelineManager restarted{device, physicalDevice};
+                EXPECT_EQ(restarted.FindReady(key), nullptr);
+                EXPECT_NE(restarted.Prepare(key).GetHandle(), VK_NULL_HANDLE);
+                EXPECT_EQ(PipelineCreationProbe::Calls, 5);
             }
             auto unsupportedPipeline = pipelineDescriptor;
             unsupportedPipeline.Shaders[0] =
