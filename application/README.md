@@ -76,3 +76,5 @@ for another queued main command. Window/native resources outlive executor Stop a
 
 This internal foundation intentionally does not expose RunOnMainThread, move OnUpdate to workers, add user jobs or frame
 priorities. FEATURE-0074 adds the synchronous facade; IMPROVE-0037 adds frame-origin ordering/fairness after its prerequisites.
+
+User-facing independent compute work is available through `RunAsync` and `Job<T>`; see [user jobs](user_jobs.md).

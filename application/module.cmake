@@ -15,6 +15,7 @@ PUBLIC_DEPENDS(
     Resources
     Graphics
     Common
+    Thread
     Math
     Ecs
     Scene

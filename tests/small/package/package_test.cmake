@@ -224,6 +224,7 @@ set(
     "GraphicsEngine/lib/common/resource_use_record.h"
     "GraphicsEngine/lib/common/wrapper/non_copyable.h"
     "GraphicsEngine/lib/common/wrapper/non_transferable.h"
+    "GraphicsEngine/lib/thread/job.h"
     "GraphicsEngine/lib/thread/task/task_system.h"
     "GraphicsEngine/math/camera.h"
     "GraphicsEngine/math/matrix.h"

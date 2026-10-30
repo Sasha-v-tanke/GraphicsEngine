@@ -3,9 +3,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <utility>
 
+#include <GraphicsEngine/lib/thread/job.h>
 #include <engine/engine_config.h>
 #include <lib/common/error/error.h>
 #include <lib/common/wrapper/non_transferable.h>
@@ -63,6 +66,18 @@ public:
     void Start();
 
     void Stop() noexcept;
+
+    // Internal Application facade handoff; admission is serialized with Stop.
+    void SubmitUserJob(std::function<void()> function);
+
+    // Independent user work on the existing executor; never linked to frame checkpoints or storage.
+    // Admission requires RUNNING. Stop drains accepted work; cooperative cancellation is a later layer.
+    template<NCommon::UserJobFunction Function>
+    [[nodiscard]] auto RunAsync(Function&& function) {
+        return NCommon::NJobInternal::JobFactory::Run(
+                [this](std::function<void()> task) { SubmitUserJob(std::move(task)); },
+                std::forward<Function>(function));
+    }
 
     // Reserves physical storage before publishing user work. No worker task is
     // queued until CompleteUserUpdate. Nullopt is backpressure, not a reservation.

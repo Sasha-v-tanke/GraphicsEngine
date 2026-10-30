@@ -139,6 +139,21 @@ public:
         }
     }
 
+    void SubmitUserJob(std::function<void()> function) {
+        // Preserve an outer owner through submission rollback/rejection. User captures must
+        // not be destroyed under the engine lock, even if executor admission throws.
+        const std::shared_ptr<std::function<void()>> execution =
+                std::make_shared<std::function<void()>>(std::move(function));
+        std::lock_guard lock{m_mutex};
+        if (m_state != EEngineState::RUNNING || !m_taskSystem) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "User jobs require a running Engine");
+        }
+        static_cast<void>(m_taskSystem->Submit([execution](NCommon::TaskContext&) {
+            std::function<void()> ownedFunction = std::move(*execution);
+            ownedFunction();
+        }));
+    }
+
     void Stop() noexcept {
         const std::uint64_t observedGeneration = m_lifecycleGenerationSnapshot.load(std::memory_order_acquire);
         std::unique_ptr<NCommon::TaskSystem> taskSystem;
@@ -724,6 +739,10 @@ Engine::~Engine() = default;
 
 void Engine::Start() {
     m_impl->Start();
+}
+
+void Engine::SubmitUserJob(std::function<void()> function) {
+    m_impl->SubmitUserJob(std::move(function));
 }
 
 void Engine::Stop() noexcept {

@@ -12,6 +12,8 @@
 #include <application/runtime/frame_loop.h>
 #include <engine/runtime/frame_runtime.h>
 #include <gtest/gtest.h>
+#include <lib/thread/task/task_system.h>
+#include <tests/common/test_error.h>
 #include <window/engine/engine.h>
 #include <window/engine/event_sink.h>
 #include <window/engine/factory.h>
@@ -235,6 +237,42 @@ protected:
 
     RuntimeWindowState m_state;
 };
+
+class UserJobApplication final: public NApplication::Application {
+public:
+    explicit UserJobApplication(const NApplication::ApplicationConfig& config)
+        : Application(config) {
+    }
+    using Application::RunAsync;
+    NCommon::Job<std::unique_ptr<int>> Result;
+    bool CompletedOnWorker = false;
+
+private:
+    void OnUpdate() override {
+        if (!m_started) {
+            m_started = true;
+            Result = RunAsync([this, value = std::make_unique<int>(73)]() mutable {
+                CompletedOnWorker = NCommon::TaskSystem::IsCurrentThreadWorker();
+                return std::move(value);
+            });
+            RequestShutdown();
+        }
+    }
+    bool m_started = false;
+};
+
+TEST_F(RuntimeMvpTest, UserJobFacadeRetainsResultAfterRunAndRejectsStoppedAdmission) {
+    UserJobApplication application{MakeRuntimeConfig()};
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(application.RunAsync([] {})); });
+    application.Run();
+    EXPECT_TRUE(application.CompletedOnWorker);
+    ASSERT_TRUE(application.Result.IsReady());
+    const auto result = application.Result.TryTake();
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(*result->value(), 73);
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(application.RunAsync([] {})); });
+}
 
 TEST_F(RuntimeMvpTest, ApplicationOwnsSingleWindowAndStopsBeforeWindowDestruction) {
     {

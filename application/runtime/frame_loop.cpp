@@ -86,6 +86,10 @@ void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
     }
 }
 
+void FrameLoop::SubmitUserJob(std::function<void()> function) {
+    m_engine->SubmitUserJob(std::move(function));
+}
+
 void FrameLoop::Stop() noexcept {
     m_mainExecutor.Stop();
     if (m_engine != nullptr) {

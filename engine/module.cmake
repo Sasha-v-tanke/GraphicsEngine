@@ -11,9 +11,6 @@ SOURCES(
 
 PUBLIC_DEPENDS(
     Common
-)
-
-PRIVATE_DEPENDS(
     Thread
 )
 
