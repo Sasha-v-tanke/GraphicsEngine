@@ -146,9 +146,11 @@ void Application::RunFrame() {
     const auto size = m_window->GetFramebufferSize();
     m_frameLoop->PumpPresentation(size.Width, size.Height);
     FrameLoopCallbacks callbacks{*this};
-    m_frameLoop->Step(callbacks);
+    const bool progressed = m_frameLoop->Step(callbacks);
     // Bounded platform/completion maintenance; admission retries never repeat user callbacks.
-    if (m_hasPresentation) {
+    if (!progressed) {
+        m_frameLoop->WaitForProgress();
+    } else if (m_hasPresentation) {
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
 }

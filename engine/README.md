@@ -55,6 +55,34 @@ Engine не использует отдельную heap FIFO очередь fra
 subsystems и переходит в `STOPPED`.
 Такой порядок нужен, чтобы frame-local данные и будущие renderer/resource owners не переживали свои runtime owners.
 
+## Frame reservation and user completion
+
+Application uses `TryBeginFrame()` before invoking `OnUpdate`. It acquires the physical slot and closes admission;
+`CanAcceptUpdate()` remains only a readiness hint and must not be used as a reservation. No Engine update task is queued
+while the reservation is pending. `CompleteUserUpdate(FrameKey)` publishes that task once, after the user callback has
+finished, and the normal Draw checkpoint depends on it. Concurrent duplicate, default, foreign-owner, aborted or old-run
+completion signals return false. The opaque key includes Engine owner, RunGeneration, monotonic FrameSequence, slot and
+slot generation; a modulo slot index alone is never an identity. Keys do not own Engine or grant access to frame storage.
+
+`AbortFrame(key)` releases an uncompleted reservation and skips its Draw checkpoint. It cannot abort a frame after user
+completion has scheduled CPU work. The caller must finish its user work before abort/completion. `Stop()` closes admission,
+drains scheduled CPU/GPU consumers, then aborts remaining unsignalled reservations; it does not wait for an external signal
+that will never arrive. Delayed keys cannot affect a later Run. The current Application OnUpdate remains synchronous on
+main; scheduling it on workers and tracking its task lifetime are the separate IMPROVE-0040 integration.
+
+Legacy `Update()` is an atomic reserve-and-complete convenience for Engine-only callers, preserving Update/Draw order.
+Next-frame admission still waits for extraction, and physical storage still waits for CPU/GPU completion before reuse.
+
+## Main-thread backpressure
+
+`FrameLoop::Step()` is nonblocking and returns whether it progressed. A failed reservation never invokes user callbacks or
+queues a retry task. Application continues Window/WSI intake and waits on Engine's progress condition for up to 8 ms when
+no frame can be admitted. Capture `GetProgressVersion()` before the admission attempt, then `WaitForProgress(version, timeout)`;
+the version predicate handles a signal arriving before wait registration. Workers are forbidden from calling this wait.
+Normal phase/lifecycle progress notifies the condition. The bounded timeout also services existing GPU shared futures and
+failed/cancelled async joins without a wake callback; it is main-thread completion/platform maintenance, not a dependency
+polling task or an unbounded PollEvents/Update busy loop. Future main-dispatch integration can wake platform intake.
+
 ## Render extraction gate
 
 The application Draw checkpoint schedules frame finalization, but the next Engine Update is admitted only after

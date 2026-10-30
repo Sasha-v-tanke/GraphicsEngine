@@ -8,8 +8,10 @@ standalone count. Vulkan/GLFW must be enabled. CPU-only applications leave Prese
 Application processes Window events and pumps Graphics around the existing Engine checkpoints.
 Engine draw workers publish frame intents with their logical FrameIndex and FrameSlotIndex; they never
 access Window or native handles. The application thread owns Graphics, its one surface/swapchain and
-all recording/submission/completion maintenance. A bounded 1 ms maintenance wait keeps backpressure
-from spinning while Window events continue to be serviced. No worker waits for WSI/GPU.
+all recording/submission/completion maintenance. User update runs only after Engine reserves its physical frame slot;
+completion publishes Engine simulation exactly once. When admission is blocked, a progress condition wait bounded to 8 ms
+keeps Window/WSI maintenance live without a hot retry loop. Successful presentation steps retain the 1 ms pacing wait.
+No worker waits for WSI/GPU. OnUpdate stays on main until the separate worker-update integration.
 
 A future is registered in FrameStorage before an intent is visible to the main thread. NOT_READY,
 OUT_OF_DATE and SUSPENDED retain that intent and identity without repeating user callbacks. A completion
