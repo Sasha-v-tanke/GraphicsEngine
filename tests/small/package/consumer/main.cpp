@@ -1,7 +1,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include <GraphicsEngine/application/application_config.h>
@@ -19,6 +21,7 @@
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>
 #include <GraphicsEngine/resources/mesh_loader.h>
+#include <GraphicsEngine/resources/resource_io.h>
 #include <GraphicsEngine/resources/resource_manager.h>
 #include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
@@ -137,6 +140,18 @@ int main() {
     const auto loadedMesh =
             NResources::LoadMesh(resources, NResources::ResourceIdentity{"mesh", "package.obj"}, meshPath);
     const auto meshLease = resources.TryAcquire(loadedMesh);
+    std::promise<std::shared_ptr<const NResources::ResourceIoResult>> ioDone;
+    std::future<std::shared_ptr<const NResources::ResourceIoResult>> ioFuture = ioDone.get_future();
+    NResources::ResourceIo io;
+    const auto read = io.Read(meshPath, [&ioDone](std::shared_ptr<const NResources::ResourceIoResult> result) {
+        ioDone.set_value(std::move(result));
+    });
+    const auto ioResult = ioFuture.get();
+    io.Shutdown();
+    if (!read.GetResult() || ioResult->Status != NResources::EResourceIoStatus::SUCCEEDED || !ioResult->Bytes ||
+        ioResult->Bytes->empty()) {
+        return 1;
+    }
     std::filesystem::remove(meshPath);
     if (!meshLease || (*meshLease)->GetVertices().size() != 3 || (*meshLease)->GetIndices().size() != 3) {
         return 1;
