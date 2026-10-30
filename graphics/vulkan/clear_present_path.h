@@ -59,7 +59,8 @@ private:
 
     [[nodiscard]] FrameResources& GetFrameResources(VulkanFrameContext& context);
 
-    void RecordClear(VkCommandBuffer commandBuffer, VkImage image, VkClearColorValue clearColor) const;
+    void
+    RecordClear(VkCommandBuffer commandBuffer, VkImage image, VkImageView view, VkClearColorValue clearColor) const;
 
 private:
     const VulkanDevice& m_device;

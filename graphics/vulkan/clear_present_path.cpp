@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include <GraphicsEngine/graphics/vulkan/resource_state.h>
+#include <graphics/vulkan/rendering_scope.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -208,7 +209,10 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
             created->PresentReady = CreateSemaphore(m_device.GetHandle());
             presentResources = std::move(created);
         }
-        RecordClear(resources.CommandBuffer, m_swapchain.GetImages()[acquired.ImageIndex].Handle, clearColor);
+        RecordClear(resources.CommandBuffer,
+                    m_swapchain.GetImages()[acquired.ImageIndex].Handle,
+                    m_swapchain.GetImages()[acquired.ImageIndex].View,
+                    clearColor);
         const VkSemaphoreSubmitInfo waitSemaphore{
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                 .semaphore = resources.ImageAvailable,
@@ -292,6 +296,7 @@ VulkanClearPresentPath::FrameResources& VulkanClearPresentPath::GetFrameResource
 
 void VulkanClearPresentPath::RecordClear(VkCommandBuffer commandBuffer,
                                          VkImage image,
+                                         VkImageView view,
                                          VkClearColorValue clearColor) const {
     const VkCommandBufferBeginInfo beginInfo{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -308,12 +313,16 @@ void VulkanClearPresentPath::RecordClear(VkCommandBuffer commandBuffer,
     tracker.ImportImage(image, ColorRange(), MakeVulkanImageState(EVulkanResourceUsage::Undefined));
     const std::optional<VkImageMemoryBarrier2> colorBarrier = tracker.TransitionImage({
             .Image = image,
-            .Usage = EVulkanResourceUsage::TransferWrite,
+            .Usage = EVulkanResourceUsage::ColorAttachmentWrite,
             .SubresourceRange = ColorRange(),
     });
     RecordBarrier(commandBuffer, *colorBarrier);
-    const VkImageSubresourceRange colorRange = ColorRange();
-    vkCmdClearColorImage(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &colorRange);
+    const VulkanColorAttachment attachment{.View = view, .Clear = clearColor};
+    {
+        const VulkanRenderingScope rendering{commandBuffer,
+                                             {.extent = m_swapchain.GetPlan().Extent},
+                                             std::span{&attachment, 1}};
+    }
 
     const std::optional<VkImageMemoryBarrier2> presentBarrier = tracker.TransitionImage({
             .Image = image,

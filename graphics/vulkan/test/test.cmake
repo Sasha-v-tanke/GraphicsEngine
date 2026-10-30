@@ -6,6 +6,7 @@ PRIVATE_DEPENDS(
 )
 
 SOURCES(
+    rendering_scope.cpp
     device_test.cpp
     frame_context_test.cpp
     instance_test.cpp
