@@ -47,3 +47,5 @@ They also inject NOT_READY, OUT_OF_DATE and SUBOPTIMAL at the Vulkan dispatch bo
 acquire/present still call the real driver. These deterministic status cases are separate from the
 unmodified public Application smoke. Both check validation through teardown and clean-stop counters;
 the lifecycle cases additionally restart the clean frame loop and verify recycling again.
+
+User-facing independent compute work is available through `RunAsync` and `Job<T>`; see [user jobs](user_jobs.md).

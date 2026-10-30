@@ -3,6 +3,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <utility>
 
 #include <application/runtime/frame_loop.h>
 #include <graphics/presentation.h>
@@ -73,6 +74,10 @@ Application::Application(const ApplicationConfig& config)
         GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Presentation requires Vulkan and GLFW");
 #endif
     }()) {
+}
+
+void Application::SubmitUserJob(std::function<void()> function) {
+    m_frameLoop->SubmitUserJob(std::move(function));
 }
 
 Application::~Application() {

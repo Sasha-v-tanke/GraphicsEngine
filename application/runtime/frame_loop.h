@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -38,6 +39,7 @@ public:
     void Start();
 
     void Stop() noexcept;
+    void SubmitUserJob(std::function<void()> function);
     void CheckError() const;
 
     bool Step(IFrameLoopCallbacks& callbacks);

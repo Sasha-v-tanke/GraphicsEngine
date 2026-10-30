@@ -80,6 +80,10 @@ void FrameLoop::Start() {
     m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
 }
 
+void FrameLoop::SubmitUserJob(std::function<void()> function) {
+    m_engine->SubmitUserJob(std::move(function));
+}
+
 void FrameLoop::Stop() noexcept {
     if (m_engine != nullptr) {
         m_engine->Stop();

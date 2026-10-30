@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include <GraphicsEngine/application/application.h>
 #include <GraphicsEngine/application/application_config.h>
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/buffer.h>
@@ -14,6 +15,7 @@
 #include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
+#include <GraphicsEngine/lib/thread/job.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/renderer/render_graph.h>
@@ -28,6 +30,15 @@
 #include <GraphicsEngine/scene/scene_manager.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
+
+// Instantiates the facade using only installed public headers.
+class UserJobsConsumer: public NApplication::Application {
+public:
+    using Application::Application;
+    NCommon::Job<std::unique_ptr<int>> StartJob() {
+        return RunAsync([value = std::make_unique<int>(1)]() mutable { return std::move(value); });
+    }
+};
 
 int main() {
     NRenderer::RenderGraphBuilder graphBuilder{{.Generation = 1}};

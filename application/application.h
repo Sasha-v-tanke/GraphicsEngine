@@ -1,10 +1,13 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <utility>
 
 #include <GraphicsEngine/application/application_config.h>
 #include <GraphicsEngine/application/frame_diagnostics.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/lib/thread/job.h>
 #include <GraphicsEngine/window/window_size.h>
 
 namespace NWindow {
@@ -43,6 +46,17 @@ public:
     [[nodiscard]] bool IsShutdownRequested() const;
 
 protected:
+    // Starts frame-independent work on TaskSystem. No implicit World/frame access or main-thread affinity.
+    // Available during Run only; submission failure throws synchronously. TryTake never waits.
+    // Stop drains accepted work. Captures must remain valid until completion; dropping Job does not cancel.
+    // Jobs share worker CPU with frames and must not block waiting for work on the same pool.
+    template<NCommon::UserJobFunction Function>
+    [[nodiscard]] auto RunAsync(Function&& function) {
+        return NCommon::NJobInternal::JobFactory::Run(
+                [this](std::function<void()> task) { SubmitUserJob(std::move(task)); },
+                std::forward<Function>(function));
+    }
+
     // Called on the application thread, never on TaskSystem workers.
     virtual void OnUpdate();
 
@@ -65,6 +79,8 @@ private:
     class FrameLoopCallbacks;
 
     void RunFrame();
+
+    void SubmitUserJob(std::function<void()> function);
 
 private:
     bool m_hasPresentation = false;
