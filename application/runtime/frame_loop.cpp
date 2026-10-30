@@ -71,13 +71,19 @@ FrameLoop::~FrameLoop() {
     Stop();
 }
 
-void FrameLoop::Start() {
-    if (m_presentation) {
-        m_presentation->Start();
+void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
+    m_mainExecutor.Start(wakeup);
+    try {
+        if (m_presentation) {
+            m_presentation->Start();
+        }
+        m_engine->Start();
+        m_reservedFrame.reset();
+        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
+    } catch (...) {
+        m_mainExecutor.Stop();
+        throw;
     }
-    m_engine->Start();
-    m_reservedFrame.reset();
-    m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
 }
 
 void FrameLoop::SubmitUserJob(std::function<void()> function) {
@@ -85,6 +91,7 @@ void FrameLoop::SubmitUserJob(std::function<void()> function) {
 }
 
 void FrameLoop::Stop() noexcept {
+    m_mainExecutor.Stop();
     if (m_engine != nullptr) {
         m_engine->Stop();
         m_reservedFrame.reset();
@@ -100,14 +107,19 @@ void FrameLoop::CheckError() const {
 bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
     m_progressVersion = m_engine->GetProgressVersion();
     CheckError();
+    bool progressed = m_mainExecutor.Drain() != 0;
+    if (callbacks.IsShutdownRequested()) {
+        return progressed;
+    }
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
         m_reservedFrame = m_engine->TryBeginFrame();
         if (!m_reservedFrame) {
-            return false;
+            return progressed;
         }
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
         try {
             callbacks.OnUpdate();
+            progressed = true;
         } catch (...) {
             (void)m_engine->AbortFrame(*m_reservedFrame);
             m_reservedFrame.reset();
@@ -118,26 +130,28 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
 
     if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
         EngineUpdateCheckpoint();
-
         if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_UPDATE) {
-            return false;
+            return progressed;
         }
     }
 
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_DRAW) {
         callbacks.OnDraw();
+        progressed = true;
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_DRAW;
     }
 
     if (m_frameCheckpoint == EFrameCheckpoint::WAITING_ENGINE_DRAW) {
+        const EFrameCheckpoint before = m_frameCheckpoint;
         EngineDrawCheckpoint();
+        progressed = progressed || before != m_frameCheckpoint;
     }
-    return true;
+    return progressed;
 }
 
 void FrameLoop::WaitForProgress() const {
-    // The timeout bounds platform event latency and maintains legacy GPU futures
-    // and failed/cancelled async joins that do not provide a wake callback yet.
+    // CPU-only internal callers may wait on Engine notifications. The Application event loop instead waits on Window
+    // with this same maintenance bound so both native events and main-command publication can wake it immediately.
     m_engine->WaitForProgress(m_progressVersion, std::chrono::milliseconds{8});
 }
 

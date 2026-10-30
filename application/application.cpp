@@ -2,13 +2,14 @@
 
 #include <chrono>
 #include <memory>
-#include <thread>
 #include <utility>
 
 #include <application/runtime/frame_loop.h>
 #include <graphics/presentation.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
+#include <window/engine/engine.h>
+#include <window/internal/window_engine_access.h>
 #include <window/window.h>
 #include <window/window_runtime.h>
 
@@ -31,6 +32,7 @@ private:
     }
 
     void OnClose() override {
+        m_application.m_frameLoop->GetMainExecutor().Stop();
         m_application.OnClose();
     }
 
@@ -50,6 +52,10 @@ public:
 
     void OnDraw() override {
         m_application.OnDraw();
+    }
+
+    [[nodiscard]] bool IsShutdownRequested() const override {
+        return m_application.IsShutdownRequested();
     }
 
 private:
@@ -91,7 +97,9 @@ Application::~Application() {
 }
 
 void Application::Run() {
-    m_frameLoop->Start();
+    m_frameLoop->Start({m_window.get(), [](void* window) noexcept {
+                            NWindow::NInternal::GetWindowEngine(*static_cast<NWindow::Window*>(window)).WakeEventLoop();
+                        }});
 
     try {
         while (!m_window->ShouldClose()) {
@@ -108,6 +116,7 @@ void Application::Run() {
 
 void Application::RequestShutdown() {
     m_window->RequestClose();
+    m_frameLoop->GetMainExecutor().Stop();
 }
 
 FrameDiagnostics Application::GetFrameDiagnostics() const {
@@ -153,10 +162,8 @@ void Application::RunFrame() {
     FrameLoopCallbacks callbacks{*this};
     const bool progressed = m_frameLoop->Step(callbacks);
     // Bounded platform/completion maintenance; admission retries never repeat user callbacks.
-    if (!progressed) {
-        m_frameLoop->WaitForProgress();
-    } else if (m_hasPresentation) {
-        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    if (!m_window->ShouldClose() && (!progressed || m_hasPresentation)) {
+        NWindow::NInternal::GetWindowEngine(*m_window).WaitEvents(std::chrono::milliseconds{progressed ? 1 : 8});
     }
 }
 

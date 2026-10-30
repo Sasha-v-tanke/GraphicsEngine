@@ -20,8 +20,9 @@ class WindowRuntime;
 namespace NApplication::NRuntime {
 
 class FrameLoop;
+class ApplicationAccess;
 
-}
+} // namespace NApplication::NRuntime
 
 namespace NApplication {
 
@@ -75,6 +76,7 @@ protected:
     [[nodiscard]] const NWindow::Window& GetWindow() const noexcept;
 
 private:
+    friend class NRuntime::ApplicationAccess;
     class ApplicationWindow;
     class FrameLoopCallbacks;
 

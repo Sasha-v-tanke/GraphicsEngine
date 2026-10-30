@@ -3,6 +3,7 @@ TEST_SUITE(Application)
 TEST(Application)
 
 SOURCES(
+    main_executor.cpp
     application_test.cpp
     runtime_mvp_test.cpp
     presentation_runtime.cpp

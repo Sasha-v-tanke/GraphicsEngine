@@ -48,4 +48,33 @@ acquire/present still call the real driver. These deterministic status cases are
 unmodified public Application smoke. Both check validation through teardown and clean-stop counters;
 the lifecycle cases additionally restart the clean frame loop and verify recycling again.
 
+## Internal main executor (FEATURE-0073)
+
+Application owns a FIFO `MainExecutor` through its FrameLoop. Each Run opens a fresh monotonic admission generation;
+producers capture that generation before dispatch. Commands from older Runs or a stopped executor become SKIPPED.
+Posting before the first Start is an INVALID_STATE error. Payloads accept move-only void callables and remain owned by
+queue/execution state; completion handles may outlive the executor. A failed command retains its exception separately
+and does not terminate the event loop. Consumers can observe QUEUED, RUNNING, COMPLETED, FAILED or SKIPPED and wait on
+an independent condition variable. The application consumer must not wait for its own pending command.
+
+Only the creating application thread starts/drains the executor. Producers may post concurrently; only accepted queue
+insertion order determines FIFO. A main-thread iteration processes Window events first, dispatches at most 64 commands,
+then advances frame/presentation checkpoints even under backpressure. A running callback cannot be preempted, so each
+command must be short. Neither callbacks nor captured-object destructors execute under the queue/completion mutex.
+An internal nonthrowing platform wake signal is serialized with admission/Stop; it must not reenter the executor.
+
+Idle/backpressured iterations wait for Window events with a bounded 8 ms completion-maintenance timeout instead of
+busy-spinning (active presentation retains the 1 ms cadence). GLFW uses `glfwWaitEventsTimeout` and thread-safe `glfwPostEmptyEvent`; the internal window-engine default
+uses a retained condition-variable signal. These are internal event-loop operations, not additional public Window API.
+Completion polling remains bounded until Engine/GPU supplies event-driven wake notifications in a later integration.
+
+On close, failure or normal Run exit, main-command admission closes and pending commands become SKIPPED before Engine
+joins workers. All completion waiters are notified, while a RUNNING command finishes normally. Captures are released
+before terminal notification. Stop does not wait for a concurrently executing callback; the consumer and all producers
+must be joined before executor destruction. Reentrant Start/Drain is rejected. User payload destruction must not wait
+for another queued main command. Window/native resources outlive executor Stop and worker drain.
+
+This internal foundation intentionally does not expose RunOnMainThread, move OnUpdate to workers, add user jobs or frame
+priorities. FEATURE-0074 adds the synchronous facade; IMPROVE-0037 adds frame-origin ordering/fairness after its prerequisites.
+
 User-facing independent compute work is available through `RunAsync` and `Job<T>`; see [user jobs](user_jobs.md).

@@ -183,6 +183,16 @@ public:
         DispatchQueuedEvents();
     }
 
+    void WaitEvents(std::chrono::milliseconds timeout) override {
+        m_runtime->ValidateThread();
+        glfwWaitEventsTimeout(std::chrono::duration<double>{timeout}.count());
+        DispatchQueuedEvents();
+    }
+
+    void WakeEventLoop() noexcept override {
+        glfwPostEmptyEvent();
+    }
+
     [[nodiscard]] GLFWwindow& GetGlfwWindow() override {
         m_runtime->ValidateThread();
 
