@@ -86,6 +86,15 @@ SOURCES(
 
 `SUBMODULE()` не создаёт отдельную цель. Он добавляет исходники и локальные заголовки к текущему модулю.
 
+### Дополнительные примеры
+
+Имена создаваемых целей:
+
+```text
+GraphicsEngineWindow
+GraphicsEngine::Window
+```
+
 ## Тесты
 
 Объявление набора тестов:
@@ -123,6 +132,49 @@ test:<current-test-name>
 
 Файлы `.cpp` производственных модулей не добавляются повторно в тестовые цели: тесты используют код через зависимости модулей.
 
+### Дополнительные примеры
+
+Имена создаваемых тестовых целей:
+
+```text
+GraphicsEngineWindowTests
+GraphicsEngine::WindowTests
+```
+
+Продолжение логической группы во вложенном каталоге:
+
+```cmake
+TEST()
+
+SOURCES(
+    factory_test.cpp
+)
+```
+
+Самостоятельный набор тестов с явными зависимостями:
+
+```cmake
+TEST_SUITE(CommonLibs)
+
+TEST(CommonLibs)
+
+SOURCES(
+    common_libs.cpp
+)
+
+PRIVATE_DEPENDS(
+    GLM
+    StbImage
+    TinyObj
+)
+
+TEST_LABELS(
+    medium
+    cpp
+    libs
+)
+```
+
 ## Измерения производительности
 
 Набор объявляется `BENCHMARK_SUITE(name)`, логическая группа — `BENCHMARK(name)`, а `BENCHMARK()` во вложенном каталоге продолжает текущую группу. `BENCHMARK_LABELS(...)` добавляет метки, включая:
@@ -133,6 +185,32 @@ benchmark:<current-benchmark-name>
 ```
 
 Исполняемый файл создаёт `BENCHMARK_SUITE`. Обычно группы выбираются во время выполнения через параметры запуска, например `--benchmark_filter=Smoke`.
+
+### Дополнительные примеры
+
+Объявление набора измерений:
+
+```cmake
+BENCHMARK_SUITE(Main)
+
+RECURSE(
+    smoke
+)
+```
+
+Объявление группы внутри набора:
+
+```cmake
+BENCHMARK(Smoke)
+
+SOURCES(
+    smoke.cpp
+)
+
+BENCHMARK_LABELS(
+    smoke
+)
+```
 
 ## Примеры
 
@@ -197,6 +275,23 @@ PUBLIC_DEPENDS(
 
 Вспомогательные команды покрывают только общие операции проекта. За пределами этой абстракции следует использовать обычный CMake напрямую.
 
+### Дополнительные примеры
+
+Разрешение коротких имён модулей:
+
+```text
+Common -> GraphicsEngine::Common
+Window -> GraphicsEngine::Window
+```
+
+Имена внешних целей CMake сохраняются без изменения:
+
+```text
+Vulkan::Vulkan
+Threads::Threads
+GTest::gtest_main
+```
+
 ## Внутренняя организация
 
 `cmake/utils.cmake` — общая точка подключения. Реализация разделена по ответственности:
@@ -243,3 +338,27 @@ find_package(
 ```
 
 Компоненты проверяют возможности установленной сборки и не добавляют отдельных публичных целей.
+
+### Дополнительные примеры
+
+Публичная цель подключения:
+
+```cmake
+GraphicsEngine::GraphicsEngine
+```
+
+Запрос обязательных компонентов установленного пакета:
+
+```cmake
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+    COMPONENTS Vulkan GLFW
+)
+
+target_link_libraries(
+    MyApplication
+    PRIVATE
+    GraphicsEngine::GraphicsEngine
+)
+```
+
