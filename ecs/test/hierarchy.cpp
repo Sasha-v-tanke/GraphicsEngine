@@ -141,6 +141,21 @@ TEST(Hierarchy, FailedReparentDoesNotPublishEpochOrPartialLinks) {
     EXPECT_EQ(topology.GetParent(b), a);
 }
 
+TEST(Hierarchy, KeepWorldRejectsUnrepresentableLocalWithoutPublishing) {
+    World world;
+    const auto parent = Create(world);
+    const auto child = Create(world);
+    world.SetLocalTransform(parent, Translation(1.0e20F));
+    world.SetLocalTransform(child, Translation(1));
+    const std::uint64_t epoch = world.AcquireTopologySnapshot().GetEpoch();
+    world.DeferReparent(child, parent, EReparentMode::KEEP_WORLD);
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { world.ApplyDeferredStructuralChanges(); });
+    const auto topology = world.AcquireTopologySnapshot();
+    EXPECT_EQ(topology.GetParent(child), EntityReference{});
+    EXPECT_EQ(topology.GetEpoch(), epoch);
+    ExpectMatrix(topology.GetWorldTransform(child), Translation(1));
+}
+
 TEST(Hierarchy, StaleReferencesAndInvalidTransformsAreRejected) {
     World world;
     const auto parent = Create(world);

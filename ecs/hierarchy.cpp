@@ -202,7 +202,21 @@ void TopologyState::Reparent(EntityReference child, EntityReference parent, ERep
         if (parent == EntityReference{}) {
             local = world;
         } else {
-            local = InverseAffine(Resolve(parent)) * world;
+            const NMath::Mat4 parentWorld = Resolve(parent);
+            local = InverseAffine(parentWorld) * world;
+            const NMath::Mat4 recomposed = parentWorld * local;
+            ValidateAffine(recomposed);
+            // An invertible parent can still require a local value that float cannot represent accurately.
+            for (std::size_t row = 0; row < 4; ++row) {
+                for (std::size_t column = 0; column < 4; ++column) {
+                    const double expected = world(row, column);
+                    const double actual = recomposed(row, column);
+                    if (std::abs(actual - expected) > 1.0e-4 * std::max(1.0, std::abs(expected))) {
+                        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                              "KEEP_WORLD local transform cannot preserve the world transform");
+                    }
+                }
+            }
         }
     }
     ValidateAffine(local);
