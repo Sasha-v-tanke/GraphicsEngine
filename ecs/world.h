@@ -1,6 +1,7 @@
 #pragma once
 
 #include "entity.h"
+#include "hierarchy.h"
 #include "system_access.h"
 
 #include <atomic>
@@ -44,6 +45,16 @@ public:
     World();
     ~World();
 
+    // References qualify generational Entity handles with this World's stable lifetime identity.
+    [[nodiscard]] EntityReference GetEntityReference(Entity entity) const noexcept;
+    [[nodiscard]] TopologySnapshot AcquireTopologySnapshot() const;
+    void SetLocalTransform(EntityReference entity, const NMath::Mat4& local);
+    void DeferReparent(EntityReference child, EntityReference parent, EReparentMode mode = EReparentMode::KEEP_LOCAL);
+    static void DeferReparent(DeferredStructuralCommandBuffer& buffer,
+                              EntityReference child,
+                              EntityReference parent,
+                              EReparentMode mode = EReparentMode::KEEP_LOCAL);
+
     Entity CreateEntity();
     void DestroyEntity(Entity entity);
 
@@ -58,6 +69,7 @@ public:
     template<typename T, typename... TArgs>
     T& AddComponent(Entity entity, TArgs&&... args) {
         ValidateStructuralWriteAllowed();
+        StructuralWriteGuard structuralGuard{*this};
         ValidateAlive(entity);
         auto& storage = GetOrCreateStorage<T>();
         return storage.Emplace(entity.Index, std::forward<TArgs>(args)...);
@@ -115,6 +127,7 @@ public:
     template<typename T>
     bool RemoveComponent(Entity entity) {
         ValidateStructuralWriteAllowed();
+        StructuralWriteGuard structuralGuard{*this};
 
         if (!IsAlive(entity)) {
             return false;
@@ -197,6 +210,16 @@ public:
     void ApplyDeferredStructuralChanges();
 
 private:
+    class StructuralWriteGuard final {
+    public:
+        explicit StructuralWriteGuard(World& world);
+        ~StructuralWriteGuard();
+        StructuralWriteGuard(const StructuralWriteGuard&) = delete;
+        StructuralWriteGuard& operator=(const StructuralWriteGuard&) = delete;
+
+    private:
+        World& m_world;
+    };
     struct EntityState {
         std::uint32_t Generation = 0;
         bool Alive = false;
@@ -250,6 +273,17 @@ private:
         std::uint32_t ProducerOrder = 0;
         std::uint64_t SubmissionOrder = 0;
         std::vector<std::unique_ptr<IDeferredCommand>> Commands;
+    };
+
+    class DeferredReparentCommand final: public IDeferredCommand {
+    public:
+        DeferredReparentCommand(EntityReference child, EntityReference parent, EReparentMode mode);
+        void Apply(World& world) override;
+
+    private:
+        EntityReference m_child;
+        EntityReference m_parent;
+        EReparentMode m_mode;
     };
 
     class DeferredCreateEntityCommand final: public IDeferredCommand {
@@ -421,6 +455,7 @@ private:
     void RemovePendingDeferredAppendReservation(std::uint32_t index);
     [[nodiscard]] std::uint32_t FindNextDeferredAppendIndex() const noexcept;
 
+    std::shared_ptr<NInternal::TopologyState> m_topology;
     std::vector<EntityState> Entities_;
     std::vector<std::uint32_t> FreeEntityIndices_;
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> ComponentStorageByType_;

@@ -74,6 +74,15 @@ int main() {
     const std::error_code error = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
     NEcs::World world;
     const NEcs::Entity entity = world.CreateEntity();
+    const NEcs::Entity child = world.CreateEntity();
+    world.DeferReparent(world.GetEntityReference(child), world.GetEntityReference(entity));
+    world.ApplyDeferredStructuralChanges();
+    {
+        const NEcs::TopologySnapshot topology = world.AcquireTopologySnapshot();
+        if (topology.GetParent(world.GetEntityReference(child)) != world.GetEntityReference(entity)) {
+            return 1;
+        }
+    }
     NCommon::TaskSystem ecsTasks{2};
     world.RegisterSystem({}, [](NEcs::World&) {}, NEcs::SystemSchedule{.Id = 1});
     world.RunSystems(ecsTasks);
