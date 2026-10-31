@@ -106,7 +106,7 @@ public:
     // any child work: detached jobs do not inherit access. Empty footprint = no access.
     [[nodiscard]] OperationKey Schedule(std::vector<AccessFootprint> footprints,
                                         std::function<void()> function,
-                                        std::span<const OperationKey> dependencies = {});
+                                        std::span<const OperationKey> dependencies = std::span<const OperationKey>());
     // Pending only: running work is never interrupted or loses its access lease.
     // Logical cancellation retains the reservation until capture retirement finishes.
     [[nodiscard]] bool Cancel(OperationKey operation);
