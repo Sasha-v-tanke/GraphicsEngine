@@ -1,101 +1,35 @@
 # ECS
 
-`Ecs` owns mutable simulation state. It is backend-independent and does not
-depend on Render, Graphics, Vulkan, Window or resource backends.
+`Ecs` владеет изменяемым состоянием моделирования. Подсистема не зависит от `Render`, `Graphics`, Vulkan, `Window` и реализаций ресурсов.
 
-## World Ownership
+## Владение миром
 
-`World` owns entities, component storage and registered systems. Entity handles
-are generational: destroying an entity invalidates every previous handle to the
-same slot, even if the slot is reused by a later entity.
+`World` владеет сущностями, хранилищами компонентов и зарегистрированными системами. Дескрипторы сущностей содержат поколение: уничтожение сущности делает все прежние дескрипторы её слота недействительными, даже если слот позднее используется повторно.
 
-Destroying an entity removes all of its components immediately. Removing a
-component invalidates references to that component. Creating or removing other
-entities/components does not promise stable iteration order for queries.
-Deferred structural changes reserve entity identities and enqueue create,
-destroy, add-component or remove-component commands. They become visible only
-after the queue is committed. A pending deferred entity create that appends a new
-entity slot blocks immediate entity creation until the deferred queue is
-committed. A pending deferred create that reuses a free slot removes that slot
-from the free list immediately, so immediate creation cannot collide with the
-reserved identity.
+Уничтожение сущности немедленно удаляет все её компоненты. Удаление компонента делает ссылки на него недействительными. Создание и удаление других сущностей или компонентов не гарантирует неизменный порядок обхода запросов.
 
-## Mutation Phases
+Отложенные структурные изменения резервируют идентификаторы сущностей и помещают в очередь команды создания, уничтожения, добавления и удаления компонентов. Они становятся видимыми только после применения очереди. Если ожидающее отложенное создание добавляет новый слот, немедленное создание сущностей блокируется до применения очереди. При резервировании свободного слота отложенным созданием этот слот сразу удаляется из списка свободных, поэтому немедленное создание не может занять тот же идентификатор.
 
-`RunSystems()` executes callbacks sequentially. `RunSystems(taskSystem)`
-executes a scheduled dependency graph on the supplied TaskSystem's workers and
-returns after joining this world's submitted tasks and committing structural
-commands. The parallel overload requires stable schedule IDs for every system.
-Its coordinator must run on a host thread; calls from any TaskSystem worker
-are rejected before submission, so a worker never blocks waiting for its pool.
-The World and TaskSystem must remain alive until the call returns. The caller
-must not concurrently access mutable World state during execution.
-An explicit `structuralOrder` controls structural merge only; it does not
-reorder callbacks or ordinary component reads/writes. Systems without a
-structural order cannot collect structural commands.
+## Фазы изменения
 
-System callbacks may mutate existing components directly. Structural writes
-(`CreateEntity()`, `DestroyEntity()`, `AddComponent<T>()` and
-`RemoveComponent<T>()`) are rejected while systems are running; callbacks must
-use the deferred structural APIs instead. `RunSystems()` collects deferred
-commands and applies the queue after all currently registered systems complete.
-Parallel producers should collect commands in `DeferredStructuralCommandBuffer`
-instances. Before workers start, callers declare every producer and its maximum
-entity-create count with `BeginDeferredStructuralPhase()`. The world reserves
-those identities in stable `producerOrder`, so worker completion order cannot
-change entity identity. Buffers are submitted after the join point. Callers that manage
-their own phases can use `ApplyDeferredStructuralChanges()` as an explicit
-structural commit point.
+`RunSystems()` последовательно выполняет обработчики. `RunSystems(taskSystem)` запускает граф задач с зависимостями в рабочих потоках переданного `TaskSystem`, дожидается всех задач данного мира и применяет структурные команды. Для параллельного варианта каждой системе необходим устойчивый идентификатор планирования. Координатор должен исполняться в управляющем потоке; вызов из любого рабочего потока `TaskSystem` отклоняется до публикации задач, чтобы рабочий поток не ожидал собственный пул. `World` и `TaskSystem` должны существовать до возврата из вызова. Во время исполнения вызывающий код не должен конкурентно обращаться к изменяемому состоянию `World`. Явный `structuralOrder` управляет только порядком объединения структурных изменений; он не меняет порядок обработчиков или обычных чтений и записей компонентов. Системы без структурного порядка не могут собирать структурные команды.
 
-Create system worker buffers inside their owning callback, before dispatching
-workers. They capture that system's structural order. Commit orders system
-commands by `(structuralOrder, direct-before-worker, producerOrder)`; producer
-orders must be unique within each system. Standalone external buffers form a
-separate phase after system commands. A worker buffer must be submitted after
-its workers join and before the owning callback returns.
-Buffers belong to the specific callback invocation that created them; a later
-invocation cannot submit them, and external buffers cannot be adopted by a system.
-Before `RunSystems()`, declare system producers with `BeginDeferredStructuralPhase()`
-and set each producer's `SystemOrder` to its owning system's structural order.
-Identities are reserved by `(SystemOrder, Order)` before any callback runs, and
-producer orders can be reused by other systems. System callbacks create entities
-through these planned buffers; the shared `DeferCreateEntity()` overload is
-rejected during system execution. New plans cannot begin inside a callback.
-Each callback owns its deferred context. Direct and submitted worker commands
-are staged until all callbacks join. If any callback fails, all structural
-commands from this invocation of `RunSystems` and unused system reservations
-are discarded. Dependent tasks are cancelled; independent tasks are joined
-before the original callback exception is rethrown. Ordinary component writes
-already performed by callbacks are not rolled back. Previously queued external
-commands remain available to an explicit commit. After a failure, callers must
-prepare a new system reservation plan before retrying entity creates.
-At commit and system rollback, free entity slots are ordered by index before
-subsequent allocation. Returning unused reservations from different workers
-therefore cannot change the identity of the next created entity.
-Commit is rejected while a buffer still owns claimed create reservations and
-has not been submitted or discarded. The rejected commit leaves reservations
-intact so the caller can submit or destroy the buffer and retry.
+Обработчики систем могут непосредственно изменять существующие компоненты. Структурные операции (`CreateEntity()`, `DestroyEntity()`, `AddComponent<T>()` и `RemoveComponent<T>()`) запрещены во время работы систем: используйте отложенные операции. `RunSystems()` собирает команды и применяет их после завершения всех зарегистрированных систем. Параллельные производители должны использовать отдельные `DeferredStructuralCommandBuffer`. До запуска рабочих потоков вызывающий код объявляет каждого производителя и его максимальное число создаваемых сущностей через `BeginDeferredStructuralPhase()`. Мир заранее резервирует идентификаторы в устойчивом порядке `producerOrder`, поэтому порядок завершения потоков не влияет на идентификаторы. Буферы публикуются после объединения задач. Для самостоятельного управления фазами предусмотрен явный `ApplyDeferredStructuralChanges()`.
 
-## Access Contract
+Создавайте буферы рабочих потоков системы внутри соответствующего обработчика до запуска рабочих задач. Они захватывают структурный порядок данной системы. При применении команды систем сортируются по ключу (`structuralOrder`, непосредственные команды перед рабочими, `producerOrder`); порядок производителей внутри одной системы должен быть уникальным. Внешние независимые буферы образуют отдельную фазу после команд систем. Буфер рабочего потока публикуется после завершения его задач, но до возврата из обработчика. Буфер принадлежит конкретному вызову обработчика: следующий вызов не может его опубликовать, а внешний буфер нельзя передать во владение системе.
 
-Systems registered with `SystemSchedule` use stable IDs and optional `Before`
-and `After` constraints. Every system in a scheduled world must declare an ID;
-legacy registrations retain their existing sequential execution mode.
-Unknown targets, duplicate IDs and cyclic constraints are rejected before any
-callback executes. Explicit constraints first define a canonical topological
-order, choosing the smallest ready ID. Read/write, write/read and write/write
-conflicts then add edges in that order; read/read access adds no dependency.
-This policy respects explicit constraints and avoids registration order as a
-hidden conflict-ordering key. `structuralOrder` remains a separate commit key.
-Access declarations must accurately describe every component read or write,
-including accesses performed by jobs spawned by that callback. A callback must
-join its own jobs before returning. Undeclared access and mutable external
-state shared by callbacks are the caller's synchronization responsibility.
+До `RunSystems()` объявляйте производителей системы через `BeginDeferredStructuralPhase()`, задавая `SystemOrder` равным структурному порядку их системы. Идентификаторы резервируются по (`SystemOrder`, `Order`) до начала всех обработчиков; значения порядка производителей могут повторяться в разных системах. Обработчики создают сущности через запланированные буферы; общая перегрузка `DeferCreateEntity()` при выполнении систем запрещена. Новый план нельзя начать внутри обработчика.
 
-`AddComponent<T>()`, `GetComponent<T>()` and query callbacks require a live
-entity. Stale entities are rejected. `HasComponent<T>()` and
-`RemoveComponent<T>()` return `false` for stale or missing data.
+У каждого обработчика свой контекст отложенных изменений. Его собственные команды и команды рабочих потоков накапливаются до общего завершения. При ошибке любого обработчика структурные команды текущего `RunSystems` и неиспользованные резервы отбрасываются. Зависимые задачи отменяются; независимые задачи завершаются до повторного выбрасывания исходного исключения. Уже выполненные обычные записи компонентов не откатываются. Ранее поставленные внешние команды остаются доступны для явного применения. После ошибки перед повторным созданием сущностей необходим новый план резервирования.
 
-Internal scoped-access foundations live in internal/access_coordinator.*. They are
-not installed public APIs and do not replace legacy World system scheduling. See
-[the internal contract](internal/access_coordinator.md) for ownership and execution rules.
+При применении и откате системы свободные слоты сортируются по индексу до следующего выделения. Поэтому возврат неиспользованных резервов из разных рабочих потоков не меняет идентификатор следующей сущности. Применение запрещено, пока некоторый буфер удерживает резервы создания и не был опубликован или уничтожен. Неудачное применение сохраняет резервы: можно опубликовать либо уничтожить буфер и повторить попытку.
+
+## Контракт доступа
+
+Системы с `SystemSchedule` используют устойчивые идентификаторы и необязательные ограничения `Before` и `After`. Все системы планируемого мира должны объявлять идентификатор; старые регистрации сохраняют последовательный режим. Неизвестные зависимости, повторные идентификаторы и циклы отклоняются до выполнения обработчиков. Сначала явные ограничения определяют канонический топологический порядок с выбором минимального готового идентификатора. Конфликты чтение/запись, запись/чтение и запись/запись добавляют рёбра в этом порядке; чтение/чтение зависимость не создаёт. Так явные ограничения соблюдаются без скрытой привязки разрешения конфликтов к порядку регистрации. `structuralOrder` остаётся отдельным ключом применения.
+
+Декларации доступа должны точно описывать все чтения и записи компонентов, включая обращения задач, созданных обработчиком. Обработчик обязан дождаться своих задач до возврата. Необъявленные обращения и синхронизация внешнего изменяемого состояния, общего для обработчиков, остаются ответственностью вызывающего кода.
+
+`AddComponent<T>()`, `GetComponent<T>()` и обработчики запросов требуют существующую сущность; устаревшие дескрипторы отклоняются. `HasComponent<T>()` и `RemoveComponent<T>()` возвращают `false` при устаревшем дескрипторе или отсутствии данных.
+
+Внутренние основы доступа по областям реализованы в `internal/access_coordinator.*`. Они не устанавливаются как публичные интерфейсы и не заменяют существующий планировщик систем `World`. Правила владения и исполнения приведены в [документации внутреннего координатора](internal/access_coordinator.md).
