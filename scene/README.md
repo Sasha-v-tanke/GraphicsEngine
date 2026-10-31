@@ -1,35 +1,15 @@
-# Scene lifecycle
+# Жизненный цикл сцены
 
-`NScene::Scene` owns one ECS `World` and a descriptive name. A user can derive from Scene to hold scene-level state.
-World remains the entity/component/systems container; Scene introduces no second ECS. Scene does not own Graphics,
-Vulkan or the shared ResourceManager. Components retain logical resource handles through the existing Resources contract.
+`NScene::Scene` владеет одним миром ECS `World` и описательным именем. Пользователь может наследовать `Scene` для хранения состояния уровня сцены. `World` остаётся контейнером сущностей, компонентов и систем; `Scene` не создаёт второй ECS. Она не владеет `Graphics`, Vulkan или общим `ResourceManager`. Компоненты сохраняют логические дескрипторы ресурсов в соответствии с существующим контрактом `Resources`.
 
-`SceneManager` owns registrations and selects at most one active scene. `CreateScene()` creates a basic Scene;
-`RegisterScene(unique_ptr<Scene>)` accepts a populated user scene. Neither operation activates it automatically.
-`Activate(handle)` selects or switches the active scene, `Deactivate()` selects none. Unloading an active scene leaves an
-explicit empty state; there is no implicit fallback to another registered scene.
+`SceneManager` владеет регистрациями и выбирает не более одной активной сцены. `CreateScene()` создаёт базовую сцену, `RegisterScene(unique_ptr<Scene>)` принимает подготовленную пользовательскую сцену. Ни одна операция не активирует её автоматически. `Activate(handle)` выбирает или переключает активную сцену, `Deactivate()` снимает выбор. Выгрузка активной сцены оставляет явно пустое состояние без неявного переключения на другую зарегистрированную сцену.
 
-Registry operations run on the thread that created the manager and reject other threads. Publish activation/unload at
-the application's controlled frame boundary. This foundation does not add I/O, automatic frame-loop wiring, streaming,
-serialization or the async switching/readiness policy of IMPROVE-0031. Runtime SceneHandles are generational registry
-identities, not persistent GUIDs or serialized Entity IDs.
+Операции реестра выполняются в создавшем менеджер потоке; обращения из других потоков отклоняются. Публикуйте активацию и выгрузку на контролируемой границе кадра приложения. Этот слой не добавляет ввод-вывод, автоматическое подключение к основному циклу, потоковую загрузку, сериализацию или асинхронную политику переключения и готовности из `IMPROVE-0031`. Дескрипторы `SceneHandle` являются идентификаторами записей реестра с поколением, а не постоянными GUID или сериализованными идентификаторами сущностей.
 
-Handles contain manager identity, slot and generation. Unload immediately invalidates the registration and all future
-acquisitions through its handle. Slot reuse advances generation; exhausted generations retire the slot. Stale, foreign
-and unregistered handles are rejected. Switching to the already active scene is idempotent.
+Дескриптор содержит идентификатор менеджера, индекс слота и поколение. Выгрузка сразу делает регистрацию недействительной и запрещает последующие получения сцены по прежнему дескриптору. Повторное использование слота увеличивает поколение; при исчерпании поколений слот выводится из обращения. Устаревшие, чужие и незарегистрированные дескрипторы отклоняются. Повторная активация уже активной сцены не изменяет состояние.
 
-`Acquire()` / `AcquireActive()` return shared ownership of a Scene. Capture that ownership in asynchronous World jobs,
-including extraction, so logical unload cannot destroy their source World. Ownership retention does not authorize
-concurrent World writes: obey ECS access declarations, structural phases and the extraction join contract. A scene lease
-can outlive its registry or manager; it does not make the unloaded handle valid again.
+`Acquire()` и `AcquireActive()` возвращают разделяемое владение `Scene`. Удерживайте его в асинхронных задачах над `World`, в том числе при извлечении данных для рендеринга: логическая выгрузка тогда не уничтожит исходный мир. Удержание владения не разрешает конкурентные записи в `World`; необходимо соблюдать декларации доступа ECS, фазы структурных изменений и контракт ожидания извлечения. Заимствованная таким образом сцена может пережить реестр или менеджер, но выгруженный дескриптор от этого не становится действительным.
 
-After extraction joins, RenderWorld contains copied render-facing data and retained ResourceLeases in its frame slot.
-It no longer reads Scene/World. Consequently a switch or unload can release the old Scene while its snapshot remains
-valid through that slot's CPU/GPU completion. Shared Resources are not unloaded by SceneManager; their owner controls
-logical unload, and frame/submission retention controls version lifetime.
+После завершения извлечения `RenderWorld` содержит копии данных для рендеринга и удерживаемые `ResourceLease` в слоте кадра. Он больше не читает `Scene` или `World`. Поэтому переключение или выгрузка может освободить старую `Scene`, пока её снимок остаётся действительным до завершения работ процессора и графического устройства для данного слота. `SceneManager` не выгружает общие ресурсы: их владелец управляет логической выгрузкой, а удержание версии в кадре или отправленной работе — её фактическим временем жизни.
 
-Shutdown must stop new scene dispatch/publication and join World update/extraction work before releasing the services
-those jobs use. Destroying SceneManager drops its registrations, but does not cancel workers or invalidate their leases.
-A Scene is destroyed on the thread releasing its last shared owner, which can be a worker. User scene state and component
-destructors must therefore support that thread; keep thread-affine cleanup at an explicit owner-thread shutdown boundary
-while retaining the Scene until readers have joined. Do not call back into a manager during its destruction.
+При остановке необходимо прекратить публикацию новых работ со сценой и дождаться завершения обновления и извлечения `World` до освобождения используемых ими служб. Уничтожение `SceneManager` удаляет регистрации, но не отменяет задачи и не делает их удерживаемые сцены недействительными. Деструктор `Scene` выполняется в потоке, освободившем последнего разделяемого владельца; им может быть рабочий поток. Пользовательское состояние и деструкторы компонентов должны это допускать. Очистку с привязкой к потоку выполняйте на явной границе остановки владельца, удерживая `Scene` до окончания чтения. Во время уничтожения менеджера нельзя обращаться обратно к нему.

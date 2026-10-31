@@ -1,29 +1,26 @@
-# Math
+# Математические типы
 
-`Math` defines engine-owned value types used by World and Renderer contracts.
+`Math` определяет принадлежащие движку типы значений, используемые в контрактах `World` и `Renderer`.
 
-Public headers expose only GraphicsEngine types:
+Публичные заголовки предоставляют только типы GraphicsEngine:
 
 - `Vec2`, `Vec3`, `Vec4`;
 - `Mat4`;
 - `Quat`;
 - `Transform`;
-- camera projection descriptors.
+- дескрипторы проекций камеры.
 
-GLM is an implementation detail. It is used through private conversion helpers
-and must not appear in public `Math`, World or Renderer headers.
+GLM остаётся внутренней деталью реализации. Она используется через закрытые функции преобразования и не должна появляться в публичных заголовках `Math`, `World` и `Renderer`.
 
-## Conventions
+## Соглашения
 
-GraphicsEngine uses a right-handed world coordinate system:
+В GraphicsEngine используется правосторонняя система координат мира:
 
-- `+X` points right;
-- `+Y` points up;
-- forward view direction is `-Z`;
+- `+X` направлена вправо;
+- `+Y` направлена вверх;
+- направление взгляда вперёд соответствует `-Z`;
 - `Cross(+X, +Y) = +Z`.
 
-Matrices are stored in column-major order and multiplied with column vectors.
-`ComposeTransform()` applies local scale, then rotation, then translation.
+Матрицы хранятся по столбцам и умножаются на векторы-столбцы. `ComposeTransform()` последовательно применяет локальные масштабирование, поворот и перенос.
 
-Clip-space depth follows Vulkan conventions: the near plane maps to `0`, the far
-plane maps to `1`. The projection helpers expect radians.
+Глубина в пространстве отсечения соответствует соглашениям Vulkan: ближняя плоскость отображается в `0`, дальняя — в `1`. Функции построения проекции принимают углы в радианах.
