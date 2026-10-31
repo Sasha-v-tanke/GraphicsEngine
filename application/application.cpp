@@ -86,6 +86,10 @@ void Application::SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::Job
     m_frameLoop->SubmitUserJob(job);
 }
 
+void Application::RunOnMainThreadImpl(void* context, void (*invoke)(void*)) {
+    m_frameLoop->GetMainExecutor().Invoke([context, invoke] { invoke(context); });
+}
+
 Application::~Application() {
     if (m_frameLoop != nullptr) {
         m_frameLoop->Stop();

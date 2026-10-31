@@ -246,6 +246,7 @@ public:
     using Application::RunAsync;
     NCommon::Job<std::unique_ptr<int>> Result;
     bool CompletedOnWorker = false;
+    bool CompletedOnMain = false;
 
 private:
     void OnUpdate() override {
@@ -253,6 +254,7 @@ private:
             m_started = true;
             Result = RunAsync([this, value = std::make_unique<int>(73)]() mutable {
                 CompletedOnWorker = NCommon::TaskSystem::IsCurrentThreadWorker();
+                RunOnMainThread([this] { CompletedOnMain = !NCommon::TaskSystem::IsCurrentThreadWorker(); });
                 return std::move(value);
             });
         }
@@ -268,6 +270,7 @@ TEST_F(RuntimeMvpTest, UserJobFacadeRetainsResultAfterRunAndRejectsStoppedAdmiss
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(application.RunAsync([] {})); });
     application.Run();
     EXPECT_TRUE(application.CompletedOnWorker);
+    EXPECT_TRUE(application.CompletedOnMain);
     ASSERT_TRUE(application.Result.IsReady());
     const auto result = application.Result.TryTake();
     ASSERT_TRUE(result.has_value());
