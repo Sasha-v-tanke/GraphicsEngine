@@ -17,8 +17,6 @@ Device* device = nullptr;
 const Resource& resource = GetResource();
 ```
 
-### Пример оформления указателей и ссылок
-
 ## 2. Именование
 
 | Сущность | Правило | Пример |
@@ -679,9 +677,9 @@ math/test/matrix.cpp
 ++frameIndex;
 ```
 
-### Пример избыточного комментария
+### Пример заметки TODO
 
-Пример:
+Новая заметка в исходном коде не должна содержать выдуманного идентификатора задачи:
 
 ```cpp
 // TODO: Support multiple graphics queues.
