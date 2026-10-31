@@ -202,6 +202,7 @@ set(
     "GraphicsEngine/application/application_config.h"
     "GraphicsEngine/application/frame_diagnostics.h"
     "GraphicsEngine/ecs/entity.h"
+    "GraphicsEngine/ecs/hierarchy.h"
     "GraphicsEngine/ecs/system_access.h"
     "GraphicsEngine/ecs/world.h"
     "GraphicsEngine/scene/scene.h"

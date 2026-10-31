@@ -3,6 +3,7 @@ TEST_SUITE(Ecs)
 SOURCES(
     access_coordinator.cpp
     world_test.cpp
+    hierarchy.cpp
     scheduling_test.cpp
 )
 
