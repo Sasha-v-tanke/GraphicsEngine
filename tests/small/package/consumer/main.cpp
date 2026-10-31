@@ -13,6 +13,7 @@
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
 #include <GraphicsEngine/graphics/image.h>
 #include <GraphicsEngine/graphics/material.h>
+#include <GraphicsEngine/graphics/pipeline_key.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/lib/thread/job.h>
@@ -125,6 +126,15 @@ int main() {
                                                          std::vector<std::uint32_t>{0x07230203, 0x00010000, 0, 1, 0}));
 
     const std::shared_ptr<const NResources::ShaderArtifact> artifact = resources.GetCpuResource(shader);
+    NGraphics::GraphicsPipelineDescriptor pipelineDescriptor;
+    pipelineDescriptor.Shaders.emplace_back(resources, shader);
+    pipelineDescriptor.DepthAttachmentFormat = NGraphics::EPixelFormat::D32_FLOAT;
+    const NGraphics::PipelineKey pipelineKey{pipelineDescriptor};
+    if (pipelineKey != NGraphics::PipelineKey{pipelineDescriptor} ||
+        pipelineKey.GetHash() != NGraphics::HashGraphicsPipelineDescriptor(pipelineDescriptor)) {
+        return 1;
+    }
+
     const NResources::ImageData image{
             1,
             1,
