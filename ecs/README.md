@@ -99,3 +99,5 @@ entity. Stale entities are rejected. `HasComponent<T>()` and
 Internal scoped-access foundations live in internal/access_coordinator.*. They are
 not installed public APIs and do not replace legacy World system scheduling. See
 [the internal contract](internal/access_coordinator.md) for ownership and execution rules.
+
+Иерархия Entity, deferred Reparent и lease топологии описаны в [контракте иерархии](hierarchy.md).

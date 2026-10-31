@@ -3,11 +3,63 @@
 #include <algorithm>
 #include <exception>
 #include <iterator>
+#include <limits>
 #include <numeric>
 
 #include <GraphicsEngine/lib/thread/task/task_system.h>
+#include <ecs/internal/topology.h>
 
 namespace NEcs {
+namespace {
+std::uint64_t AllocateWorldId() {
+    static std::atomic<std::uint64_t> next{1};
+    std::uint64_t value = next.load();
+    do {
+        if (value == std::numeric_limits<std::uint64_t>::max()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "World identity exhausted");
+        }
+    } while (!next.compare_exchange_weak(value, value + 1));
+    return value;
+}
+} // namespace
+
+World::StructuralWriteGuard::StructuralWriteGuard(World& world)
+    : m_world(world) {
+    m_world.m_topology->BeginWrite();
+}
+World::StructuralWriteGuard::~StructuralWriteGuard() {
+    m_world.m_topology->EndWrite();
+}
+EntityReference World::GetEntityReference(Entity entity) const noexcept {
+    return {m_topology->WorldId, entity};
+}
+TopologySnapshot World::AcquireTopologySnapshot() const {
+    return TopologySnapshot{std::make_shared<NInternal::TopologyLease>(m_topology)};
+}
+void World::SetLocalTransform(EntityReference entity, const NMath::Mat4& local) {
+    ValidateStructuralWriteAllowed();
+    StructuralWriteGuard structuralGuard{*this};
+    m_topology->SetLocal(entity, local);
+}
+World::DeferredReparentCommand::DeferredReparentCommand(EntityReference child,
+                                                        EntityReference parent,
+                                                        EReparentMode mode)
+    : m_child(child)
+    , m_parent(parent)
+    , m_mode(mode) {
+}
+void World::DeferredReparentCommand::Apply(World& world) {
+    world.m_topology->Reparent(m_child, m_parent, m_mode);
+}
+void World::DeferReparent(EntityReference child, EntityReference parent, EReparentMode mode) {
+    PushDeferredCommand(std::make_unique<DeferredReparentCommand>(child, parent, mode));
+}
+void World::DeferReparent(DeferredStructuralCommandBuffer& buffer,
+                          EntityReference child,
+                          EntityReference parent,
+                          EReparentMode mode) {
+    PushDeferredCommand(buffer, std::make_unique<DeferredReparentCommand>(child, parent, mode));
+}
 
 struct World::SystemInvocation {
     World* Owner = nullptr;
@@ -48,7 +100,8 @@ struct World::DeferredStructuralCommandBuffer::State {
 };
 
 World::World()
-    : LifetimeToken_(std::make_shared<bool>(true)) {
+    : m_topology(std::make_shared<NInternal::TopologyState>(AllocateWorldId()))
+    , LifetimeToken_(std::make_shared<bool>(true)) {
 }
 
 World::~World() {
@@ -97,6 +150,7 @@ World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() {
 
 Entity World::CreateEntity() {
     ValidateStructuralWriteAllowed();
+    StructuralWriteGuard structuralGuard{*this};
 
     if (PendingDeferredEntityCreateCount_ > 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
@@ -105,8 +159,10 @@ Entity World::CreateEntity() {
 
     if (!FreeEntityIndices_.empty()) {
         const std::uint32_t index = FreeEntityIndices_.back();
+        m_topology->Prepare(index);
         FreeEntityIndices_.pop_back();
         Entities_[index].Alive = true;
+        m_topology->Create({index, Entities_[index].Generation});
 
         return {
                 .Index = index,
@@ -115,12 +171,14 @@ Entity World::CreateEntity() {
     }
 
     const std::uint32_t index = static_cast<std::uint32_t>(Entities_.size());
+    m_topology->Prepare(index);
     const std::uint32_t generation = NextNewEntityGeneration_++;
     Entities_.push_back({
             .Generation = generation,
             .Alive = true,
     });
 
+    m_topology->Create({index, generation});
     return {
             .Index = index,
             .Generation = generation,
@@ -133,6 +191,7 @@ World::DeferredCreateEntityCommand::DeferredCreateEntityCommand(Entity entity, b
 }
 
 void World::DeferredCreateEntityCommand::Apply(World& world) {
+    world.m_topology->Prepare(Entity_.Index);
     if (ReusedFreeSlot_) {
         auto& state = world.Entities_[Entity_.Index];
         if (state.Alive || state.Reserved || state.Generation != Entity_.Generation) {
@@ -140,6 +199,7 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
         }
 
         state.Alive = true;
+        world.m_topology->Create(Entity_);
         --world.PendingDeferredEntityCreateCount_;
         return;
     }
@@ -166,6 +226,7 @@ void World::DeferredCreateEntityCommand::Apply(World& world) {
     }
 
     state.Alive = true;
+    world.m_topology->Create(Entity_);
     state.Reserved = false;
     --world.PendingDeferredEntityCreateCount_;
     world.RemovePendingDeferredAppendReservation(Entity_.Index);
@@ -319,16 +380,19 @@ void World::DeferDestroyEntity(DeferredStructuralCommandBuffer& buffer, Entity e
 
 void World::DestroyEntity(Entity entity) {
     ValidateStructuralWriteAllowed();
+    StructuralWriteGuard structuralGuard{*this};
 
     if (!IsAlive(entity)) {
         return;
     }
 
+    FreeEntityIndices_.reserve(FreeEntityIndices_.size() + 1);
     for (auto& [componentType, storage]: ComponentStorageByType_) {
         static_cast<void>(componentType);
         storage->RemoveEntity(entity.Index);
     }
 
+    m_topology->Destroy(entity);
     auto& state = Entities_[entity.Index];
     state.Alive = false;
     state.Reserved = false;
@@ -746,6 +810,7 @@ void World::RunSystemsImpl(NCommon::TaskSystem* taskSystem) {
 }
 
 void World::ApplyDeferredStructuralChanges() {
+    StructuralWriteGuard structuralGuard{*this};
     if (IsRunningSystems_ && CommittingWorld_ != this) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS deferred structural changes cannot be explicitly committed during system execution");
