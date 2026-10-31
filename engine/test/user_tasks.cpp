@@ -150,9 +150,9 @@ TEST(UserTasks, SpawnRunsOnWorkerAndDestroysFrameBeforeRetainedResultIsPublished
 }
 
 TEST(UserTasks, VoidMoveOnlyAndCapturedErrorsUseTheJobContract) {
+    std::atomic_int invoked{0};
     NEngine::Engine engine{{.WorkerCount = 1}};
     engine.Start();
-    std::atomic_int invoked{0};
     auto nothing = engine.Spawn(VoidTask(invoked));
     auto unique = engine.Spawn(MoveResult(std::make_unique<int>(81)));
     auto failed = engine.Spawn(FailedTask(false));
@@ -190,6 +190,8 @@ TEST(UserTasks, InvalidAndRejectedSpawnDoNotRunOrLeakCoroutines) {
 }
 
 TEST(UserTasks, QueuedCancellationDestroysFrameWithoutRunningBodyOnSingleWorker) {
+    std::atomic_int invoked{0};
+    std::atomic_int destroyed{0};
     NEngine::Engine engine{{.WorkerCount = 1}};
     engine.Start();
     const auto gate = std::make_shared<Gate>();
@@ -197,8 +199,6 @@ TEST(UserTasks, QueuedCancellationDestroysFrameWithoutRunningBodyOnSingleWorker)
     const OpenOnExit guard{gate};
     auto busy = engine.RunAsync([gate] { gate->Wait(); });
     ASSERT_EQ(entered.wait_for(TIMEOUT), std::future_status::ready);
-    std::atomic_int invoked{0};
-    std::atomic_int destroyed{0};
     auto queued = engine.Spawn(ProbeTask(std::make_unique<Payload>(destroyed), invoked));
     queued.RequestCancel();
     ASSERT_TRUE(WaitReady(queued));
@@ -211,13 +211,13 @@ TEST(UserTasks, QueuedCancellationDestroysFrameWithoutRunningBodyOnSingleWorker)
 }
 
 TEST(UserTasks, DroppedJobDoesNotDestroyRunningFrameAndShutdownDrainsIt) {
+    std::atomic_int completed{0};
+    std::atomic_int destroyed{0};
     NEngine::Engine engine{{.WorkerCount = 1}};
     engine.Start();
     const auto gate = std::make_shared<Gate>();
     std::future<void> entered = gate->Entered.get_future();
     const OpenOnExit guard{gate};
-    std::atomic_int completed{0};
-    std::atomic_int destroyed{0};
     auto result = engine.Spawn(HeldTask(gate, std::make_unique<Payload>(destroyed), completed));
     ASSERT_EQ(entered.wait_for(TIMEOUT), std::future_status::ready);
     result = {};
@@ -229,13 +229,13 @@ TEST(UserTasks, DroppedJobDoesNotDestroyRunningFrameAndShutdownDrainsIt) {
 }
 
 TEST(UserTasks, StopCancelsQueuedCoroutineAndCooperativelyStopsRunningCoroutineAcrossRestart) {
-    NEngine::Engine engine{{.WorkerCount = 1}};
-    engine.Start();
     std::promise<void> entered;
-    std::future<void> started = entered.get_future();
     std::atomic_bool observedStop{false};
     std::atomic_int invoked{0};
     std::atomic_int destroyed{0};
+    NEngine::Engine engine{{.WorkerCount = 1}};
+    engine.Start();
+    std::future<void> started = entered.get_future();
     auto running = engine.Spawn(CooperativeTask(entered, std::make_unique<Payload>(destroyed), observedStop));
     ASSERT_EQ(started.wait_for(TIMEOUT), std::future_status::ready);
     auto queued = engine.Spawn(ProbeTask(std::make_unique<Payload>(destroyed), invoked));
@@ -276,6 +276,8 @@ private:
 };
 
 TEST(UserTasks, CoroutineExecutionDoesNotReserveOrGateFrameSlotsForTwelveFrames) {
+    std::atomic_int completed{0};
+    std::atomic_int destroyed{0};
     auto frames = std::make_unique<CountingFrames>();
     CountingFrames& counter = *frames;
     auto engine = NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 2}, std::move(frames));
@@ -283,8 +285,6 @@ TEST(UserTasks, CoroutineExecutionDoesNotReserveOrGateFrameSlotsForTwelveFrames)
     const auto gate = std::make_shared<Gate>();
     std::future<void> entered = gate->Entered.get_future();
     const OpenOnExit guard{gate};
-    std::atomic_int completed{0};
-    std::atomic_int destroyed{0};
     auto result = engine->Spawn(HeldTask(gate, std::make_unique<Payload>(destroyed), completed));
     ASSERT_EQ(entered.wait_for(TIMEOUT), std::future_status::ready);
     const auto eventually = [&engine](bool draw) {
@@ -330,9 +330,9 @@ NCommon::UserTask<void> VoidFailure() {
 }
 
 TEST(UserTasks, ReturnConstructionAndVoidExceptionsBecomeFailedJobsAndReleaseFrames) {
+    std::atomic_int destroyed{0};
     NEngine::Engine engine{{.WorkerCount = 1}};
     engine.Start();
-    std::atomic_int destroyed{0};
     auto moved = engine.Spawn(ThrowingReturn(std::make_unique<Payload>(destroyed)));
     auto empty = engine.Spawn(VoidFailure());
     ASSERT_TRUE(WaitReady(moved));
