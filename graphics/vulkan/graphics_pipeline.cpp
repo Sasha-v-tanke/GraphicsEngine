@@ -295,7 +295,8 @@ VkPipelineDepthStencilStateCreateInfo MakeDepthStencil(const NGraphics::DepthSta
 
 VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
                                                const VulkanPhysicalDeviceSelection& physicalDevice,
-                                               const NGraphics::GraphicsPipelineDescriptor& descriptor)
+                                               const NGraphics::GraphicsPipelineDescriptor& descriptor,
+                                               VkPipelineCache cache)
     : m_device(device.GetHandle()) {
     NGraphics::ValidateGraphicsPipelineDescriptor(descriptor);
     ValidateDevice(physicalDevice, descriptor);
@@ -434,7 +435,7 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
             .basePipelineHandle = VK_NULL_HANDLE,
             .basePipelineIndex = -1,
     };
-    const VkResult result = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_pipeline);
+    const VkResult result = vkCreateGraphicsPipelines(m_device, cache, 1, &pipelineInfo, nullptr, &m_pipeline);
     if (result != VK_SUCCESS) {
         if (m_pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(m_device, m_pipeline, nullptr);

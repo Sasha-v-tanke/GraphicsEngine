@@ -7,6 +7,7 @@ API(
     graphics.h
     graphics_capabilities.h
     graphics_config.h
+    pipeline_key.h
     graphics_pipeline.h
     shader.h
     image.h
@@ -16,6 +17,7 @@ API(
 
 SOURCES(
     graphics.cpp
+    pipeline_key.cpp
     graphics_pipeline.cpp
     shader.cpp
     material.cpp

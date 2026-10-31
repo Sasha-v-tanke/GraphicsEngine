@@ -2,6 +2,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -9,6 +10,7 @@
 #include <graphics/backend/factory.h>
 #include <graphics/graphics.h>
 #include <graphics/material.h>
+#include <graphics/pipeline_key.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <resources/resource_manager.h>
@@ -1096,6 +1098,78 @@ TEST_F(GraphicsTest, GraphicsPipelineVertexAttributeOrderDoesNotAffectIdentity) 
     EXPECT_EQ(NGraphics::HashGraphicsPipelineDescriptor(first), NGraphics::HashGraphicsPipelineDescriptor(second));
 }
 
+TEST_F(GraphicsTest, PipelineKeyOwnsCanonicalDescriptorAndUsesCollisionSafeEquality) {
+    NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    const NGraphics::PipelineKey first{descriptor};
+    std::swap(descriptor.Shaders[0], descriptor.Shaders[1]);
+    std::swap(descriptor.VertexLayout.Attributes[0], descriptor.VertexLayout.Attributes[1]);
+    const NGraphics::PipelineKey reordered{descriptor};
+    EXPECT_EQ(first, reordered);
+    EXPECT_EQ(first.GetHash(), reordered.GetHash());
+    descriptor.Topology = NGraphics::EPrimitiveTopology::LINE_LIST;
+    const NGraphics::PipelineKey changed{descriptor};
+    EXPECT_NE(first, changed);
+    EXPECT_EQ(first.GetDescriptor().Topology, NGraphics::EPrimitiveTopology::TRIANGLE_LIST);
+
+    struct CollidingHash {
+        std::size_t operator()(const NGraphics::PipelineKey&) const noexcept {
+            return 0;
+        }
+    };
+    std::unordered_map<NGraphics::PipelineKey, int, CollidingHash> entries;
+    entries.emplace(first, 1);
+    entries.emplace(changed, 2);
+    EXPECT_EQ(entries.at(reordered), 1);
+    EXPECT_EQ(entries.at(changed), 2);
+    EXPECT_EQ(entries.size(), 2U);
+}
+
+TEST_F(GraphicsTest, PipelineKeySeparatesEveryFixedFunctionField) {
+    const NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    const NGraphics::PipelineKey baseline{descriptor};
+    const auto check = [&](const auto& mutate) {
+        NGraphics::GraphicsPipelineDescriptor variant = descriptor;
+        mutate(variant);
+        const NGraphics::PipelineKey key{variant};
+        EXPECT_NE(key, baseline);
+        EXPECT_NE(key.GetHash(), baseline.GetHash());
+    };
+    check([](auto& value) { ++value.VertexLayout.Bindings[0].StrideBytes; });
+    check([](auto& value) { value.VertexLayout.Bindings[0].InputRate = NGraphics::EVertexInputRate::INSTANCE; });
+    check([](auto& value) { value.VertexLayout.Attributes[0].Format = NGraphics::EVertexFormat::FLOAT32; });
+    check([](auto& value) {
+        ++value.VertexLayout.Attributes[0].Location;
+        ++value.VertexLayout.Attributes[0].Location;
+    });
+    check([](auto& value) { value.RasterState.PolygonMode = NGraphics::EPolygonMode::LINE; });
+    check([](auto& value) { value.RasterState.CullMode = NGraphics::ECullMode::NONE; });
+    check([](auto& value) { value.RasterState.FrontFace = NGraphics::EFrontFace::CLOCKWISE; });
+    check([](auto& value) { value.DepthAttachmentFormat = NGraphics::EPixelFormat::D32_FLOAT; });
+    check([](auto& value) {
+        value.DepthAttachmentFormat = NGraphics::EPixelFormat::D32_FLOAT;
+        value.DepthState.TestEnabled = true;
+    });
+    check([](auto& value) {
+        value.DepthAttachmentFormat = NGraphics::EPixelFormat::D32_FLOAT;
+        value.DepthState.WriteEnabled = true;
+    });
+    check([](auto& value) { value.DepthState.CompareOperation = NGraphics::ECompareOperation::GREATER; });
+    check([](auto& value) { value.ColorBlendAttachments[0].Enabled = true; });
+    check([](auto& value) { value.ColorBlendAttachments[0].SourceColorFactor = NGraphics::EBlendFactor::ZERO; });
+    check([](auto& value) { value.ColorBlendAttachments[0].DestinationColorFactor = NGraphics::EBlendFactor::ONE; });
+    check([](auto& value) { value.ColorBlendAttachments[0].ColorOperation = NGraphics::EBlendOperation::MAXIMUM; });
+    check([](auto& value) { value.ColorBlendAttachments[0].SourceAlphaFactor = NGraphics::EBlendFactor::ZERO; });
+    check([](auto& value) { value.ColorBlendAttachments[0].DestinationAlphaFactor = NGraphics::EBlendFactor::ONE; });
+    check([](auto& value) { value.ColorBlendAttachments[0].AlphaOperation = NGraphics::EBlendOperation::MINIMUM; });
+    check([](auto& value) { value.ColorBlendAttachments[0].WriteMask = 0; });
+    check([](auto& value) { value.ColorAttachmentFormats[0] = NGraphics::EPixelFormat::BGRA8_UNORM; });
+    check([](auto& value) { value.Samples = NGraphics::ESampleCount::X2; });
+}
+
+TEST_F(GraphicsTest, PipelineKeyRejectsInvalidInputBeforeCacheAdmission) {
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [] { const NGraphics::PipelineKey key{{}}; });
+}
+
 TEST_F(GraphicsTest, AcceptsDepthOnlyGraphicsPipelineWithoutFragmentShader) {
     NGraphics::GraphicsPipelineDescriptor descriptor = MakeGraphicsPipelineDescriptor(m_resources);
 
@@ -1140,6 +1214,7 @@ TEST_F(GraphicsTest, ShaderKeepsResourceIdentityAndArtifactSnapshot) {
     secondDescriptor.Shaders[0] = second;
 
     EXPECT_NE(first, second);
+    EXPECT_NE(NGraphics::PipelineKey{firstDescriptor}, NGraphics::PipelineKey{secondDescriptor});
     EXPECT_NE(NGraphics::HashGraphicsPipelineDescriptor(firstDescriptor),
               NGraphics::HashGraphicsPipelineDescriptor(secondDescriptor));
 }

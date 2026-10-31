@@ -15,6 +15,8 @@ API(
 SOURCES(
     rendering_scope.h
     rendering_scope.cpp
+    pipeline_manager.h
+    pipeline_manager.cpp
     graphics_pipeline.h
     graphics_pipeline.cpp
     device.cpp
