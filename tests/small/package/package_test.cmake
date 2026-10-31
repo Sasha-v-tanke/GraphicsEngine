@@ -228,6 +228,7 @@ set(
     "GraphicsEngine/lib/thread/job.h"
     "GraphicsEngine/lib/thread/job_control.h"
     "GraphicsEngine/lib/thread/task/task_system.h"
+    "GraphicsEngine/lib/thread/user_task.h"
     "GraphicsEngine/math/camera.h"
     "GraphicsEngine/math/matrix.h"
     "GraphicsEngine/math/quaternion.h"
