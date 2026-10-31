@@ -1,9 +1,9 @@
 # Engine
 
-## Engine ownership
+## Владение подсистемами Engine
 
-`Engine` является owner/orchestrator CPU runtime.
-Он владеет runtime subsystems и задаёт их lifetime:
+`Engine` владеет средой исполнения задач процессора и координирует её работу.
+Он владеет подсистемами исполнения и определяет время их жизни:
 
 - `TaskSystem`;
 - `FrameScheduler`.
@@ -14,7 +14,7 @@ Engine создаёт subsystems, запускает frame work, хранит ru
 Публичный API Engine не содержит GLFW, Vulkan или других backend-specific типов.
 Backend integration должна оставаться за private runtime/subsystem boundary.
 
-## Lifecycle
+## Жизненный цикл
 
 Engine имеет состояния:
 
@@ -38,7 +38,7 @@ Per-slot record удерживается до terminal completion draw task. З�
 `Update()`, поэтому новый frame может быть принят только после безопасного recycle соответствующего slot.
 Engine не использует отдельную heap FIFO очередь frame tokens.
 
-## Runtime errors
+## Ошибки среды исполнения
 
 Ошибки, возникшие внутри runtime work, сохраняются в Engine error channel.
 Последняя ошибка доступна через `GetLastError()`.
@@ -47,7 +47,7 @@ Engine не использует отдельную heap FIFO очередь fra
 Исключение пробрасывается из worker callback дальше, поэтому `TaskSystem` помечает task как `FAILED`, а зависимые tasks
 не получают успешного dependency completion.
 
-## Shutdown order
+## Порядок остановки
 
 `Stop()` переводит Engine в `STOPPING`, запрещая новый публичный frame work, затем ждёт завершения running/pending work
 в `TaskSystem`.
@@ -55,56 +55,31 @@ Engine не использует отдельную heap FIFO очередь fra
 subsystems и переходит в `STOPPED`.
 Такой порядок нужен, чтобы frame-local данные и будущие renderer/resource owners не переживали свои runtime owners.
 
-## Frame reservation and user completion
+## Резервирование кадра и завершение пользовательского обновления
 
-Application uses `TryBeginFrame()` before invoking `OnUpdate`. It acquires the physical slot and closes admission;
-`CanAcceptUpdate()` remains only a readiness hint and must not be used as a reservation. No Engine update task is queued
-while the reservation is pending. `CompleteUserUpdate(FrameKey)` publishes that task once, after the user callback has
-finished, and the normal Draw checkpoint depends on it. Concurrent duplicate, default, foreign-owner, aborted or old-run
-completion signals return false. The opaque key includes Engine owner, RunGeneration, monotonic FrameSequence, slot and
-slot generation; a modulo slot index alone is never an identity. Keys do not own Engine or grant access to frame storage.
+Перед вызовом `OnUpdate()` приложение вызывает `TryBeginFrame()`: метод резервирует физический слот и закрывает допуск. `CanAcceptUpdate()` остаётся лишь подсказкой о готовности и не может заменять резервирование. Пока резервирование не завершено, задачи обновления `Engine` не публикуются. `CompleteUserUpdate(FrameKey)` публикует такую задачу ровно один раз после завершения пользовательского обработчика; от неё зависит обычная контрольная точка рисования. Повторные конкурентные сигналы, значения по умолчанию, чужие владельцы, отменённые кадры и сигналы от старого запуска возвращают `false`. Непрозрачный ключ содержит владельца `Engine`, `RunGeneration`, монотонный `FrameSequence`, слот и его поколение; индекс слота по модулю сам по себе не является идентификатором. Ключ не владеет `Engine` и не предоставляет доступ к памяти кадра.
 
-`AbortFrame(key)` releases an uncompleted reservation and skips its Draw checkpoint. It cannot abort a frame after user
-completion has scheduled CPU work. The caller must finish its user work before abort/completion. `Stop()` closes admission,
-drains scheduled CPU/GPU consumers, then aborts remaining unsignalled reservations; it does not wait for an external signal
-that will never arrive. Delayed keys cannot affect a later Run. The current Application OnUpdate remains synchronous on
-main; scheduling it on workers and tracking its task lifetime are the separate IMPROVE-0040 integration.
+`AbortFrame(key)` освобождает незавершённое резервирование и пропускает контрольную точку рисования. Нельзя прервать кадр после того, как пользовательское завершение опубликовало вычислительную работу. Вызывающий код обязан закончить пользовательские действия до отмены или сообщения о завершении. `Stop()` закрывает допуск, завершает опубликованных потребителей процессора и графического устройства, затем отменяет оставшиеся резервирования без сигнала; он не ждёт внешний сигнал, который уже не поступит. Запоздавшие ключи не влияют на последующий `Run()`. Сейчас `OnUpdate()` приложения исполняется синхронно в основном потоке; перенос на рабочие потоки и отслеживание времени жизни его задачи относятся к `IMPROVE-0040`.
 
-Legacy `Update()` is an atomic reserve-and-complete convenience for Engine-only callers, preserving Update/Draw order.
-Next-frame admission still waits for extraction, and physical storage still waits for CPU/GPU completion before reuse.
+Прежний `Update()` остаётся удобной атомарной операцией резервирования и завершения для прямых клиентов `Engine` с сохранением порядка обновления и рисования. Допуск следующего кадра всё равно ждёт извлечения данных, а повторное использование физической памяти — окончания работы процессора и устройства.
 
-## Main-thread backpressure
+## Ограничение допуска в основном потоке
 
-`FrameLoop::Step()` is nonblocking and returns whether it progressed. A failed reservation never invokes user callbacks or
-queues a retry task. Application continues Window/WSI intake and waits on Engine's progress condition for up to 8 ms when
-no frame can be admitted. Capture `GetProgressVersion()` before the admission attempt, then `WaitForProgress(version, timeout)`;
-the version predicate handles a signal arriving before wait registration. Workers are forbidden from calling this wait.
-Normal phase/lifecycle progress notifies the condition. The bounded timeout also services existing GPU shared futures and
-failed/cancelled async joins without a wake callback; it is main-thread completion/platform maintenance, not a dependency
-polling task or an unbounded PollEvents/Update busy loop. Future main-dispatch integration can wake platform intake.
+`FrameLoop::Step()` не блокирует и сообщает, удалось ли продвинуть работу. Неудачное резервирование не вызывает пользовательские обработчики и не планирует задачу повторной попытки. `Application` продолжает обработку `Window` и WSI и, когда новый кадр недоступен, ожидает условие продвижения `Engine` не более 8 мс. Версию `GetProgressVersion()` нужно получить до попытки допуска, затем вызвать `WaitForProgress(version, timeout)`: предикат версии учитывает сигнал, пришедший до регистрации ожидания. Рабочим потокам такое ожидание запрещено. Продвижение фаз и состояний уведомляет условную переменную. Ограниченный интервал также позволяет обслуживать разделяемые объекты ожидания графического устройства и завершения ошибочных/отменённых асинхронных операций без отдельного пробуждения. Это обслуживание платформы и завершений в основном потоке, а не задача опроса зависимостей или бесконечный горячий цикл вызовов `PollEvents/Update`. В будущем интеграция передачи действий в основной поток сможет явно пробуждать обработку событий.
 
-## Render extraction gate
+## Ограничение извлечения данных рендеринга
 
-The application Draw checkpoint schedules frame finalization, but the next Engine Update is admitted only after
-`IFrameRuntime::Extract()` returns for the current frame, or the join returned by `ScheduleExtract()` completes.
-Scheduled extraction gates its work on the supplied scheduling task, drains all World readers before reporting failure,
-and expresses ordering with TaskSystem dependencies. Engine schedules a draw continuation after the join; it never waits
-inside a worker. This keeps mutable simulation and extraction serialized while still allowing Update N+1 to overlap the
-remaining Draw work for N.
+Контрольная точка рисования приложения планирует окончание кадра, но следующее обновление `Engine` допускается только после возврата `IFrameRuntime::Extract()` для текущего кадра или завершения объединения из `ScheduleExtract()`. Планируемое извлечение зависит от переданной задачи планирования, дожидается всех читателей `World` до сообщения об ошибке и выражает порядок зависимостями `TaskSystem`. `Engine` планирует продолжение рисования после объединения и никогда не ожидает внутри рабочего потока. Изменение мира и извлечение остаются последовательными, а `Update N+1` может выполняться одновременно с остальной работой рисования N.
 
-`CanAcceptUpdate()` services terminal frame records before checking admission. Async extraction failure therefore becomes
-observable to the regular Application frame loop even when admission remains closed; a manual Update or Stop is not
-required to latch the error and enter STOPPING.
+`CanAcceptUpdate()` обрабатывает конечные записи кадров до проверки допуска. Поэтому ошибка асинхронного извлечения становится видимой обычному циклу `Application` даже при закрытом допуске: для записи ошибки и перехода в `STOPPING` не требуется ручной `Update()` или `Stop()`.
 
-`IFrameRuntime::ScheduleDraw()` similarly supports a nonblocking preparation/draw join. Update admission opens after
-extraction, while the slot remains active until scheduled draw work completes. The completion continuation then retires
-the CPU frame or follows its registered GPU completion. Async draw failures are reaped through the same admission path.
+`IFrameRuntime::ScheduleDraw()` аналогично допускает неблокирующее ожидание группы задач подготовки и рисования. После извлечения допуск обновления открывается, но слот остаётся занятым до окончания запланированного рисования. Продолжение завершения затем освобождает кадр процессора либо следует за зарегистрированным завершением устройства. Ошибки асинхронного рисования собираются тем же механизмом допуска.
 
 ## FrameScheduler
 
-`FrameScheduler` управляет bounded lifetime одновременно активных кадров Engine.
+`FrameScheduler` ограничивает время жизни и число одновременно активных кадров `Engine`.
 
-Количество одновременно существующих frame slots задаётся через:
+Количество одновременно существующих слотов кадра задаётся через:
 
 ```cpp
 NEngine::EngineConfig{
@@ -115,7 +90,7 @@ NEngine::EngineConfig{
 MaxActiveFrames должен быть больше нуля. Scheduler заранее создаёт фиксированный ring из MaxActiveFrames slots. Размер
 ring не изменяется во время lifetime scheduler.
 
-## Fixed ring
+## Кольцо слотов
 
 Физический slot кадра определяется только как:
 
@@ -130,7 +105,7 @@ Scheduler не ищет другой свободный slot.
 Правило одинаково для `MaxActiveFrames = 1` и для больших значений: различается только размер ring, а не семантика
 acquire/recycle.
 
-## State machine
+## Автомат состояний
 
 FrameScheduler принимает внешние checkpoints как generation-bound signals внутри текущего FrameExecutionSlot:
 
@@ -190,7 +165,7 @@ boundary: `FrameArena::Reset()` привязан к recycle и не выполн
 Engine использует его только после runtime failure или failed publication, когда обычная стадия больше не может быть
 корректно завершена.
 
-## Frame identity
+## Идентичность кадра
 
 FrameHandle идентифицирует конкретный lifetime frame и содержит:
 
@@ -209,7 +184,7 @@ Generation предотвращает ABA при повторном исполь
 
 Старые `GetFrameIndex()` и `GetSlotIndex()` остаются совместимыми aliases для ApplicationFrameIndex и FrameSlotIndex.
 
-## Timing
+## Измерение времени
 
 FrameScheduler использует `std::chrono::steady_clock`.
 DeltaTime считается при ordered Update signal в `TryAcquireFrame()`:
@@ -222,7 +197,7 @@ DeltaTime(N) = start(Simulation N) - start(Simulation N-1)
 Delta привязан к SimulationIndex/generation frame и доступен через `GetDeltaTime(frame)`.
 Порядок worker-вызовов `BeginUpdate()` не влияет на DeltaTime.
 
-## Frame-local storage
+## Память кадра
 
 Каждый FrameExecutionSlot владеет собственным FrameArena.
 Arena существует столько же, сколько физический slot, и может использовать один и тот же std::pmr::memory_resource в
@@ -245,50 +220,18 @@ memory_resource физически остаётся тем же.
 из memory resource по-прежнему не получают автоматический object lifetime management.
 После завершения всех owners/users scheduler выполняет reset arena и только затем переводит slot в FREE.
 
-## Thread safety
+## Потокобезопасность
 
-GPU runtimes call `FrameContext::RegisterGpuCompletion()` during `Draw()`, before
-native submission, with a `std::shared_future<void>` fulfilled by the external backend completion source.
-CPU-only runtimes do not register a GPU completion.
-A valid future must become ready only when the exact submission no longer uses
-frame storage, on success or failure; deferred futures are rejected. Present is
-not a completion signal. The backend completion service must keep delivering
-signals during `Engine::Stop()` and must outlive the engine's drain.
-If submission fails, settle the registered signal after retiring any GPU users.
-An exception after registration stops admission but retains the slot and its
-completion until the external signal arrives.
+Реализации с графическим устройством вызывают `FrameContext::RegisterGpuCompletion()` во время `Draw()`, до физической отправки, передавая `std::shared_future<void>`, который завершается внешней службой отслеживания устройства. Реализации без устройства не регистрируют такое завершение. Действительный объект ожидания должен стать готовым только когда точная отправка перестала использовать память кадра — как при успехе, так и при ошибке; уже отложенные объекты ожидания отклоняются. Отображение изображения не является сигналом завершения. Служба сигналов устройства должна продолжать работу при `Engine::Stop()` и переживать ожидание окончательного освобождения. При ошибке отправки зарегистрированный сигнал завершается после освобождения всех потребителей устройства. Исключение после регистрации закрывает допуск, но сохраняет слот и объект ожидания до внешнего сигнала.
 
-GPU frames follow `FINALIZE -> SUBMITTED -> GPU_IN_FLIGHT -> COMPLETE -> FREE`.
-CPU draw-task termination precedes `GPU_IN_FLIGHT`; early GPU events are retained
-by the shared state. Application checkpoints reap ready external signals without
-blocking workers or scheduling polling tasks. Out-of-order signals may complete
-different slots, while admission retains logical frame order. Abort and recycle
-cannot release a submitted slot before GPU completion.
+Путь кадров устройства: `FINALIZE -> SUBMITTED -> GPU_IN_FLIGHT -> COMPLETE -> FREE`. Завершение задачи рисования процессора предшествует `GPU_IN_FLIGHT`; ранние сигналы устройства удерживаются общим состоянием. Контрольные точки приложения собирают готовые сигналы без блокировки рабочих потоков и без задач опроса. Сигналы разных слотов могут приходить не по порядку, но допуск сохраняет логический порядок кадров. Отмена и освобождение не могут вернуть отправленный слот до завершения устройства.
 
-`Stop()` first drains CPU tasks, then waits for external GPU signals outside the
-engine mutex before releasing frame storage. Completion failures stop admission
-and preserve a structured runtime error. The completion source is responsible
-for retiring native backend objects before it reports terminal failure.
+`Stop()` сначала завершает задачи процессора, затем ждёт внешние сигналы устройства вне мьютекса `Engine` и лишь после этого освобождает память кадров. Ошибки завершения закрывают допуск и сохраняют структурированную ошибку среды исполнения. Источник сигнала обязан освободить физические объекты реализации до сообщения о конечной ошибке.
 
-Публичные операции FrameScheduler сериализуют изменение и проверку состояния через scheduler mutex.
-Это обеспечивает согласованность:
+Публичные операции `FrameScheduler` сериализуют изменение состояния через собственный мьютекс, обеспечивая согласованность состояния слота, идентичности кадра, поколения и освобождения. Ресурс памяти используется независимо от этого мьютекса и является потокобезопасным. Основное правило времени жизни: ни один потребитель поколения не должен переживать `RecycleFrame()`.
 
-- slot state;
-- frame identity;
-- generation;
-- recycle.
+## Ответственность
 
-Полученный memory_resource используется независимо от scheduler mutex и является thread-safe resource.
-Корректность lifetime frame-local allocations обеспечивается правилом: никакой пользователь текущего generation не
-должен переживать RecycleFrame ().
+`FrameScheduler` — внутренний компонент исполнения `Engine`.
 
-## Responsibility
-
-FrameScheduler является private runtime component Engine.
-
-The frame runtime's `Drain()` hook runs on the Stop caller after CPU tasks join and before Engine waits for
-registered GPU futures. Application presentation uses it to cancel unsubmitted intents and drain accepted
-submissions on the application thread; Stop never waits on a future whose main-thread producer is idle.
-GPU recycle diagnostics count registered completion frames; Application subtracts abandoned unsubmitted
-intents when reporting GPU-only counters. Normal frame reuse still requires both terminal CPU work and
-the exact registered completion.
+Обработчик `Drain()` реализации кадра вызывается потоком, инициировавшим `Stop()`, после присоединения задач процессора, но до ожидания зарегистрированных сигналов графического устройства. Подсистема отображения `Application` использует его, чтобы отменить неотправленные намерения и завершить уже принятые отправки в потоке приложения; `Stop()` никогда не ожидает объект, чей производитель в основном потоке бездействует. Диагностика освобождённых кадров устройства учитывает зарегистрированные кадры с завершением; `Application` исключает оставленные неотправленные намерения из счётчиков устройства. Обычное повторное использование кадра требует окончания и вычислительной работы, и точного зарегистрированного завершения.
