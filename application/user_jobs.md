@@ -1,58 +1,30 @@
-# User jobs
+# Пользовательские задачи
 
-A subclass starts independent compute work with protected `RunAsync(F)`. It immediately submits to the
-Engine-owned TaskSystem and returns a move-only `NCommon::Job<T>`. No frame slot, arena, dependency or
-checkpoint is attached, including when called from `OnUpdate`. Jobs share worker capacity with frames;
-this is not a guarantee of frame latency or preemption.
+Защищённый метод `RunAsync(F)` позволяет наследнику запустить независимое вычисление. Он немедленно публикует задачу в принадлежащем `Engine` планировщике `TaskSystem` и возвращает перемещаемый, но не копируемый `NCommon::Job<T>`. Задача не привязана к слоту кадра, арене, зависимости или контрольной точке, даже если создана из `OnUpdate()`. Пользовательские задачи используют те же рабочие потоки, что и кадры; ограничение задержки кадра или вытеснение не гарантируются.
 
 ```cpp
 m_job = RunAsync([input = std::move(input)] { return Compute(input); });
-// In a later update:
+// В одном из следующих обновлений:
 if (auto result = m_job.TryTake()) {
     if (*result) {
         Use(std::move(result->value()));
     } else {
         Report(result->error());
     }
-    // Do not poll this consumed handle again.
+    // Не обращаться повторно к уже потреблённому результату.
 }
 ```
 
-`IsReady()` is a nonblocking readiness query and returns false on invalid, moved-from or consumed handles.
-`TryTake()` returns nullopt while pending, then one `expected<T, ErrorInfo>`. Further consumption throws
-`INVALID_STATE`. The same handle must not be consumed or moved concurrently. If moving a result into the
-consumer throws, the handle is still consumed. `void`, move-only values and move-only callables are supported;
-reference results are rejected. The stored callable is invoked once as an rvalue on a compute worker.
+`IsReady()` проверяет готовность без блокировки и возвращает `false` для недействительных, перемещённых или уже потреблённых дескрипторов. `TryTake()` возвращает `nullopt` до завершения, затем единственный `expected<T, ErrorInfo>`. Повторное получение результата вызывает `INVALID_STATE`. Одновременное получение результата или перемещение одного дескриптора несколькими потоками запрещено. Если перемещение результата в потребитель выбрасывает исключение, результат всё равно считается полученным. Поддерживаются `void`, перемещаемые значения и вызываемые объекты с уникальным владением; результаты по ссылке запрещены. Сохранённый вызываемый объект вызывается ровно один раз с категорией значения rvalue в вычислительном рабочем потоке.
 
-Worker exceptions become result errors: project exceptions retain their code/message, allocation failures
-use `OUT_OF_MEMORY`, other exceptions use `UNKNOWN`. Admission/allocation/callable-construction failures before
-submission throw synchronously. Job failure does not fail the frame pipeline.
+Исключения рабочих потоков преобразуются в ошибки результата: исключения проекта сохраняют код и сообщение, ошибки выделения памяти используют `OUT_OF_MEMORY`, остальные — `UNKNOWN`. Ошибки допуска, выделения памяти и построения вызываемого объекта до публикации задачи выбрасываются синхронно. Ошибка пользовательской задачи не переводит конвейер кадра в состояние ошибки.
 
-Admission requires a running Application. `RequestCancel()` asynchronously requests cancellation and does
-not execute user `stop_callback` functions on its caller. Invalid/moved/consumed handles throw `INVALID_STATE`.
-Queued cancellation claims the job before worker execution and publishes `CANCELLED` without needing a free
-compute worker. Running work receives a cooperative `std::stop_token` when the callable accepts one; the token
-overload is preferred when both signatures are invocable. There is no forced interruption of C++ code.
+Запуск требует работающего `Application`. `RequestCancel()` асинхронно запрашивает отмену и не выполняет пользовательские `stop_callback` в вызывающем потоке. Недействительные, перемещённые и потреблённые дескрипторы вызывают `INVALID_STATE`. Отмена задачи в очереди захватывает её до начала исполнения и публикует `CANCELLED`, не дожидаясь свободного вычислительного потока. Выполняющаяся задача получает `std::stop_token` для совместной отмены, если вызываемый объект принимает такой параметр. Если доступны обе сигнатуры, выбирается вариант с токеном. Принудительного прерывания кода C++ нет.
 
-Cancellation accepted before finalization replaces a successful result with `CANCELLED`; a real worker failure
-is preserved. A cancellation arriving after finalization cannot change the result. `TryTake()` consumes cancellation
-as an `expected` error with `EError::CANCELLED`, just like any other terminal outcome.
+Отмена, принятая до окончательной публикации результата, заменяет успешный результат на `CANCELLED`; возникшая ошибка рабочего потока сохраняется. После окончательной публикации отмена результата не меняет. `TryTake()` возвращает отмену как ошибку `expected` с `EError::CANCELLED`, аналогично другим конечным исходам.
 
-Stop closes admission, cancels queued jobs, requests cooperative stop on running jobs, drains the existing
-executor and joins cancellation finalization before runtime owners are destroyed. Each Run creates a fresh scope;
-old handles only refer to their retained results. Destroying a Job neither cancels nor detaches its work. A failed
-job whose result is abandoned emits one `GraphicsEngine unobserved user job failure` diagnostic to stderr, including
-its code/message; observed failures and cancellation do not emit this diagnostic. Abandonment after runtime destruction
-still reports. Failure does not latch Engine's frame error state.
+`Stop()` закрывает допуск, отменяет задачи в очереди, запрашивает совместную остановку выполняющихся задач, дожидается завершения общего исполнителя и обработки отмен перед уничтожением владельцев среды исполнения. Каждый `Run()` создаёт новую область; старые дескрипторы обращаются только к сохранённым результатам. Уничтожение `Job` не отменяет и не отделяет задачу. Необработанная ошибка оставленной задачи выводит одну диагностику `GraphicsEngine unobserved user job failure` в `stderr` с кодом и сообщением; полученные ошибки и отмена не выводятся. Диагностика сохраняется и после уничтожения среды исполнения. Ошибка задачи не записывается в канал ошибок кадров `Engine`.
 
-The runtime owns one cancellation/retirement dispatcher thread per active Run. It never invokes compute bodies:
-these remain on TaskSystem workers. This keeps RequestCancel asynchronous even when a stop callback blocks, and
-allows cancellation with WorkerCount=1. Callbacks, capture destructors and result destructors execute outside internal
-Engine/scope/task locks. A callback registered after its token is already stopped can execute inline on the registering thread, as specified
-by std::stop_callback. Stop callbacks must remain short and must not wait for other cancellation callbacks or scope
-shutdown: they serialize on this dispatcher. Arbitrary blocking user callbacks can delay shutdown.
+Среда исполнения владеет одним потоком обработки отмены и освобождения ресурсов на каждый активный `Run()`. Этот поток не выполняет вычислительные тела: они остаются в `TaskSystem`. Поэтому `RequestCancel()` остаётся асинхронным, даже если обработчик остановки блокируется, и отмена работает при `WorkerCount=1`. Обработчики и деструкторы захватов/результатов выполняются вне внутренних блокировок `Engine`, области и задач. Обработчик `std::stop_callback`, зарегистрированный после запроса остановки, может вызваться непосредственно в зарегистрировавшем потоке по правилам стандартной библиотеки. Обработчики остановки должны быть короткими и не ожидать других обработчиков или остановки области: они последовательно обрабатываются одним потоком. Длительный пользовательский обработчик может задержать остановку.
 
-Captures must own their data or keep borrowed objects alive until completion. There is no implicit mutable
-World access or main-thread affinity. A worker or cancellation callback must not call runtime Stop or wait for
-work on its own executor/dispatcher. Owners captured by reference must outlive drain; subclass members must not be
-destroyed while jobs still use them. Coroutine ownership and suspension remain FEATURE-0076/FEATURE-0077.
+Захваты должны владеть своими данными либо гарантировать жизнь заимствованных объектов до завершения. Не предоставляется неявный доступ к изменяемому `World` или выполнение в основном потоке. Рабочий поток и обработчик отмены не должны вызывать `Stop()` среды исполнения или ждать работу собственного исполнителя. Владельцы, захваченные по ссылке, обязаны пережить завершение всех задач; поля наследника нельзя уничтожать, пока задачи их используют. Владение корутинами и приостановка исполнения относятся к `FEATURE-0076` и `FEATURE-0077`.
