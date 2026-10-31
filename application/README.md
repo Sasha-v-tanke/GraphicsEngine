@@ -74,7 +74,7 @@ before terminal notification. Stop does not wait for a concurrently executing ca
 must be joined before executor destruction. Reentrant Start/Drain is rejected. User payload destruction must not wait
 for another queued main command. Window/native resources outlive executor Stop and worker drain.
 
-This internal foundation intentionally does not expose RunOnMainThread, move OnUpdate to workers, add user jobs or frame
-priorities. FEATURE-0074 adds the synchronous facade; IMPROVE-0037 adds frame-origin ordering/fairness after its prerequisites.
+Subclasses use protected `RunOnMainThread` for synchronous void actions; see [main-thread dispatch](main_thread.md).
+Moving OnUpdate to workers and frame-origin ordering/fairness remain separate integration stages.
 
 User-facing independent compute work is available through `RunAsync` and `Job<T>`; see [user jobs](user_jobs.md).

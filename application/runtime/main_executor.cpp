@@ -102,6 +102,31 @@ MainExecutor::Generation MainExecutor::GetGeneration() const {
     return m_generation;
 }
 
+void MainExecutor::Invoke(Command command) {
+    if (!command) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Main command is empty");
+    }
+    Generation generation = 0;
+    {
+        std::lock_guard lock{m_mutex};
+        if (m_generation == 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Main executor has never started");
+        }
+        if (!m_running) {
+            return;
+        }
+        generation = m_generation;
+    }
+    if (std::this_thread::get_id() == m_consumer) {
+        command();
+        return;
+    }
+    const MainCompletion completion = Post(generation, std::move(command));
+    if (completion.Wait() == EMainCommandState::FAILED) {
+        std::rethrow_exception(completion.GetFailure());
+    }
+}
+
 MainCompletion MainExecutor::Post(Generation generation, Command command) {
     if (!command) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Main command is empty");

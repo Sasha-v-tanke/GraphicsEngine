@@ -111,6 +111,8 @@ public:
     void Stop() noexcept;
     [[nodiscard]] Generation GetGeneration() const;
     [[nodiscard]] MainCompletion Post(Generation generation, Command command);
+    // Direct on the consumer, otherwise posts and waits without TaskSystem work stealing.
+    void Invoke(Command command);
     std::size_t Drain(std::size_t limit = DISPATCH_BATCH);
     [[nodiscard]] std::size_t GetPendingCount() const;
 
