@@ -720,6 +720,9 @@ TEST_F(ApplicationTest, SingleWorkerMainDispatchIsSynchronousAndFailureReturnsTo
     bool receivedFailure = false;
     application.Update = [&] {
         if (job) {
+            if (job->IsReady()) {
+                application.RequestShutdown();
+            }
             return;
         }
         job.emplace(application.RunAsync([&] {
@@ -734,10 +737,7 @@ TEST_F(ApplicationTest, SingleWorkerMainDispatchIsSynchronousAndFailureReturnsTo
             } catch (const std::runtime_error& error) {
                 receivedFailure = std::string_view{error.what()} == "queued failure";
             }
-            application.RunOnMainThread([&] {
-                ++calls;
-                application.RequestShutdown();
-            });
+            application.RunOnMainThread([&] { ++calls; });
         }));
     };
     application.Run();
@@ -769,6 +769,7 @@ TEST_F(ApplicationTest, PendingSynchronousDispatchSkipsBeforeSingleWorkerJoinAnd
             std::this_thread::yield();
         }
         EXPECT_EQ(executor.GetPendingCount(), 1U);
+        job->RequestCancel();
         application.RequestShutdown();
     };
     application.Run();
@@ -776,7 +777,8 @@ TEST_F(ApplicationTest, PendingSynchronousDispatchSkipsBeforeSingleWorkerJoinAnd
     EXPECT_EQ(returned, 2);
     const auto result = job->TryTake();
     ASSERT_TRUE(result);
-    ASSERT_TRUE(result->has_value());
+    ASSERT_FALSE(result->has_value());
+    EXPECT_EQ(result->error().Code, NCommon::EError::CANCELLED);
     m_state.ShouldClose = false;
     application.Update = [&] {
         application.RunOnMainThread([&] { ++actions; });

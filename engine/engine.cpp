@@ -185,7 +185,7 @@ public:
 
             m_stopInProgress = true;
             m_activeStopGeneration = observedGeneration;
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             NotifyProgressLocked();
             taskSystem = std::move(m_taskSystem);
             userJobs = std::move(m_userJobs);
@@ -317,7 +317,7 @@ public:
             record.HasDrawTask = true;
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             m_updateAdmissionOpen = true;
 
             try {
@@ -366,6 +366,13 @@ public:
     }
 
 private:
+    void EnterStoppingLocked() noexcept {
+        if (m_userJobs) {
+            m_userJobs->CloseAdmission();
+        }
+        m_state = EEngineState::STOPPING;
+    }
+
     struct FrameRuntimeRecord {
         NController::FrameHandle Frame;
         FrameKey Key;
@@ -428,7 +435,7 @@ private:
             record->HasUpdateTask = true;
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             m_frameScheduler->AbortFrame(frame);
             *record = {};
             NotifyProgressLocked();
@@ -587,7 +594,7 @@ private:
             std::lock_guard lock{m_mutex};
 
             SetLastErrorLocked(MakeRuntimeError(error));
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             if (!m_frameScheduler->GetGpuCompletion(frame).valid()) {
                 ClearFrameRecordLocked(frame);
                 m_frameScheduler->AbortFrame(frame);
@@ -649,7 +656,7 @@ private:
                                                                    .value_or(MakeRuntimeError(std::make_exception_ptr(
                                                                            std::runtime_error{"Frame task failed"})))));
                 }
-                m_state = EEngineState::STOPPING;
+                EnterStoppingLocked();
             }
             const auto completion = m_frameScheduler->GetGpuCompletion(record.Frame);
             if (completion.valid()) {
@@ -663,7 +670,7 @@ private:
                     completion.get();
                 } catch (...) {
                     SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-                    m_state = EEngineState::STOPPING;
+                    EnterStoppingLocked();
                     failed = true;
                 }
                 m_frameScheduler->CompleteGpu(record.Frame);

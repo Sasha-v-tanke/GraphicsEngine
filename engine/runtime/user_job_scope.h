@@ -18,6 +18,10 @@ public:
     ~UserJobScope();
     void Add(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job);
     void Remove(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job);
+    void CloseAdmission() noexcept {
+        m_signal->Stopping.store(true);
+        m_signal->Wake();
+    }
     void RequestStop() noexcept;
     // After executor drain, outside Engine locks and outside its workers.
     void Join() noexcept;

@@ -11,6 +11,7 @@ namespace NCommon::NJobInternal {
 
 struct JobSignal {
     std::atomic<std::uint64_t> Version{0};
+    std::atomic_bool Stopping{false};
     void Wake() noexcept {
         Version.fetch_add(1);
         Version.notify_one();
@@ -63,6 +64,15 @@ public:
     void Run() noexcept {
         EJobPhase phase = EJobPhase::QUEUED;
         if (!Phase.compare_exchange_strong(phase, EJobPhase::RUNNING)) {
+            return;
+        }
+        // The scope closes under Engine admission serialization. Recheck after claiming:
+        // a worker that raced with Stop must not enter a still-queued user callable.
+        if (Signal && Signal->Stopping.load()) {
+            Phase.store(EJobPhase::FINALIZING);
+            ReleaseBody();
+            CancelResult();
+            Publish();
             return;
         }
         ExecuteBody();

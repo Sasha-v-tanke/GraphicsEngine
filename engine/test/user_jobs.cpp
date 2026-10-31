@@ -566,3 +566,40 @@ TEST(UserJobCancellation, ConcurrentAdmissionAndStopNeverLeavePendingHandles) {
 }
 
 } // namespace
+
+namespace {
+
+TEST(UserJobCancellation, FrameFailureClosesUserScopeBeforeQueuedCallableCanStart) {
+    class FailingFrames final: public NEngine::NRuntime::IFrameRuntime {
+    public:
+        explicit FailingFrames(std::shared_ptr<ControlledJob> gate)
+            : m_gate(std::move(gate)) {
+        }
+        void Update(const NEngine::NRuntime::FrameContext&) override {
+            m_gate->Wait();
+            throw std::runtime_error("frame failed");
+        }
+        void Draw(const NEngine::NRuntime::FrameContext&) override {
+        }
+
+    private:
+        std::shared_ptr<ControlledJob> m_gate;
+    };
+    const auto gate = std::make_shared<ControlledJob>();
+    std::future<void> entered = gate->Started.get_future();
+    auto engine = NEngine::NRuntime::EngineFactory::Create({.WorkerCount = 1}, std::make_unique<FailingFrames>(gate));
+    engine->Start();
+    const OpenJobOnExit guard{gate};
+    ASSERT_TRUE(engine->Update());
+    ASSERT_EQ(entered.wait_for(TIMEOUT), std::future_status::ready);
+    std::atomic_bool invoked{false};
+    auto queued = engine->RunAsync([&invoked] { invoked = true; });
+    gate->Open();
+    ASSERT_TRUE(WaitReady(queued));
+    EXPECT_EQ(queued.TryTake()->error().Code, NCommon::EError::CANCELLED);
+    EXPECT_FALSE(invoked.load());
+    engine->Stop();
+    EXPECT_TRUE(engine->GetLastError().has_value());
+}
+
+} // namespace

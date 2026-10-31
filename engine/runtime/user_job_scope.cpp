@@ -26,6 +26,7 @@ void UserJobScope::Remove(const std::shared_ptr<NCommon::NJobInternal::JobContro
 }
 
 void UserJobScope::RequestStop() noexcept {
+    CloseAdmission();
     std::lock_guard lock{m_mutex};
     for (const std::shared_ptr<NCommon::NJobInternal::JobControl>& job: m_jobs) {
         job->RequestCancel();
@@ -49,6 +50,9 @@ void UserJobScope::Dispatch() noexcept {
         {
             std::lock_guard lock{m_mutex};
             for (auto it = m_jobs.begin(); it != m_jobs.end(); ++it) {
+                if (m_signal->Stopping.load()) {
+                    (*it)->RequestCancel();
+                }
                 const EJobPhase phase = (*it)->Phase.load();
                 if (phase == EJobPhase::READY) {
                     selected = std::move(*it);
