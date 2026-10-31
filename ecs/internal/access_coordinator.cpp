@@ -142,7 +142,11 @@ struct AccessCoordinator::State: std::enable_shared_from_this<State> {
         std::vector<AccessConflict> Conflicts;
         EOperationStatus Status = EOperationStatus::WAITING;
         std::exception_ptr Failure;
+        bool IsRetiring = false;
     };
+    static bool HoldsAccess(const Operation& operation) {
+        return !IsTerminal(operation.Status) || operation.Function != nullptr || operation.IsRetiring;
+    }
     explicit State(NCommon::TaskSystem& tasks)
         : Tasks(tasks) {
     }
@@ -202,11 +206,15 @@ struct AccessCoordinator::State: std::enable_shared_from_this<State> {
     void ReleaseTerminalFunctions() {
         for (;;) {
             std::shared_ptr<std::function<void()>> released;
+            std::size_t retiredIndex = 0;
             {
                 const std::lock_guard lock{Mutex};
-                for (Operation& operation: Operations) {
+                for (std::size_t index = 0; index < Operations.size(); ++index) {
+                    Operation& operation = Operations[index];
                     if (IsTerminal(operation.Status) && operation.Function) {
                         released = std::move(operation.Function);
+                        operation.IsRetiring = true;
+                        retiredIndex = index;
                         ++Retiring;
                         break;
                     }
@@ -218,6 +226,7 @@ struct AccessCoordinator::State: std::enable_shared_from_this<State> {
             released.reset();
             {
                 const std::lock_guard lock{Mutex};
+                Operations[retiredIndex].IsRetiring = false;
                 --Retiring;
                 Changed.notify_all();
             }
@@ -317,7 +326,7 @@ void AccessCoordinator::RegisterDomain(DataDomainKey domain, const std::shared_p
                 GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Domain generation must increase");
             }
             for (const State::Operation& operation: m_state->Operations) {
-                if (!IsTerminal(operation.Status) && std::ranges::any_of(operation.Footprints, [&](const auto& access) {
+                if (State::HoldsAccess(operation) && std::ranges::any_of(operation.Footprints, [&](const auto& access) {
                         return access.Domain == existing.Key;
                     })) {
                     GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Domain is still in use");
@@ -358,7 +367,7 @@ OperationKey AccessCoordinator::Schedule(std::vector<AccessFootprint> footprints
         }
         for (std::size_t index = 0; index < m_state->Operations.size(); ++index) {
             const State::Operation& earlier = m_state->Operations[index];
-            if (IsTerminal(earlier.Status)) {
+            if (!State::HoldsAccess(earlier)) {
                 continue;
             }
             for (const AccessFootprint& left: earlier.Footprints) {

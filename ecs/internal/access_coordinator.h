@@ -108,6 +108,7 @@ public:
                                         std::function<void()> function,
                                         std::span<const OperationKey> dependencies = {});
     // Pending only: running work is never interrupted or loses its access lease.
+    // Logical cancellation retains the reservation until capture retirement finishes.
     [[nodiscard]] bool Cancel(OperationKey operation);
     [[nodiscard]] EOperationStatus GetStatus(OperationKey operation) const;
     [[nodiscard]] std::exception_ptr GetError(OperationKey operation) const;

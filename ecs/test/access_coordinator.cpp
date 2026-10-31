@@ -320,6 +320,71 @@ TEST(AccessCoordinator, QueuedCancellationSkipsCallbackAndCaptureDestructorsCanR
     tasks.Wait(hold);
     tasks.WaitIdle();
 }
+TEST(AccessCoordinator, CancelledCaptureRetirementRetainsReservationAndDomainGeneration) {
+    NCommon::TaskSystem tasks{1};
+    AccessCoordinator coordinator{tasks};
+    auto storage = std::make_shared<int>(42);
+    const std::weak_ptr<int> weak = storage;
+    coordinator.RegisterDomain(TEST_DOMAIN, storage);
+    storage.reset();
+    HeldWork workerBlocker;
+    const auto heldFunction = workerBlocker.Function();
+    (void)tasks.Submit([heldFunction](NCommon::TaskContext&) { heldFunction(); });
+    ASSERT_TRUE(workerBlocker.WaitStarted());
+    HeldWork retirement;
+    struct Capture {
+        std::function<void()> Cleanup;
+        std::weak_ptr<int> Storage;
+        ~Capture() {
+            Cleanup();
+            const auto pinned = Storage.lock();
+            EXPECT_NE(pinned, nullptr);
+            if (pinned) {
+                EXPECT_EQ(*pinned, 42);
+            }
+        }
+    };
+    auto capture = std::make_shared<Capture>(retirement.Function(), weak);
+    const OperationKey pending = coordinator.Schedule({Access(EAccessRequirement::WRITE)}, [capture] { FAIL(); });
+    capture.reset();
+    auto cancel = std::async(std::launch::async, [&] { return coordinator.Cancel(pending); });
+    EXPECT_TRUE(retirement.WaitStarted());
+    EXPECT_EQ(coordinator.GetStatus(pending), EOperationStatus::CANCELLED);
+    bool replacementRejected = false;
+    try {
+        Register(coordinator, {1, 1, 2});
+    } catch (const NCommon::Exception&) {
+        replacementRejected = true;
+    }
+    EXPECT_TRUE(replacementRejected);
+    EXPECT_FALSE(weak.expired());
+    if (!replacementRejected) {
+        // Report the pre-fix failure without hanging the held cleanup on unwind.
+        retirement.Open();
+        (void)cancel.get();
+        workerBlocker.Open();
+        tasks.WaitIdle();
+        return;
+    }
+    std::atomic<int> newWriterCalls{0};
+    const OperationKey next = coordinator.Schedule({Access(EAccessRequirement::WRITE)}, [&] { ++newWriterCalls; });
+    EXPECT_EQ(coordinator.GetDependencies(next), std::vector<OperationKey>{pending});
+    EXPECT_EQ(coordinator.GetStatus(next), EOperationStatus::CANCELLED);
+    EXPECT_EQ(newWriterCalls, 0);
+    retirement.Open();
+    EXPECT_EQ(cancel.wait_for(2s), std::future_status::ready);
+    EXPECT_TRUE(cancel.get());
+    // The same generation can admit new work only after capture quiescence.
+    const OperationKey afterRetirement =
+            coordinator.Schedule({Access(EAccessRequirement::WRITE)}, [&] { ++newWriterCalls; });
+    workerBlocker.Open();
+    tasks.WaitIdle();
+    EXPECT_EQ(coordinator.GetStatus(afterRetirement), EOperationStatus::COMPLETED);
+    EXPECT_EQ(newWriterCalls, 1);
+    Register(coordinator, {1, 1, 2});
+    EXPECT_TRUE(weak.expired());
+}
+
 TEST(AccessCoordinator, ResourceScopesAndCanonicalSetsHaveExactConflicts) {
     for (const bool resources: {false, true}) {
         NCommon::TaskSystem tasks{1};

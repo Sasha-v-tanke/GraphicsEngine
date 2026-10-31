@@ -54,6 +54,11 @@ work; this coordinator never assumes a spawned child completed with its parent.
 
 Pending cancellation is atomic with the QUEUED-to-RUNNING transition. Cancel on a
 running or terminal operation returns false: running access cannot be revoked.
+Logical CANCELLED does not release the access reservation: both stored and currently
+retiring captures keep it live until their destructors finish. Domain replacement
+and conflicting admission check that quiescence separately from status. Work
+admitted concurrently with cancellation still observes the cancelled predecessor
+and is cancelled conservatively; a later admission after retirement can proceed.
 A cancelled queued wrapper may still run as a no-op; it retains only weak state
 and never user work. Failure is captured as exception_ptr. Failed/cancelled
 predecessors cancel downstream rather than exposing partial results. Failure also
