@@ -1,28 +1,40 @@
-# Оконная система
+# Window
 
-`Window` предоставляет оконную абстракцию GraphicsEngine, независимую от конкретной библиотеки. Публичный интерфейс не зависит от GLFW, Qt, SDL, Vulkan и OpenGL. Текущая оконная реализация использует GLFW.
+`Window` предоставляет framework-independent оконную абстракцию GraphicsEngine.
 
-## Архитектура
+Публичный API модуля не зависит от GLFW, Qt, SDL, Vulkan, OpenGL или других
+конкретных window/graphics API.
+
+## Architecture
 
 ```text
-Application
-    |
-    v
-  Window
-    |
-    | владеет
-    v
-IWindowEngine
-    |
-    v
-   GLFW
+User / Application
+        |
+        v
+     Window
+        |
+        | owns
+        v
+  IWindowEngine
+        ^
+        |
+        +---- GLFW
+        |
+        +---- Qt
+        |
+        +---- SDL
 ```
 
-## Привязка к потоку
+## Threading
 
-`Window` требует исполнения определённых операций в потоке владельца. Им считается поток, в котором успешно завершился конструктор `Window`. Создание и уничтожение окна должны происходить в одном потоке.
+`Window` имеет thread affinity.
 
-Только поток владельца может вызывать:
+Поток, на котором успешно завершился constructor `Window`, является его
+owning thread.
+
+Создание и уничтожение `Window` должны происходить на одном owning thread.
+
+Следующие операции разрешено вызывать только на owning thread:
 
 - `SetTitle()`;
 - `SetSize()`;
@@ -32,24 +44,56 @@ IWindowEngine
 - `RequestClose()`;
 - `ProcessEvents()`.
 
-Обработчики `OnResize()`, `OnFramebufferResize()` и `OnClose()` также всегда вызываются в потоке владельца.
+Window callbacks:
 
-`IWindowEngine` и конкретная реализация оконной библиотеки имеют ту же привязку к потоку, что и владеющий ими `Window`. Реализация не переносит обработчики событий окна на рабочие потоки. `Window` не является потокобезопасным и не предоставляет внутренней синхронизации конкурентных обращений.
+- `OnResize()`;
+- `OnFramebufferResize()`;
+- `OnClose()`;
 
-Если конкретная оконная библиотека требует более строгой привязки, реализация обязана её соблюдать. Рабочие потоки `Engine` не должны непосредственно обращаться к публичным методам `Window`.
+также всегда вызываются на owning thread.
 
-## Реализация GLFW
+`IWindowEngine` и concrete framework implementation имеют ту же thread affinity,
+что и владеющий ими `Window`.
 
-GLFW реализует внутренний интерфейс `IWindowEngine`. Публичные заголовки `Window` не включают заголовки GLFW и не раскрывают `GLFWwindow*`. Внутри модуля события GLFW преобразуются в `OnResize()`, `OnFramebufferResize()` и `OnClose()`.
+Concrete implementation не переносит window callbacks на worker threads.
 
-`WindowRuntime` фиксирует поток приложения для оконной среды. При самостоятельном использовании `Window` объект `WindowRuntime` нужно создать в основном потоке приложения или процесса до создания окна GLFW и удерживать дольше всех окон. `Application` выполняет это автоматически.
+`Window` не является thread-safe и не выполняет внутреннюю synchronization для
+доступа с нескольких потоков.
 
-Среда GLFW инициализируется отложенно после регистрации `WindowRuntime` и завершается после уничтожения последнего действующего окна. Несколько окон разделяют одно владение средой и один зарегистрированный поток приложения.
+Если конкретный framework имеет более строгие ограничения, concrete
+implementation обязана соблюдать это ограничение дополнительно.
 
-В зарегистрированном основном потоке выполняются `glfwInit`, `glfwTerminate`, создание и уничтожение окон GLFW, а также обработка событий. Реализация проверяет поток перед операциями с окном.
+Engine worker threads не должны напрямую вызывать Window API.
 
-Обработчики GLFW не вызывают пользовательские `Window::On*()` напрямую: они только помещают независимые от оконной библиотеки события во внутреннюю очередь. `ProcessEvents()` отправляет накопленные события обработчикам после возврата из `glfwPollEvents()`.
+## GLFW implementation
 
-`Window` не создаёт поверхность Vulkan или контекст OpenGL. Для GLFW задаётся `GLFW_CLIENT_API = GLFW_NO_API`; взаимодействие окна и графического интерфейса находится в отдельном слое интеграции.
+GLFW является первой concrete implementation за внутренним `IWindowEngine`.
 
-Требование GLFW о выполнении операций в основном потоке остаётся правилом конкретной реализации и не приводит к появлению типов и заголовков GLFW в публичном оконном интерфейсе.
+Публичные headers `Window` не включают GLFW headers и не раскрывают `GLFWwindow*`.
+Callbacks GLFW преобразуются внутри модуля в `OnResize()`,
+`OnFramebufferResize()` и `OnClose()`.
+
+`WindowRuntime` фиксирует application thread для оконного runtime. Для
+standalone использования `Window` объект `WindowRuntime` должен быть создан на
+application/process main thread до создания GLFW-window и жить дольше окон.
+`Application` делает это автоматически.
+
+GLFW runtime инициализируется лениво после регистрации `WindowRuntime` и
+завершается после уничтожения последнего active window. Несколько окон
+разделяют один runtime ownership и один зарегистрированный application thread.
+
+На зарегистрированном application thread должны выполняться `glfwInit`,
+`glfwTerminate`, создание и уничтожение всех GLFW-window, а также event
+processing. GLFW implementation проверяет этот thread перед window operations.
+
+GLFW callbacks не вызывают пользовательские `Window::On*()` напрямую. Callback
+только кладёт framework-independent событие во внутреннюю очередь, а
+`ProcessEvents()` диспатчит накопленные события после возврата из
+`glfwPollEvents()`.
+
+Window не создаёт Vulkan surface и не создаёт OpenGL context. Для GLFW-window
+используется `GLFW_CLIENT_API = GLFW_NO_API`; связь window с graphics backend
+должна жить в отдельном integration layer.
+
+GLFW main-thread requirement остаётся требованием concrete implementation и не
+добавляет GLFW types/includes в framework-independent публичный API.
