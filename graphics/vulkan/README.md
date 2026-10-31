@@ -243,7 +243,7 @@ The device must outlive the pipeline, and the caller must complete all GPU uses 
 Descriptor layouts and push constants are not part of this initial pipeline descriptor.
 Non-solid rasterization and independent blending are rejected because VulkanDevice does not enable
 those optional features. Vertex-input and attachment limits are checked before driver creation.
-Pipeline caching and pass recording are delivered by their subsequent cards.
+Pipeline reuse is provided by VulkanPipelineManager; graph execution remains a subsequent integration.
 
 The heavy device smoke creates color and depth-only pipelines from embedded cooked SPIR-V fixtures,
 repeats creation/destruction, checks unsupported rasterization, and fails on validation errors.
@@ -292,3 +292,40 @@ Contract tests verify runtime attachment selection, clear/load/store settings, r
 contents, rejection before recording and balanced scope end on exceptions. Existing ApplicationPresentation
 and swapchain lifecycle heavy tests now exercise the real dynamic color pass with validation through
 resize, suspension/restore, WSI statuses and repeated frame recycling.
+
+## Pipeline preparation and cache (FEATURE-0068)
+
+VulkanPipelineManager is backend-owned and scoped to one logical device. Construct a
+NGraphics::PipelineKey from a validated descriptor, Prepare(key) during loading/warmup,
+and retain the returned pipeline pointer for recording. FindReady(key) only looks up
+published entries; a miss returns nullptr and never compiles a pipeline in the draw path.
+Keys retain shader snapshots and compare complete descriptors after hashing; shader-stage
+and vertex binding/attribute declaration order do not change identity. Formats, blend
+attachment order, raster/depth state, topology, samples, entry points and artifact contents do.
+
+The MVP has one fixed empty pipeline layout and dynamic viewport/scissor, matching
+VulkanGraphicsPipeline. Descriptor layouts, push constants or a different dynamic-state
+policy must be added to the descriptor and key together when implemented; no native layout
+identity leaks into Renderer. Graphics' existing Create/Destroy handle registry semantics
+are unchanged. FEATURE-0031 wires this preparation cache into graph execution, rather than
+adding resource operations to the clear-only presentation profile.
+
+The manager owns one VkPipelineCache and all native pipelines/layouts, with no eviction.
+Concurrent Prepare calls serialize lookup/creation/publication and driver cache access.
+A failed creation publishes no entry; later preparation can retry. Prepare can run on a
+caller-owned loading executor as the extension point for background warmup; FindReady
+currently shares the cache mutex, so prepare before frames for the baseline. The hot path
+can retain stable pointers rather than repeatedly hash descriptors or contend with warmup.
+
+Stop/join all preparation and recording work and complete every GPU use before manager
+destruction; destroy the manager before its device. No manager/native object is shared
+across devices, and a new manager starts empty. It does not wait a queue or device during
+lookup, creation or destruction. Keeping entries until this shutdown boundary avoids unsafe
+eviction based only on CPU reference counts; hot reload/deferred eviction is separate work.
+Disk blobs/compatibility validation, eviction, async scheduling and warmup tuning remain
+production hardening, not implicit behavior of this foundation.
+
+CPU tests cover key snapshots, field coverage, canonical order, invalid admission, reload
+and hash-bucket collisions. The validation-required heavy device smoke checks real driver
+create/reuse, noncreating lookup, concurrent equal misses, non-null VkPipelineCache use,
+failure/retry and manager teardown/recreation. No submitted GPU work is live at teardown.

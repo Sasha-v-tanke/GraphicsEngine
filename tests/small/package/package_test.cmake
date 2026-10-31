@@ -214,6 +214,7 @@ set(
     "GraphicsEngine/graphics/graphics_capabilities.h"
     "GraphicsEngine/graphics/graphics_config.h"
     "GraphicsEngine/graphics/graphics_pipeline.h"
+    "GraphicsEngine/graphics/pipeline_key.h"
     "GraphicsEngine/graphics/shader.h"
     "GraphicsEngine/graphics/image.h"
     "GraphicsEngine/graphics/material.h"

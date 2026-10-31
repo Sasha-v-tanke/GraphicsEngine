@@ -12,7 +12,8 @@ class VulkanGraphicsPipeline final: public NCommon::NonTransferable {
 public:
     VulkanGraphicsPipeline(const VulkanDevice& device,
                            const VulkanPhysicalDeviceSelection& physicalDevice,
-                           const NGraphics::GraphicsPipelineDescriptor& descriptor);
+                           const NGraphics::GraphicsPipelineDescriptor& descriptor,
+                           VkPipelineCache cache = VK_NULL_HANDLE);
     ~VulkanGraphicsPipeline();
 
     [[nodiscard]] VkPipeline GetHandle() const noexcept;
