@@ -86,6 +86,10 @@ void Application::SubmitUserJob(std::function<void()> function) {
     m_frameLoop->SubmitUserJob(std::move(function));
 }
 
+void Application::RunOnMainThreadImpl(void* context, void (*invoke)(void*)) {
+    m_frameLoop->GetMainExecutor().Invoke([context, invoke] { invoke(context); });
+}
+
 Application::~Application() {
     if (m_frameLoop != nullptr) {
         m_frameLoop->Stop();

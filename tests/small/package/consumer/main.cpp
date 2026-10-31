@@ -36,6 +36,9 @@
 class UserJobsConsumer: public NApplication::Application {
 public:
     using Application::Application;
+    void MainAction() {
+        RunOnMainThread([value = std::make_unique<int>(1)] { (void)value; });
+    }
     NCommon::Job<std::unique_ptr<int>> StartJob() {
         return RunAsync([value = std::make_unique<int>(1)]() mutable { return std::move(value); });
     }

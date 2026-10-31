@@ -667,4 +667,157 @@ TEST_F(ApplicationTest, WindowCloseIsProcessedBetweenBoundedMainBatches) {
     EXPECT_EQ(m_state.ProcessEventsCount, 2);
 }
 
+class DispatchApplication final: public NApplication::Application {
+public:
+    using Application::Application;
+    using Application::RunAsync;
+    using Application::RunOnMainThread;
+    std::function<void()> Update;
+
+private:
+    void OnUpdate() override {
+        Update();
+    }
+};
+
+template<typename Function>
+concept MainDispatchable = requires(DispatchApplication& application, Function&& function) {
+    application.RunOnMainThread(std::forward<Function>(function));
+};
+
+static_assert(MainDispatchable<decltype([] {})>);
+static_assert(MainDispatchable<decltype([value = std::make_unique<int>(1)] { (void)value; })>);
+static_assert(!MainDispatchable<decltype([] { return 1; })>);
+static_assert(!MainDispatchable<int>);
+
+TEST_F(ApplicationTest, MainDispatchDirectNestedFailureAndLifecycle) {
+    DispatchApplication application{MakeConfig()};
+    int calls = 0;
+    EXPECT_THROW(application.RunOnMainThread([&] { ++calls; }), NCommon::Exception);
+    auto& executor = NApplication::NRuntime::ApplicationAccess::GetMainExecutor(application);
+    application.Update = [&] {
+        application.RunOnMainThread([&] {
+            EXPECT_EQ(executor.GetPendingCount(), 0U);
+            ++calls;
+            application.RunOnMainThread([value = std::make_unique<int>(2), &calls] { calls += *value; });
+        });
+        EXPECT_THROW(application.RunOnMainThread([] { throw std::runtime_error{"direct"}; }), std::runtime_error);
+        application.RequestShutdown();
+        application.RunOnMainThread([&] { ++calls; });
+    };
+    application.Run();
+    application.RunOnMainThread([&] { ++calls; });
+    EXPECT_EQ(calls, 3);
+}
+
+TEST_F(ApplicationTest, SingleWorkerMainDispatchIsSynchronousAndFailureReturnsToWorker) {
+    auto config = MakeConfig();
+    config.MaxActiveFrames = 1;
+    DispatchApplication application{config};
+    const std::thread::id mainThread = std::this_thread::get_id();
+    std::optional<NCommon::Job<void>> job;
+    int calls = 0;
+    bool receivedFailure = false;
+    application.Update = [&] {
+        if (job) {
+            return;
+        }
+        job.emplace(application.RunAsync([&] {
+            EXPECT_NE(std::this_thread::get_id(), mainThread);
+            application.RunOnMainThread([value = std::make_unique<int>(7), &calls, mainThread] {
+                EXPECT_EQ(std::this_thread::get_id(), mainThread);
+                calls += *value;
+            });
+            EXPECT_EQ(calls, 7);
+            try {
+                application.RunOnMainThread([] { throw std::runtime_error{"queued failure"}; });
+            } catch (const std::runtime_error& error) {
+                receivedFailure = std::string_view{error.what()} == "queued failure";
+            }
+            application.RunOnMainThread([&] {
+                ++calls;
+                application.RequestShutdown();
+            });
+        }));
+    };
+    application.Run();
+    ASSERT_TRUE(job);
+    const auto result = job->TryTake();
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(result->has_value());
+    EXPECT_TRUE(receivedFailure);
+    EXPECT_EQ(calls, 8);
+}
+
+TEST_F(ApplicationTest, PendingSynchronousDispatchSkipsBeforeSingleWorkerJoinAndDoesNotReplay) {
+    auto config = MakeConfig();
+    config.MaxActiveFrames = 1;
+    DispatchApplication application{config};
+    auto& executor = NApplication::NRuntime::ApplicationAccess::GetMainExecutor(application);
+    std::optional<NCommon::Job<void>> job;
+    int actions = 0;
+    int returned = 0;
+    application.Update = [&] {
+        job.emplace(application.RunAsync([&] {
+            application.RunOnMainThread([&] { ++actions; });
+            ++returned;
+            application.RunOnMainThread([&] { ++actions; });
+            ++returned;
+        }));
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (executor.GetPendingCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_EQ(executor.GetPendingCount(), 1U);
+        application.RequestShutdown();
+    };
+    application.Run();
+    EXPECT_EQ(actions, 0);
+    EXPECT_EQ(returned, 2);
+    const auto result = job->TryTake();
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->has_value());
+    m_state.ShouldClose = false;
+    application.Update = [&] {
+        application.RunOnMainThread([&] { ++actions; });
+        application.RequestShutdown();
+    };
+    application.Run();
+    EXPECT_EQ(actions, 1);
+}
+
+TEST_F(ApplicationTest, ConcurrentSynchronousDispatchAndStopReleaseAllCallers) {
+    DispatchApplication application{MakeConfig()};
+    std::vector<std::jthread> producers;
+    std::atomic<int> returned{0};
+    std::atomic<int> actions{0};
+    std::atomic<int> affinityErrors{0};
+    const std::thread::id mainThread = std::this_thread::get_id();
+    application.Update = [&] {
+        if (!producers.empty()) {
+            return;
+        }
+        for (int producer = 0; producer < 8; ++producer) {
+            producers.emplace_back([&] {
+                for (int index = 0; index < 50; ++index) {
+                    application.RunOnMainThread([&] {
+                        if (std::this_thread::get_id() != mainThread) {
+                            ++affinityErrors;
+                        }
+                        if (++actions == 20) {
+                            application.RequestShutdown();
+                        }
+                    });
+                    ++returned;
+                }
+            });
+        }
+    };
+    application.Run();
+    producers.clear();
+    EXPECT_EQ(returned, 400);
+    EXPECT_EQ(actions, 20);
+    EXPECT_EQ(affinityErrors, 0);
+}
+
 } // namespace

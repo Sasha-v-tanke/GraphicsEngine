@@ -1,7 +1,9 @@
 #pragma once
 
+#include <concepts>
 #include <functional>
 #include <memory>
+#include <type_traits>
 #include <utility>
 
 #include <GraphicsEngine/application/application_config.h>
@@ -47,6 +49,20 @@ public:
     [[nodiscard]] bool IsShutdownRequested() const;
 
 protected:
+    // Synchronously invokes short void work on the application thread; nested main calls run directly.
+    // Before the first Run throws INVALID_STATE. During/after Stop, pending work may silently skip.
+    // Callback exceptions propagate to the caller. Keep this object alive and hold no locks needed by the action.
+    // Affinity does not grant ECS access. A running action cannot be preempted.
+    template<typename Function>
+        requires(std::move_constructible<std::decay_t<Function>> && std::invocable<Function&> &&
+                 std::is_void_v<std::invoke_result_t<Function&>>)
+    void RunOnMainThread(Function&& function) {
+        // The synchronous completion keeps this borrowed callable alive until invocation or skip is final.
+        auto invoke = [&function] { std::invoke(function); };
+        RunOnMainThreadImpl(std::addressof(invoke),
+                            [](void* context) { (*static_cast<decltype(invoke)*>(context))(); });
+    }
+
     // Starts frame-independent work on TaskSystem. No implicit World/frame access or main-thread affinity.
     // Available during Run only; submission failure throws synchronously. TryTake never waits.
     // Stop drains accepted work. Captures must remain valid until completion; dropping Job does not cancel.
@@ -83,6 +99,8 @@ private:
     void RunFrame();
 
     void SubmitUserJob(std::function<void()> function);
+
+    void RunOnMainThreadImpl(void* context, void (*invoke)(void*));
 
 private:
     bool m_hasPresentation = false;

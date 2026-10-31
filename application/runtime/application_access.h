@@ -5,7 +5,7 @@
 
 namespace NApplication::NRuntime {
 
-// Internal composition seam; user dispatch is introduced separately by FEATURE-0074.
+// Internal composition seam for runtime integration and tests.
 class ApplicationAccess final {
 public:
     [[nodiscard]] static MainExecutor& GetMainExecutor(Application& application) noexcept {
