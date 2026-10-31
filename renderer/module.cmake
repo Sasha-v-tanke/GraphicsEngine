@@ -8,6 +8,8 @@ API(
 )
 
 SOURCES(
+    execution_validation.h
+    execution_validation.cpp
     render_graph.cpp
     extraction.cpp
     renderer.cpp
@@ -28,3 +30,7 @@ PRIVATE_DEPENDS(
 RECURSE(
     test
 )
+
+if (GRAPHICS_ENGINE_BUILD_VULKAN AND GRAPHICS_ENGINE_BUILD_GLFW)
+    RECURSE(presentation)
+endif ()

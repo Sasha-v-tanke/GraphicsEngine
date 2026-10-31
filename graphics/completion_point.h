@@ -3,6 +3,9 @@
 #include <cstdint>
 
 namespace NGraphics {
+namespace NBackend {
+class CompletionAccess;
+}
 
 class CompletionPoint {
 public:
@@ -28,6 +31,7 @@ private:
     std::uint64_t m_value = 0;
 
     friend class Graphics;
+    friend class NBackend::CompletionAccess;
 };
 
 } // namespace NGraphics
