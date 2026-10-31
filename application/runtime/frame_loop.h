@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 
@@ -11,6 +10,7 @@
 #include <application/runtime/main_executor.h>
 #include <engine/engine.h>
 #include <graphics/graphics.h>
+#include <lib/thread/job_control.h>
 
 namespace NApplication::NRuntime {
 
@@ -46,7 +46,7 @@ public:
     }
 
     void Stop() noexcept;
-    void SubmitUserJob(std::function<void()> function);
+    void SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job);
     void CheckError() const;
 
     bool Step(IFrameLoopCallbacks& callbacks);

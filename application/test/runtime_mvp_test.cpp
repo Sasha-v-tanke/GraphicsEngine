@@ -255,6 +255,8 @@ private:
                 CompletedOnWorker = NCommon::TaskSystem::IsCurrentThreadWorker();
                 return std::move(value);
             });
+        }
+        if (Result.IsReady()) {
             RequestShutdown();
         }
     }

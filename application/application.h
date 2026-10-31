@@ -1,6 +1,5 @@
 #pragma once
 
-#include <functional>
 #include <memory>
 #include <utility>
 
@@ -49,12 +48,13 @@ public:
 protected:
     // Starts frame-independent work on TaskSystem. No implicit World/frame access or main-thread affinity.
     // Available during Run only; submission failure throws synchronously. TryTake never waits.
-    // Stop drains accepted work. Captures must remain valid until completion; dropping Job does not cancel.
+    // Stop cancels queued work, requests cooperative stop, then drains. Captures must outlive completion.
+    // Dropping Job does not cancel. An optional stop_token parameter enables cooperative cancellation.
     // Jobs share worker CPU with frames and must not block waiting for work on the same pool.
     template<NCommon::UserJobFunction Function>
     [[nodiscard]] auto RunAsync(Function&& function) {
         return NCommon::NJobInternal::JobFactory::Run(
-                [this](std::function<void()> task) { SubmitUserJob(std::move(task)); },
+                [this](const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) { SubmitUserJob(job); },
                 std::forward<Function>(function));
     }
 
@@ -82,7 +82,7 @@ private:
 
     void RunFrame();
 
-    void SubmitUserJob(std::function<void()> function);
+    void SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job);
 
 private:
     bool m_hasPresentation = false;
