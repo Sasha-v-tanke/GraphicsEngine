@@ -1,101 +1,57 @@
-# Renderer
+# Подготовка рендеринга
 
-`Renderer` owns the backend-independent render-facing boundary. Mutable simulation state remains in `NEcs::World`;
-render preparation consumes only an immutable `RenderWorld`.
+`Renderer` отвечает за независимое от конкретного графического интерфейса представление данных для рендеринга. Изменяемое состояние моделирования остаётся в `NEcs::World`; подготовка использует только неизменяемый `RenderWorld`.
 
-`RenderGraphBuilder` compiles semantic pass/resource declarations into an immutable frame execution plan.
-See [RenderGraph contract](render_graph.md) for import lifetime, validation and executor integration.
+`RenderGraphBuilder` преобразует смысловые объявления проходов и ресурсов в неизменяемый план исполнения кадра. Время жизни импортированных ресурсов, проверки и подключение исполнителя описаны в [контракте графа рендеринга](render_graph.md).
 
-## Render components
+## Компоненты рендеринга
 
-`TransformComponent`, `CameraComponent` and `RenderableComponent` are high-level components stored in `World`.
-`RenderableComponent` references logical mesh and material resources through typed `ResourceHandle` values and contains no
-graphics-backend handles.
+`TransformComponent`, `CameraComponent` и `RenderableComponent` — высокоуровневые компоненты `World`. `RenderableComponent` ссылается на логические ресурсы сетки и материала через типизированные `ResourceHandle`, но не содержит физических дескрипторов графического интерфейса.
 
-## Extraction
+## Извлечение снимка
 
-The Engine draw checkpoint is published before extraction. `IFrameRuntime::Extract()` executes after Update N and the
-next Engine Update is not admitted until extraction completes.
+Контрольная точка рисования `Engine` публикуется до извлечения данных. `IFrameRuntime::Extract()` выполняется после `Update N`; следующее обновление `Engine` допускается лишь после завершения извлечения.
 
-Extraction reads `World` through its const query API and copies only render-facing data into the current
-`FrameExecutionSlot`. Renderables acquire versioned `ResourceLease` values from Resources. A renderable whose required
-mesh or material has no READY representation is not published into the snapshot.
+Извлечение читает `World` через постоянный интерфейс запросов и копирует только данные рендеринга в текущий `FrameExecutionSlot`. Для объектов получаются версионные `ResourceLease` из `Resources`. Объект без готового представления необходимой сетки или материала не публикуется в снимок.
 
-The resulting `RenderWorld` contains stable render object IDs, camera data, transforms and retained resource versions.
-Renderer code receives read-only spans and does not access mutable `World` for that frame.
+Итоговый `RenderWorld` содержит устойчивые идентификаторы объектов, данные камер, преобразования и удерживаемые версии ресурсов. `Renderer` получает диапазоны только для чтения и не обращается к изменяемому `World` данного кадра.
 
-After extraction completes, Update N+1 may overlap render work for N. Logical unload or reload after extraction prevents
-new acquisitions but does not replace the versions already retained by `RenderWorld N`.
+После извлечения `Update N+1` может выполняться одновременно с рендерингом кадра N. Логическая выгрузка или повторная загрузка ресурса после извлечения запрещает новые получения, но не заменяет уже удерживаемые версии `RenderWorld N`.
 
-### Parallel extraction
+### Параллельное извлечение
 
-An internal frame runtime can override `IFrameRuntime::ScheduleExtract()` and return the join handle from
-`NInternal::ScheduleRenderWorldExtraction()`. The default runtime hook still calls the serial `Extract()` method.
-The parallel helper enumerates render-facing component references in entity order, partitions them into chunks of
-256 entries by default, and schedules chunks through the current shared `TaskContext`. Chunk size can be selected for
-the workload; there is no task per entity. The serial helper remains available for small workloads and reference tests.
+Внутренняя реализация кадра может переопределить `IFrameRuntime::ScheduleExtract()` и вернуть дескриптор общего завершения из `NInternal::ScheduleRenderWorldExtraction()`. Стандартная реализация всё ещё вызывает последовательный `Extract()`. Параллельная функция обходит ссылки на компоненты для рендеринга в порядке сущностей, делит их на порции по умолчанию из 256 элементов и планирует порции через общий `TaskContext`. Размер порции настраивается; отдельная задача на сущность не создаётся. Последовательный вариант сохраняется для небольших нагрузок и эталонных проверок.
 
-Every chunk depends on the scheduling task, so a partially submitted graph cannot begin reading World if scheduling
-fails. Workers own separate temporary vectors. They never allocate from the frame arena concurrently. A join waits for
-all chunks, checks errors in chunk order, then moves views, objects and retained resource records into the frame slot in
-chunk/entity order. Worker completion order does not affect the published snapshot. A failed chunk prevents publication;
-all World readers have finished before the join reports failure. The source World and Resources must outlive the join,
-and World must remain read-only through it. Deterministic replay assumes identical component data and resource readiness
-and versions during extraction.
+Каждая порция зависит от планирующей задачи: при частичном отказе публикации графа рабочие потоки не должны успеть начать чтение `World`. Каждый поток владеет собственным временным вектором и не выделяет память одновременно из общей кадровой арены. Общая задача завершения дожидается всех порций, проверяет ошибки в порядке порций, затем переносит камеры, объекты и удерживаемые версии ресурсов в слот в порядке порций и сущностей. Порядок фактического завершения потоков не меняет снимок. Ошибка порции запрещает публикацию, но сообщается только после окончания всех читателей `World`. Исходные `World` и `Resources` обязаны пережить общее завершение; мир должен оставаться доступным только для чтения. Воспроизводимость требует одинаковых компонентов, состояний готовности и версий ресурсов.
 
-Engine schedules the draw continuation after the extraction join, without blocking a TaskSystem worker. Update N+1
-remains closed until that continuation starts. A failed join cancels draw and puts Engine into its failed/stopping path;
-the frame is released only after extraction readers have drained. This also works with one worker.
+`Engine` планирует продолжение рисования после общего завершения извлечения, не блокируя рабочий поток `TaskSystem`. Допуск `Update N+1` закрыт до начала продолжения. При ошибке объединения рисование отменяется, а `Engine` переходит к обработке ошибки и остановке; кадр освобождается только после завершения всех читателей. Правило действует и с одним рабочим потоком.
 
-## Frame ownership
+## Владение данными кадра
 
-`RenderWorld`, its containers and its resource leases belong to the `FrameExecutionSlot` generation identified by
-`RenderFrameIdentity`. Non-trivial frame-owned objects are destroyed on recycle or abort before the slot arena is reset.
-Retained resource versions therefore remain alive for all CPU users of the frame and are released at the frame lifetime
-boundary.
+`RenderWorld`, его контейнеры и удерживаемые ресурсы принадлежат поколению `FrameExecutionSlot`, определённому `RenderFrameIdentity`. Нетривиальные объекты кадра уничтожаются при освобождении или аварийном завершении слота до сброса арены. Версии ресурсов сохраняются для всех потребителей процессора и освобождаются на границе времени жизни кадра.
 
-`RenderWorld` also publishes frame resource use records derived from retained leases. `FrameSubmission` owns those
-common records and moves them into the graphics backend submission boundary, so backend-side GPU lifetime retains the
-same logical resource versions until the submission completion point retires. Extraction itself still does not expose
-native backend objects, and Graphics does not depend on Resources.
+`RenderWorld` также публикует записи об использовании ресурсов кадра, полученные из удерживаемых `ResourceLease`. `FrameSubmission` владеет этими записями и переносит их на границу отправки в графическую реализацию. Таким образом, версия логического ресурса удерживается вплоть до точного завершения работы графического устройства. Извлечение не раскрывает физические объекты реализации, а `Graphics` не зависит от `Resources`.
 
-## Renderer preparation
+## Подготовка команд
 
-`Renderer` consumes only `RenderWorld`. It does not read mutable `World`, does not know Vulkan, and does not emit command
-buffers.
+`Renderer` читает исключительно `RenderWorld`, не обращается к изменяемому миру, не знает о Vulkan и не формирует физических буферов команд.
 
-The first renderer path builds backend-independent `DrawCommandData`:
+Начальный путь формирует независимые от графического интерфейса `DrawCommandData`:
 
 ```text
-RenderWorld -> visibility/material preparation -> sort -> batch -> DrawCommandData
+RenderWorld -> подготовка видимости и материалов -> сортировка -> группировка -> DrawCommandData
 ```
 
-Visibility is intentionally conservative for MVP-3: every render object is visible to every extracted view. The output is
-deterministic for the same `RenderWorld`; commands are ordered by view, material, mesh and object identity. Intermediate
-data and the resulting render plan are allocated from the caller-provided frame memory resource, normally the current
-`FrameExecutionSlot` arena.
+Проверка видимости сейчас консервативна: все объекты считаются видимыми для каждой извлечённой камеры. При одинаковом `RenderWorld` результат детерминирован; команды упорядочены по камере, материалу, сетке и идентификатору объекта. Промежуточные данные и итоговый план располагаются в предоставленном вызывающим кодом ресурсе памяти кадра, обычно арене текущего `FrameExecutionSlot`.
 
-### Parallel preparation and batches
+### Параллельная подготовка и группы
 
-`Renderer::SchedulePrepare()` partitions the view/object product into chunks through the shared `TaskContext`.
-Conservative visibility still includes every object for every view. Workers prepare command values in local vectors;
-only the join allocates from frame memory. After all readers finish, it merges chunks in index order, sorts by the same
-view/material/mesh/version/object key as serial `Prepare()`, then forms batches as a separate stage. Failure prevents
-publication and is reported only after all snapshot readers drain. All tasks depend transitively on the scheduling task,
-so partial graph submission failure cannot begin preparation. Do not cancel a join while it has live readers.
+`Renderer::SchedulePrepare()` разделяет произведение числа камер и объектов на порции через общий `TaskContext`. Консервативная видимость по-прежнему включает все объекты для каждой камеры. Рабочие потоки создают значения команд в локальных векторах; память кадра выделяет только задача общего завершения. После окончания чтений она объединяет порции по индексам, сортирует по тому же ключу камера/материал/сетка/версия/объект, что и последовательный `Prepare()`, а затем отдельно формирует группы.
 
-`RenderPlan::GetBatches()` provides contiguous ranges into the unchanged `DrawCommandData` stream. Commands in a batch
-share view, mesh, material and retained resource versions; each command retains its own object ID and transform. These
-ranges describe compatible instances for a consumer while keeping the existing direct-command fallback available.
-Batching does not reinterpret differing materials, meshes or views as compatible and does not expose backend objects.
+При ошибке публикации нет; сообщение об ошибке выдаётся только после завершения всех читателей снимка. Все задачи транзитивно зависят от планирующей, чтобы частичная публикация графа не могла запустить подготовку. Нельзя отменять объединение, пока существуют активные читатели.
 
-A frame runtime can return the preparation join from `IFrameRuntime::ScheduleDraw()`. Engine retains the slot until that
-join and its completion continuation finish, then follows the existing GPU completion protocol. Update N+1 can overlap
-preparation N after extraction has joined. `Stop()` drains scheduled work before destroying the runtime or frame arena.
-The snapshot, arena and callback captures must remain alive through the returned join; asynchronous callbacks must copy
-any needed `FrameContext`, rather than retain a reference to the scheduling stack.
+`RenderPlan::GetBatches()` выдаёт непрерывные диапазоны исходного потока `DrawCommandData`. Команды в одной группе имеют общие камеру, сетку, материал и удерживаемые версии ресурсов; каждая сохраняет собственные идентификатор объекта и преобразование. Диапазоны описывают совместимые экземпляры для потребителя без удаления запасного пути отдельных команд. Группировка не делает разные материалы, сетки и камеры совместимыми и не раскрывает объекты реализации.
 
-Chunk size is a workload setting, with a measured default of 4096 items. Workloads within one chunk use a single serial
-preparation task. The reference `Prepare()` avoids scheduling overhead entirely; the current inexpensive visibility path
-can be faster serially even for thousands of objects. Choose parallel preparation by measurement, not by entity count
-alone. See [preparation benchmark](../benchmarks/renderer/README.md) for the tuning sweep and its limits.
+Реализация кадра может возвращать общий дескриптор завершения подготовки из `IFrameRuntime::ScheduleDraw()`. `Engine` удерживает слот до окончания этой задачи и продолжения завершения, после чего действует обычный протокол завершения на графическом устройстве. `Update N+1` может пересекаться с подготовкой кадра N после извлечения. `Stop()` завершает задачи до уничтожения реализации кадра или арены. Снимок, арена и захваты обратных вызовов должны пережить общий дескриптор завершения; асинхронные обработчики обязаны копировать необходимые данные `FrameContext`, а не хранить ссылку на стек планирования.
+
+Размер порции определяется нагрузкой; измеренное значение по умолчанию — 4096 элементов. Нагрузка в пределах одной порции выполняется одной последовательной задачей подготовки. Эталонный `Prepare()` вовсе избегает расходов на планирование; для текущей дешёвой модели видимости последовательное выполнение может быть быстрее даже при тысячах объектов. Решение о распараллеливании принимайте на основе измерений, а не только числа сущностей. См. [измерения производительности](../benchmarks/renderer/README.md).
