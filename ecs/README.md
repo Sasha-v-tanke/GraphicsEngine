@@ -95,3 +95,7 @@ state shared by callbacks are the caller's synchronization responsibility.
 `AddComponent<T>()`, `GetComponent<T>()` and query callbacks require a live
 entity. Stale entities are rejected. `HasComponent<T>()` and
 `RemoveComponent<T>()` return `false` for stale or missing data.
+
+Internal scoped-access foundations live in internal/access_coordinator.*. They are
+not installed public APIs and do not replace legacy World system scheduling. See
+[the internal contract](internal/access_coordinator.md) for ownership and execution rules.
