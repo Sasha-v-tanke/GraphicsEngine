@@ -44,18 +44,17 @@ NVulkan::VulkanInstanceConfig InstanceConfig(const NGraphics::PresentationConfig
 }
 
 NGraphics::EPixelFormat ColorFormat(VkFormat format) {
-    switch (format) {
-    case VK_FORMAT_B8G8R8A8_SRGB:
-        return NGraphics::EPixelFormat::BGRA8_SRGB;
-    case VK_FORMAT_B8G8R8A8_UNORM:
-        return NGraphics::EPixelFormat::BGRA8_UNORM;
-    case VK_FORMAT_R8G8B8A8_SRGB:
-        return NGraphics::EPixelFormat::RGBA8_SRGB;
-    case VK_FORMAT_R8G8B8A8_UNORM:
-        return NGraphics::EPixelFormat::RGBA8_UNORM;
-    default:
-        GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Unsupported presentation format");
+    constexpr std::array formats{
+            std::pair{VK_FORMAT_B8G8R8A8_SRGB, NGraphics::EPixelFormat::BGRA8_SRGB},
+            std::pair{VK_FORMAT_B8G8R8A8_UNORM, NGraphics::EPixelFormat::BGRA8_UNORM},
+            std::pair{VK_FORMAT_R8G8B8A8_SRGB, NGraphics::EPixelFormat::RGBA8_SRGB},
+            std::pair{VK_FORMAT_R8G8B8A8_UNORM, NGraphics::EPixelFormat::RGBA8_UNORM},
+    };
+    for (const auto& [native, neutral]: formats) {
+        if (native == format)
+            return neutral;
     }
+    GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Unsupported presentation format");
 }
 
 VkAttachmentLoadOp Load(EAttachmentLoad load) {
