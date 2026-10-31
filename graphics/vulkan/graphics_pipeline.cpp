@@ -94,7 +94,7 @@ private:
     VkDevice m_device;
 };
 
-void ValidateShaderInterface(const NGraphics::Shader& shader) {
+void ValidateShaderInterface(const NGraphics::Shader& shader, std::uint32_t vertexPushConstantBytes) {
     const auto& words = shader.GetArtifact()->GetWords();
     bool foundEntryPoint = false;
     for (std::size_t offset = 5; offset < words.size();) {
@@ -118,7 +118,8 @@ void ValidateShaderInterface(const NGraphics::Shader& shader) {
             }
         }
         if ((opcode == 71U && count >= 3 && (words[offset + 2] == 33U || words[offset + 2] == 34U)) ||
-            (opcode == 59U && count >= 4 && words[offset + 3] == 9U)) {
+            (opcode == 59U && count >= 4 && words[offset + 3] == 9U &&
+             (vertexPushConstantBytes == 0 || shader.GetArtifact()->GetStage() != NResources::EShaderStage::VERTEX))) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED,
                                   "Shader bindings and push constants require a pipeline layout contract");
         }
@@ -301,7 +302,7 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
     NGraphics::ValidateGraphicsPipelineDescriptor(descriptor);
     ValidateDevice(physicalDevice, descriptor);
     for (const auto& shader: descriptor.Shaders) {
-        ValidateShaderInterface(shader);
+        ValidateShaderInterface(shader, descriptor.VertexPushConstantBytes);
     }
     ShaderModules modules{m_device};
     modules.Handles.reserve(descriptor.Shaders.size());
@@ -404,14 +405,17 @@ VulkanGraphicsPipeline::VulkanGraphicsPipeline(const VulkanDevice& device,
                                              ? VK_FORMAT_D24_UNORM_S8_UINT
                                              : VK_FORMAT_UNDEFINED,
     };
+    const VkPushConstantRange pushConstants{.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                            .offset = 0,
+                                            .size = descriptor.VertexPushConstantBytes};
     const VkPipelineLayoutCreateInfo layoutInfo{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
             .setLayoutCount = 0,
             .pSetLayouts = nullptr,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = nullptr,
+            .pushConstantRangeCount = descriptor.VertexPushConstantBytes == 0 ? 0U : 1U,
+            .pPushConstantRanges = &pushConstants,
     };
     CheckResult(vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &m_layout), "vkCreatePipelineLayout");
     const VkGraphicsPipelineCreateInfo pipelineInfo{

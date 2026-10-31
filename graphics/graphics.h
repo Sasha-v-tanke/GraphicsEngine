@@ -59,6 +59,7 @@ private:
     explicit Graphics(std::unique_ptr<NBackend::IGraphicsBackend> backend,
                       const RequiredGraphicsCapabilities& requiredCapabilities = {});
 
+    friend class NBackend::CompletionAccess;
     [[nodiscard]] static std::uint64_t AcquireOwnerId();
 
     struct BufferRecord {

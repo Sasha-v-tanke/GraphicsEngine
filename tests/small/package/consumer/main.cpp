@@ -20,6 +20,10 @@
 #include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/renderer/render_graph.h>
+#if __has_include(<GraphicsEngine/renderer/presentation/presentation.h>)
+    #include <GraphicsEngine/renderer/presentation/presentation.h>
+static_assert(!std::is_copy_constructible_v<NRenderer::GraphPresentation>);
+#endif
 #include <GraphicsEngine/renderer/renderer.h>
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>

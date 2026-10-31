@@ -258,6 +258,10 @@ set(
     "GraphicsEngine/window/window_type.h"
 )
 
+if (GRAPHICS_ENGINE_HAS_GRAPH_PRESENTATION)
+    list(APPEND expectedPublicHeaders "GraphicsEngine/renderer/presentation/presentation.h")
+endif ()
+
 file(
     GLOB_RECURSE
     installedPublicHeaders
@@ -285,6 +289,8 @@ set(
     internalHeaders
     "GraphicsEngine/engine/controller/frame_scheduler.h"
     "GraphicsEngine/engine/runtime/frame_runtime.h"
+    "GraphicsEngine/renderer/execution_validation.h"
+    "GraphicsEngine/graphics/backend/completion_access.h"
     "GraphicsEngine/graphics/backend/backend.h"
     "GraphicsEngine/graphics/backend/factory.h"
     "GraphicsEngine/math/internal/glm_conversion.h"

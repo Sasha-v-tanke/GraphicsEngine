@@ -42,10 +42,15 @@ public:
 
     // Retries before submission consume no frame. OUT_OF_DATE may carry an accepted GPU completion.
     // onSubmitted runs immediately after native submit, before fallible bookkeeping/present; it must not throw.
+    // Optional record replaces clear recording after acquire; it must begin/end the primary command
+    // buffer, transition the acquired image to Present, and keep every referenced object alive through completion.
+    // Throwing fails the path closed. Backend integration only; never a user rendering callback.
     // The caller must retain that completion if Render subsequently throws, and stop using the failed path.
-    [[nodiscard]] VulkanClearPresentResult Render(std::uint64_t frameIndex,
-                                                  VkClearColorValue clearColor,
-                                                  const std::function<void(VulkanQueueCompletion)>& onSubmitted = {});
+    [[nodiscard]] VulkanClearPresentResult
+    Render(std::uint64_t frameIndex,
+           VkClearColorValue clearColor,
+           const std::function<void(VulkanQueueCompletion)>& onSubmitted = {},
+           const std::function<void(VkCommandBuffer, VkImage, VkImageView, const VulkanSwapchainPlan&)>& record = {});
 
     [[nodiscard]] bool IsCompleted(VulkanQueueCompletion completion) const;
 

@@ -143,12 +143,9 @@ bool HasBufferRangeOverlap(const std::vector<VulkanResourceStateTracker::BufferR
                            VkBuffer buffer,
                            VkDeviceSize offset,
                            VkDeviceSize size) noexcept {
-    for (const VulkanResourceStateTracker::BufferRangeState& range: ranges) {
-        if (range.Buffer == buffer && RangesOverlap(range.Offset, range.Size, offset, size)) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(ranges, [&](const auto& range) {
+        return range.Buffer == buffer && RangesOverlap(range.Offset, range.Size, offset, size);
+    });
 }
 
 std::optional<VulkanBufferState>
@@ -255,6 +252,13 @@ VulkanImageState MakeVulkanImageState(EVulkanResourceUsage usage, std::uint32_t 
                 .Layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 .QueueFamilyIndex = queueFamilyIndex,
         };
+    case EVulkanResourceUsage::ColorAttachmentReadWrite:
+        return {
+                .StageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .AccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                .Layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .QueueFamilyIndex = queueFamilyIndex,
+        };
     case EVulkanResourceUsage::ColorAttachmentWrite:
         return {
                 .StageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -295,6 +299,12 @@ VulkanBufferState MakeVulkanBufferState(EVulkanResourceUsage usage, std::uint32_
         return {
                 .StageMask = VK_PIPELINE_STAGE_2_NONE,
                 .AccessMask = 0,
+                .QueueFamilyIndex = queueFamilyIndex,
+        };
+    case EVulkanResourceUsage::ColorAttachmentReadWrite:
+        return {
+                .StageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .AccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 .QueueFamilyIndex = queueFamilyIndex,
         };
     case EVulkanResourceUsage::ColorAttachmentWrite:

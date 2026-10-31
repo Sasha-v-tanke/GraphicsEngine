@@ -183,6 +183,8 @@ enum class ESampleCount : std::uint32_t {
 };
 
 struct GraphicsPipelineDescriptor {
+    // Optional vertex-stage push constants at offset zero, in bytes (multiple of four, <=128).
+    std::uint32_t VertexPushConstantBytes = 0;
     std::vector<Shader> Shaders;
     VertexLayoutDescriptor VertexLayout;
     EPrimitiveTopology Topology = EPrimitiveTopology::TRIANGLE_LIST;

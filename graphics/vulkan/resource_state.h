@@ -15,6 +15,7 @@ enum class EVulkanResourceUsage {
     Undefined,
     Present,
     ColorAttachmentWrite,
+    ColorAttachmentReadWrite,
     TransferRead,
     TransferWrite,
     ShaderSampledRead,
