@@ -82,8 +82,8 @@ Application::Application(const ApplicationConfig& config)
     }()) {
 }
 
-void Application::SubmitUserJob(std::function<void()> function) {
-    m_frameLoop->SubmitUserJob(std::move(function));
+void Application::SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) {
+    m_frameLoop->SubmitUserJob(job);
 }
 
 void Application::RunOnMainThreadImpl(void* context, void (*invoke)(void*)) {

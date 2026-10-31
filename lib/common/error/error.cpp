@@ -31,6 +31,8 @@ public:
             return "I/O error";
         case EError::UNSUPPORTED:
             return "Unsupported operation";
+        case EError::CANCELLED:
+            return "Operation cancelled";
         case EError::NOT_IMPLEMENTED:
             return "Not implemented";
         }

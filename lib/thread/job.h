@@ -2,12 +2,14 @@
 
 #include <atomic>
 #include <concepts>
+#include <cstdio>
 #include <exception>
 #include <expected>
 #include <functional>
 #include <memory>
 #include <new>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -16,24 +18,62 @@
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
+#include <GraphicsEngine/lib/thread/job_control.h>
 
 namespace NCommon {
 
+namespace NJobInternal {
+
+template<typename Function>
+struct FunctionResult: std::invoke_result<std::decay_t<Function>> {};
+
+template<typename Function>
+    requires std::invocable<std::decay_t<Function>, std::stop_token>
+struct FunctionResult<Function>: std::invoke_result<std::decay_t<Function>, std::stop_token> {};
+
+} // namespace NJobInternal
+
 template<typename Function>
 concept UserJobFunction =
-        std::constructible_from<std::decay_t<Function>, Function&&> && std::invocable<std::decay_t<Function>> &&
-        !std::is_reference_v<std::invoke_result_t<std::decay_t<Function>>> &&
-        (std::is_void_v<std::invoke_result_t<std::decay_t<Function>>> ||
-         (std::is_move_constructible_v<std::invoke_result_t<std::decay_t<Function>>> &&
-          std::is_nothrow_destructible_v<std::invoke_result_t<std::decay_t<Function>>>));
+        std::constructible_from<std::decay_t<Function>, Function&&> &&
+        (std::invocable<std::decay_t<Function>> || std::invocable<std::decay_t<Function>, std::stop_token>) &&
+        !std::is_reference_v<typename NJobInternal::FunctionResult<Function>::type> &&
+        (std::is_void_v<typename NJobInternal::FunctionResult<Function>::type> ||
+         (std::is_move_constructible_v<typename NJobInternal::FunctionResult<Function>::type> &&
+          std::is_nothrow_destructible_v<typename NJobInternal::FunctionResult<Function>::type>));
 
 namespace NJobInternal {
 
 template<typename T>
-struct JobState {
+class JobState final: public JobControl {
+public:
     std::optional<std::expected<T, ErrorInfo>> Result;
     ErrorInfo AllocationFailure{.Code = EError::OUT_OF_MEMORY, .Message = "User job allocation failed"};
-    std::atomic_bool Ready = false;
+    ErrorInfo Cancellation{.Code = EError::CANCELLED, .Message = "User job cancelled"};
+    std::function<void()> Body;
+
+private:
+    void ExecuteBody() noexcept override {
+        std::function<void()> body = std::move(Body);
+        body(); // Factory body catches all user exceptions, including result construction.
+    }
+    void ReleaseBody() noexcept override {
+        Body = {};
+    }
+    void CancelResult() noexcept override {
+        // A real worker failure remains observable even if cancellation races with it.
+        if (!Result || Result->has_value()) {
+            Result.emplace(std::unexpect, std::move(Cancellation));
+        }
+    }
+    void ReportFailure() const noexcept override {
+        if (Result && !Result->has_value() && Result->error().Code != EError::CANCELLED) {
+            std::fprintf(stderr,
+                         "GraphicsEngine unobserved user job failure [%d]: %s\n",
+                         Result->error().Code.value(),
+                         Result->error().Message.c_str());
+        }
+    }
 };
 
 struct JobFactory;
@@ -50,10 +90,27 @@ class [[nodiscard]] Job final: private NonCopyable {
 public:
     Job() = default;
     Job(Job&&) noexcept = default;
-    Job& operator=(Job&&) noexcept = default;
+    Job& operator=(Job&& other) noexcept {
+        if (this != &other) {
+            Abandon();
+            m_state = std::move(other.m_state);
+        }
+        return *this;
+    }
+    ~Job() {
+        Abandon();
+    }
+
+    // Asynchronous request: no user stop_callback runs on the caller. Invalid handles throw INVALID_STATE.
+    void RequestCancel() {
+        if (!m_state) {
+            GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Cannot cancel an invalid or consumed Job");
+        }
+        m_state->RequestCancel();
+    }
 
     [[nodiscard]] bool IsReady() const noexcept {
-        return m_state && m_state->Ready.load(std::memory_order_acquire);
+        return m_state && m_state->IsReady();
     }
 
     // Nullopt before completion; expected<T, ErrorInfo> once after completion (including void/errors).
@@ -63,14 +120,20 @@ public:
         if (!m_state) {
             GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Cannot consume an invalid or consumed Job");
         }
-        if (!m_state->Ready.load(std::memory_order_acquire)) {
+        if (!m_state->IsReady()) {
             return std::nullopt;
         }
+        m_state->Observed.store(true);
         const std::shared_ptr<NJobInternal::JobState<T>> state = std::move(m_state);
         return std::optional<std::expected<T, ErrorInfo>>{std::in_place, std::move(*state->Result)};
     }
 
 private:
+    void Abandon() noexcept {
+        if (m_state) {
+            m_state->Abandon();
+        }
+    }
     explicit Job(std::shared_ptr<NJobInternal::JobState<T>> state)
         : m_state(std::move(state)) {
     }
@@ -97,20 +160,26 @@ struct JobFactory {
     template<typename Submit, UserJobFunction Function>
     [[nodiscard]] static auto Run(Submit&& submit, Function&& function) {
         using Callable = std::decay_t<Function>;
-        using Value = std::invoke_result_t<Callable>;
+        using Value = typename FunctionResult<Function>::type;
         const std::shared_ptr<JobState<Value>> state = std::make_shared<JobState<Value>>();
         std::shared_ptr<Callable> callable = std::make_shared<Callable>(std::forward<Function>(function));
-        std::invoke(std::forward<Submit>(submit), [completion = state, execution = std::move(callable)]() mutable {
-            // Empty the executor closure before invoking user code. User captures/results
-            // are released here, outside any scheduler/engine terminal-state locks.
-            const std::shared_ptr<JobState<Value>> ownedState = std::move(completion);
+        // The owning state keeps this private closure alive for one claimed execution.
+        state->Body = [completion = state.get(), execution = std::move(callable)]() mutable {
+            JobState<Value>* ownedState = completion;
             std::shared_ptr<Callable> ownedFunction = std::move(execution);
+            const auto invoke = [&] {
+                if constexpr (std::invocable<Callable, std::stop_token>) {
+                    return std::invoke(std::move(*ownedFunction), ownedState->StopSource.get_token());
+                } else {
+                    return std::invoke(std::move(*ownedFunction));
+                }
+            };
             try {
                 if constexpr (std::is_void_v<Value>) {
-                    std::invoke(std::move(*ownedFunction));
+                    invoke();
                     ownedState->Result.emplace();
                 } else {
-                    ownedState->Result.emplace(std::in_place, std::invoke(std::move(*ownedFunction)));
+                    ownedState->Result.emplace(std::in_place, invoke());
                 }
             } catch (const Exception& exception) {
                 SetFailure(*ownedState, exception.code(), exception.GetMessage());
@@ -122,8 +191,8 @@ struct JobFactory {
                 SetFailure(*ownedState, make_error_code(EError::UNKNOWN), "User job threw a non-standard exception");
             }
             ownedFunction.reset();
-            ownedState->Ready.store(true, std::memory_order_release);
-        });
+        };
+        std::invoke(std::forward<Submit>(submit), state);
         return Job<Value>{std::move(state)};
     }
 };

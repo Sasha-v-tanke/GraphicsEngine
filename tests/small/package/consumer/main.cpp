@@ -40,7 +40,7 @@ public:
         RunOnMainThread([value = std::make_unique<int>(1)] { (void)value; });
     }
     NCommon::Job<std::unique_ptr<int>> StartJob() {
-        return RunAsync([value = std::make_unique<int>(1)]() mutable { return std::move(value); });
+        return RunAsync([value = std::make_unique<int>(1)](std::stop_token) mutable { return std::move(value); });
     }
 };
 

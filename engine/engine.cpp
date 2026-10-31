@@ -14,6 +14,7 @@
 
 #include <engine/controller/frame_scheduler.h>
 #include <engine/runtime/frame_runtime.h>
+#include <engine/runtime/user_job_scope.h>
 #include <lib/common/error/exception.h>
 #include <lib/thread/task/task_system.h>
 
@@ -131,6 +132,7 @@ public:
             m_updateAdmissionOpen = true;
             ++m_lifecycleGeneration;
             m_lifecycleGenerationSnapshot.store(m_lifecycleGeneration, std::memory_order_release);
+            m_userJobs = std::make_unique<NRuntime::UserJobScope>();
             m_state = EEngineState::RUNNING;
             NotifyProgressLocked();
         } catch (...) {
@@ -139,24 +141,27 @@ public:
         }
     }
 
-    void SubmitUserJob(std::function<void()> function) {
-        // Preserve an outer owner through submission rollback/rejection. User captures must
-        // not be destroyed under the engine lock, even if executor admission throws.
-        const std::shared_ptr<std::function<void()>> execution =
-                std::make_shared<std::function<void()>>(std::move(function));
+    void SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) {
         std::lock_guard lock{m_mutex};
         if (m_state != EEngineState::RUNNING || !m_taskSystem) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "User jobs require a running Engine");
         }
-        static_cast<void>(m_taskSystem->Submit([execution](NCommon::TaskContext&) {
-            std::function<void()> ownedFunction = std::move(*execution);
-            ownedFunction();
-        }));
+        m_userJobs->Add(job);
+        try {
+            static_cast<void>(m_taskSystem->Submit([execution = job](NCommon::TaskContext&) mutable {
+                const std::shared_ptr<NCommon::NJobInternal::JobControl> owned = std::move(execution);
+                owned->Run();
+            }));
+        } catch (...) {
+            m_userJobs->Remove(job);
+            throw;
+        }
     }
 
     void Stop() noexcept {
         const std::uint64_t observedGeneration = m_lifecycleGenerationSnapshot.load(std::memory_order_acquire);
         std::unique_ptr<NCommon::TaskSystem> taskSystem;
+        std::unique_ptr<NRuntime::UserJobScope> userJobs;
 
         {
             std::unique_lock lock{m_mutex};
@@ -180,17 +185,26 @@ public:
 
             m_stopInProgress = true;
             m_activeStopGeneration = observedGeneration;
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             NotifyProgressLocked();
             taskSystem = std::move(m_taskSystem);
+            userJobs = std::move(m_userJobs);
         }
 
+        if (userJobs) {
+            userJobs->RequestStop();
+        }
         try {
             if (taskSystem != nullptr) {
                 taskSystem->WaitIdle();
             }
         } catch (...) {
             SetLastError(MakeRuntimeError(std::current_exception()));
+        }
+
+        if (userJobs) {
+            userJobs->Join();
+            userJobs.reset();
         }
 
         m_frameRuntime->Drain();
@@ -303,7 +317,7 @@ public:
             record.HasDrawTask = true;
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             m_updateAdmissionOpen = true;
 
             try {
@@ -352,6 +366,13 @@ public:
     }
 
 private:
+    void EnterStoppingLocked() noexcept {
+        if (m_userJobs) {
+            m_userJobs->CloseAdmission();
+        }
+        m_state = EEngineState::STOPPING;
+    }
+
     struct FrameRuntimeRecord {
         NController::FrameHandle Frame;
         FrameKey Key;
@@ -414,7 +435,7 @@ private:
             record->HasUpdateTask = true;
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             m_frameScheduler->AbortFrame(frame);
             *record = {};
             NotifyProgressLocked();
@@ -573,7 +594,7 @@ private:
             std::lock_guard lock{m_mutex};
 
             SetLastErrorLocked(MakeRuntimeError(error));
-            m_state = EEngineState::STOPPING;
+            EnterStoppingLocked();
             if (!m_frameScheduler->GetGpuCompletion(frame).valid()) {
                 ClearFrameRecordLocked(frame);
                 m_frameScheduler->AbortFrame(frame);
@@ -635,7 +656,7 @@ private:
                                                                    .value_or(MakeRuntimeError(std::make_exception_ptr(
                                                                            std::runtime_error{"Frame task failed"})))));
                 }
-                m_state = EEngineState::STOPPING;
+                EnterStoppingLocked();
             }
             const auto completion = m_frameScheduler->GetGpuCompletion(record.Frame);
             if (completion.valid()) {
@@ -649,7 +670,7 @@ private:
                     completion.get();
                 } catch (...) {
                     SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-                    m_state = EEngineState::STOPPING;
+                    EnterStoppingLocked();
                     failed = true;
                 }
                 m_frameScheduler->CompleteGpu(record.Frame);
@@ -707,6 +728,7 @@ private:
     const EngineConfig m_config;
     std::unique_ptr<NRuntime::IFrameRuntime> m_frameRuntime;
 
+    std::unique_ptr<NRuntime::UserJobScope> m_userJobs;
     mutable std::mutex m_mutex;
     std::condition_variable m_stopCondition;
     mutable std::condition_variable m_progressCondition;
@@ -741,8 +763,8 @@ void Engine::Start() {
     m_impl->Start();
 }
 
-void Engine::SubmitUserJob(std::function<void()> function) {
-    m_impl->SubmitUserJob(std::move(function));
+void Engine::SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) {
+    m_impl->SubmitUserJob(job);
 }
 
 void Engine::Stop() noexcept {

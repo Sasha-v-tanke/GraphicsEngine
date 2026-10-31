@@ -86,8 +86,8 @@ void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
     }
 }
 
-void FrameLoop::SubmitUserJob(std::function<void()> function) {
-    m_engine->SubmitUserJob(std::move(function));
+void FrameLoop::SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) {
+    m_engine->SubmitUserJob(job);
 }
 
 void FrameLoop::Stop() noexcept {

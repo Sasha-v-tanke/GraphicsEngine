@@ -28,12 +28,31 @@ Worker exceptions become result errors: project exceptions retain their code/mes
 use `OUT_OF_MEMORY`, other exceptions use `UNKNOWN`. Admission/allocation/callable-construction failures before
 submission throw synchronously. Job failure does not fail the frame pipeline.
 
-Admission requires a running Application. This first layer drains all accepted jobs during Stop, including
-queued jobs; a result remains accessible after Stop or runtime destruction. Destroying a Job neither cancels
-nor detaches its work from runtime shutdown. User-job cancellation/scope and coroutines are separate stages
-(IMPROVE-0038, FEATURE-0076, FEATURE-0077).
+Admission requires a running Application. `RequestCancel()` asynchronously requests cancellation and does
+not execute user `stop_callback` functions on its caller. Invalid/moved/consumed handles throw `INVALID_STATE`.
+Queued cancellation claims the job before worker execution and publishes `CANCELLED` without needing a free
+compute worker. Running work receives a cooperative `std::stop_token` when the callable accepts one; the token
+overload is preferred when both signatures are invocable. There is no forced interruption of C++ code.
+
+Cancellation accepted before finalization replaces a successful result with `CANCELLED`; a real worker failure
+is preserved. A cancellation arriving after finalization cannot change the result. `TryTake()` consumes cancellation
+as an `expected` error with `EError::CANCELLED`, just like any other terminal outcome.
+
+Stop closes admission, cancels queued jobs, requests cooperative stop on running jobs, drains the existing
+executor and joins cancellation finalization before runtime owners are destroyed. Each Run creates a fresh scope;
+old handles only refer to their retained results. Destroying a Job neither cancels nor detaches its work. A failed
+job whose result is abandoned emits one `GraphicsEngine unobserved user job failure` diagnostic to stderr, including
+its code/message; observed failures and cancellation do not emit this diagnostic. Abandonment after runtime destruction
+still reports. Failure does not latch Engine's frame error state.
+
+The runtime owns one cancellation/retirement dispatcher thread per active Run. It never invokes compute bodies:
+these remain on TaskSystem workers. This keeps RequestCancel asynchronous even when a stop callback blocks, and
+allows cancellation with WorkerCount=1. Callbacks, capture destructors and result destructors execute outside internal
+Engine/scope/task locks. A callback registered after its token is already stopped can execute inline on the registering thread, as specified
+by std::stop_callback. Stop callbacks must remain short and must not wait for other cancellation callbacks or scope
+shutdown: they serialize on this dispatcher. Arbitrary blocking user callbacks can delay shutdown.
 
 Captures must own their data or keep borrowed objects alive until completion. There is no implicit mutable
-World access or main-thread affinity. A worker must not wait for another job on the same pool, call runtime
-Stop, or depend on application-thread actions that cannot run during shutdown. Use short compute steps and
-nonblocking result polling; cancellation and coroutine suspension will extend this contract separately.
+World access or main-thread affinity. A worker or cancellation callback must not call runtime Stop or wait for
+work on its own executor/dispatcher. Owners captured by reference must outlive drain; subclass members must not be
+destroyed while jobs still use them. Coroutine ownership and suspension remain FEATURE-0076/FEATURE-0077.

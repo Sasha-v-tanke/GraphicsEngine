@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -68,14 +67,14 @@ public:
     void Stop() noexcept;
 
     // Internal Application facade handoff; admission is serialized with Stop.
-    void SubmitUserJob(std::function<void()> function);
+    void SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job);
 
     // Independent user work on the existing executor; never linked to frame checkpoints or storage.
-    // Admission requires RUNNING. Stop drains accepted work; cooperative cancellation is a later layer.
+    // Admission requires RUNNING. Stop cancels queued work, requests cooperative stop and drains running bodies.
     template<NCommon::UserJobFunction Function>
     [[nodiscard]] auto RunAsync(Function&& function) {
         return NCommon::NJobInternal::JobFactory::Run(
-                [this](std::function<void()> task) { SubmitUserJob(std::move(task)); },
+                [this](const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) { SubmitUserJob(job); },
                 std::forward<Function>(function));
     }
 
