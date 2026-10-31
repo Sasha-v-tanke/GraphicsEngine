@@ -1,331 +1,166 @@
-# Vulkan Backend
-
-## Presentation recreation
+# Реализация графического интерфейса Vulkan
 
-The presentation owner forwards framebuffer changes to `VulkanClearPresentPath::SetFramebufferSize`.
-Calls to this method, `Render`, and `PollCompletedFrames` must be externally serialized.
-A zero size suspends acquire/present without discarding outstanding completion events or stopping simulation.
-Restoring a positive size, resize, acquire out-of-date, and acquire/present suboptimal request recreation.
-An out-of-date present still returns the completion of its successful graphics submission.
-
-Before replacement, `Render` polls the last graphics timeline point and returns `NOT_READY` while it is pending.
-The device and frame ring survive replacement. No queue/device idle wait occurs on recreation or ordinary frames.
-Old swapchains, views and per-image present semaphores are retained together. Once the first successfully presented
-image of the new chain is reacquired, its subsequent graphics completion proves that the acquire semaphore wait
-has completed and that the prior present has finished. Retired generations can then be freed. Recreation before
-this round trip retains all older generations until a subsequent chain provides the same proof.
-This follows the [Khronos recreation fallback](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html)
-for implementations without swapchain-maintenance present fences. Continuous resize can temporarily retain several
-generations. Shutdown keeps the existing device-idle teardown policy.
+`VulkanBackend` владеет загрузчиком Vulkan, созданием экземпляра, выбором физического устройства и созданием логического устройства GraphicsEngine. Модуль является внутренней реализацией: он использует физические типы Vulkan, но публичные контракты `Window`, `Application`, `Engine` и `Graphics` не должны зависеть от заголовков Vulkan через этот модуль.
 
-Low-level `VulkanSwapchain::Recreate` requires that the caller has finished all GPU uses of
-the old images, except zero-size suspension, which retains the resources. When a clear/present path is attached,
-it is the sole recreation owner and supplies the presentation retirement proof. Replacement failure latches a shutdown-required state because Vulkan may have
-retired the old swapchain even when creation fails. Device and surface must outlive both owners.
-
-`VulkanBackend` owns Vulkan loader, instance bootstrap, physical-device selection and logical-device
-bootstrap for GraphicsEngine.
-
-This layer is backend-internal. It may use Vulkan native types, but higher-level
-Window, Application, Engine and future Graphics public contracts must not depend
-on Vulkan headers through this module.
-
-## Instance
-
-`VulkanInstance` is the first Vulkan lifetime object:
-
-- initializes the Volk loader through one code path;
-- checks the requested Vulkan instance API version before creation;
-- resolves required and optional instance extensions from the current loader;
-- enables `VK_KHR_portability_enumeration` when requested for MoltenVK-style
-  portability enumeration;
-- enables `VK_LAYER_KHRONOS_validation` when requested and available;
-- wires `VK_EXT_debug_utils` when available in development configuration;
-- owns `VkInstance` and debug messenger destruction through RAII.
-
-The object is transactional: constructor failure publishes no partial instance,
-and already-created Vulkan objects are destroyed before the exception escapes.
-
-`VulkanInstance` does not create a physical device, logical device, swapchain,
-GPU resources, queues or command buffers.
-
-## GLFW Surface Integration
-
-`glfw_surface.h` is the only boundary that combines Vulkan native types with
-GLFW window access. Public `Window` keeps no native-handle getter.
-
-The integration:
-
-- reports GLFW-required Vulkan instance extensions before instance creation;
-- creates and destroys one `VkSurfaceKHR` through `VulkanSurface`;
-- reaches the GLFW window through an internal Window engine contract only;
-- requires the `Window`, `VulkanInstance` and GLFW runtime to outlive the
-  surface object.
-
-## Physical Device Selection
-
-Physical-device selection first snapshots Vulkan properties into
-`VulkanPhysicalDeviceCapabilities`, then evaluates that CPU-testable value type.
-The runtime path only maps the selected snapshot back to its `VkPhysicalDevice`.
-It does not create `VkDevice`.
-
-The default Vulkan backend requires:
-
-- Vulkan 1.3 or newer;
-- `VK_KHR_swapchain`;
-- timeline semaphore, Synchronization2 and Dynamic Rendering features;
-- at least one graphics-capable queue and one presentation-capable queue;
-- valid surface support with at least one swapchain format and present mode.
-
-Suitable devices are scored deterministically. Device type is the primary
-preference, a shared graphics/present queue family receives a smaller bonus, and
-`maxImageDimension2D` is a final capability contribution. Equal scores are
-resolved by stable device UUID, vendor/device IDs and name, so enumeration order
-does not decide the winner.
-
-Rejected candidates retain explicit reasons for every missing required
-capability. If no candidate is suitable, initialization fails with diagnostics
-for all candidates.
-
-## Logical Device
-
-`VulkanDevice` creates and owns one `VkDevice` for a selected physical device.
-It enables only the queue families required by graphics and presentation; when
-both roles use the same family, only one queue create request is emitted.
-
-The logical-device layer enables the required Vulkan 1.2/1.3 features from the
-selected physical-device snapshot:
-
-- timeline semaphore;
-- Synchronization2;
-- Dynamic Rendering.
-
-After successful device creation, device-level Volk dispatch is loaded through
-`volkLoadDevice()`. The graphics and present queue handles are retrieved once
-and exposed only as `VulkanLockedQueue`, so backend code holds the queue mutex
-while using the raw `VkQueue`. Shared graphics/present queues therefore have one
-host-synchronization boundary.
-
-`VulkanDevice` publishes immutable `GraphicsCapabilities` from the selected
-device snapshot. The current public capability surface maps Vulkan presentation
-support, timeline semaphore support and the backend frame-in-flight policy.
-
-## Memory And Uploads
-
-Vulkan memory allocation is internal to the backend and uses VMA. Buffer and
-image allocation wrappers own both the Vulkan object and its VMA allocation, so
-partially constructed resources do not escape and destruction is paired.
-
-`VulkanUploadManager` stages buffer and 2D color-image payloads in host-visible
-VMA allocations. Upload command buffers use the graphics queue and the existing
-timeline submission manager. Staging buffers and their command buffers remain
-owned until the exact timeline completion is observed; `ReleaseCompleted()`
-returns only completed uploads. Steady-state upload does not call
-`vkDeviceWaitIdle`; shutdown waits only when pending upload work remains.
-
-Uploads use `VulkanResourceStateTracker` for transfer state transitions. The
-caller shares that tracker with subsequent consumers, so the tracker records
-the post-upload buffer state and image shader-read state instead of leaving
-hidden layouts or broad synchronization barriers in the upload path. The
-tracker changes are committed only after successful queue submission, and VMA
-allocation destruction removes the corresponding concrete resource state.
-The
-current manager is a serial baseline. Persistent staging arenas and batched
-submissions belong to FEATURE-0069.
-
-## Swapchain
-
-`VulkanSwapchain` owns one `VkSwapchainKHR` for one `VkSurfaceKHR` and the
-image views created for its images. Swapchain images themselves remain owned by
-Vulkan WSI and are exposed only as indexed handles plus their matching view.
-
-Swapchain planning is separated from object creation. The plan chooses:
-
-- preferred `VK_FORMAT_B8G8R8A8_SRGB` with `SRGB_NONLINEAR` color space when
-  available, otherwise the first reported surface format;
-- preferred mailbox present mode when available, otherwise mandatory FIFO;
-- the surface-fixed extent when Vulkan provides one, otherwise the current
-  framebuffer size clamped to surface limits;
-- one more image than `minImageCount`, capped by `maxImageCount`;
-- exclusive image sharing for a shared graphics/present family, or concurrent
-  sharing for separate families.
-
-A zero-width or zero-height framebuffer is treated as suspended presentation.
-That state is not fatal and creates no `VkSwapchainKHR`; callers recreate the
-presentation chain when the framebuffer becomes non-zero again.
-
-Acquire and present wrappers translate WSI results into explicit backend states:
-acquired/presented, suboptimal, out-of-date, timeout/not-ready or suspended.
-They do not record rendering commands or perform layout transitions; the
-command/submission path owns those responsibilities.
-
-## Frame Contexts
-
-`VulkanFrameContextRing` owns one `VulkanFrameContext` per Engine frame slot.
-The ring size is exactly `MaxActiveFrames`; swapchain image indices are separate
-WSI values and do not select frame-local command state.
-
-Each context owns frame-local Vulkan command state for the graphics queue. A
-context can be acquired for a new frame only when its previous completion value
-has finished. Until then `TryAcquire()` returns no context, so callers apply
-backpressure instead of resetting command pools that may still be in flight.
-An acquired context can be released before submit when WSI acquire cannot
-produce an image.
-
-Shutdown is conservative: if any context is still in flight, the ring waits for
-the logical device to become idle before destroying command pools.
-
-## Submission Manager
-
-`VulkanSubmissionManager` owns backend-internal timeline completion for Vulkan
-queue work. Graphics submissions are serialized through `VulkanDevice` queue
-locks and receive a monotonically increasing timeline value from the graphics
-queue context.
-
-The manager appends its timeline semaphore signal to every graphics submit while
-preserving caller-provided binary wait/signal semaphores. WSI acquire and present
-therefore remain on binary semaphores, and frame/resource lifetime code observes
-completion by querying the returned timeline value instead of using frame numbers.
-
-## Clear, Submit and Present
-
-`VulkanClearPresentPath` is the MVP-2 command path. For each logical frame it:
-
-- polls acquisition of a swapchain image with a frame-local binary semaphore;
-- discards the previous image contents from undefined layout to transfer-write, clears it, then
-  transitions it back to present;
-- submits that command buffer with the acquire semaphore and signals a
-  per-image present-ready binary semaphore plus the backend timeline;
-- presents without waiting for a fence.
-
-Frame slots are selected from the logical frame index, independently of WSI
-image indices and present timing. `PollCompletedFrames()` non-blockingly emits
-completed frame events in submission order; it never waits on the worker path.
-The acquire wait covers transfer commands. Present semaphores are reused only
-after acquiring their image again, independently of frame-slot timeline completion.
-A recording, submission or presentation failure makes the path terminal; destroy
-it before retrying. Shutdown drains device work before destroying synchronization resources.
-`Render()` returns an optional completion token independently of presentation status.
-Advance the logical frame index whenever that token is present, including when
-present reports out-of-date. Without a token the frame was not submitted and may
-be retried. Drain submitted completion events before destroying the path.
-
-## Resource State Tracking
-
-Runtime frame-ring integration uses the exact `VulkanQueueCompletion` returned
-by submit. An external backend event service fulfills the corresponding
-future registered through `FrameContext::RegisterGpuCompletion()` only after the
-timeline reaches that value. Registration happens before native submission, so
-an exception after submit cannot lose the completion or release the engine arena.
-Both VulkanFrameContext and FrameExecutionSlot use the same configured slot count
-and frame-slot identity. The engine retains its slot until CPU draw return and
-the GPU signal; the Vulkan ring independently verifies that same timeline value
-before resetting command pools. Presentation timing does not release either slot.
-The completion service remains active while Engine drains in-flight frames on stop.
-
-`VulkanResourceStateTracker` owns backend-internal image state for Synchronization2.
-Callers import external images, including swapchain images, with an explicit
-initial state. Semantic usages are converted to Vulkan stage, access, layout and
-queue-family state inside the backend.
-
-Image transitions produce `VkImageMemoryBarrier2` only when the tracked state
-actually changes. The tracker also records queue-family ownership state, so
-future multi-queue transfer/release/acquire paths can use the same model while
-the MVP-2 execution path remains single graphics queue.
-
-## Graphics pipelines
-
-`VulkanGraphicsPipeline` consumes the immutable Graphics descriptor and cooked shader snapshots.
-It creates shader modules, an empty pipeline layout and a dynamic-rendering pipeline transactionally;
-temporary shader modules are released after creation. Viewport and scissor are dynamic.
-The physical-device selection must be the selection used to create the supplied device.
-The device must outlive the pipeline, and the caller must complete all GPU uses before destruction.
-Descriptor layouts and push constants are not part of this initial pipeline descriptor.
-Non-solid rasterization and independent blending are rejected because VulkanDevice does not enable
-those optional features. Vertex-input and attachment limits are checked before driver creation.
-Pipeline reuse is provided by VulkanPipelineManager; graph execution remains a subsequent integration.
-
-The heavy device smoke creates color and depth-only pipelines from embedded cooked SPIR-V fixtures,
-repeats creation/destruction, checks unsupported rasterization, and fails on validation errors.
-
-## Dispatch
-
-Global Vulkan entry points are loaded with `volkInitialize()`. After successful
-instance creation, `volkLoadInstanceOnly()` loads instance-level dispatch.
-After successful logical-device creation, `volkLoadDevice()` loads device-level
-dispatch.
-
-## Public clear presentation integration
-
-`CreatePresentationGraphics(Window&, PresentationConfig)` composes one instance, GLFW surface, selected
-device, swapchain and VulkanClearPresentPath behind the public Graphics facade. The factory requires
-Vulkan/GLFW and the Window outlives Graphics. Public application/sample code contains no native handles.
-`TrySubmitFrame` returns a status and an independent CompletionPoint: OUT_OF_DATE may still carry an
-accepted submission. Inspect the completion before handling Failure. Retry a non-submitted frame with
-the same logical/slot identity. This clear-only profile rejects resource/graph operations until graph execution
-is integrated; it does not replace the separate Vulkan resource primitives.
-
-The clear path publishes its timeline token immediately after SubmitGraphics returns, before present or
-allocating completion bookkeeping. Application's pre-registered promise therefore retains post-submit
-failures safely. Timeline completion controls GPU frame storage; the existing per-image semaphore and
-swapchain retirement protocol independently controls WSI lifetime. See application/README.md for the
-end-to-end MVP-2 flow, diagnostics, shutdown and sample commands.
-
-## Dynamic rendering passes (FEATURE-0066)
-
-`VulkanRenderingScope` records color attachment passes with `vkCmdBeginRendering` / `vkCmdEndRendering`.
-It owns only the recording scope, not attachments, command buffers or submissions. The clear presentation
-path now uses this same recording primitive and COLOR_ATTACHMENT_OPTIMAL / color-output barriers.
-Swapchain views and extent are selected at recording time, including after recreation. There are no
-permanent VkRenderPass/VkFramebuffer objects. Format and sample compatibility remain in the existing
-backend-independent GraphicsPipelineDescriptor; VulkanGraphicsPipeline already consumes
-VkPipelineRenderingCreateInfo. The caller ensures attachment extent/layers/formats/samples match the pass
-and pipeline and retains resources until submission completion. Scope end performs no barriers or submit.
-
-Secondary-command-buffer contents select VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT.
-The eventual worker recorder supplies matching VkCommandBufferInheritanceRenderingInfo and owns its
-command pools per frame/worker. Depth/stencil attachment recording is deferred until a pass consumes it;
-the existing depth pipeline metadata is preserved. RenderGraph execution and triangle/textured integration
-remain FEATURE-0031/0067 responsibilities.
-
-Contract tests verify runtime attachment selection, clear/load/store settings, resize extent, secondary
-contents, rejection before recording and balanced scope end on exceptions. Existing ApplicationPresentation
-and swapchain lifecycle heavy tests now exercise the real dynamic color pass with validation through
-resize, suspension/restore, WSI statuses and repeated frame recycling.
-
-## Pipeline preparation and cache (FEATURE-0068)
-
-VulkanPipelineManager is backend-owned and scoped to one logical device. Construct a
-NGraphics::PipelineKey from a validated descriptor, Prepare(key) during loading/warmup,
-and retain the returned pipeline pointer for recording. FindReady(key) only looks up
-published entries; a miss returns nullptr and never compiles a pipeline in the draw path.
-Keys retain shader snapshots and compare complete descriptors after hashing; shader-stage
-and vertex binding/attribute declaration order do not change identity. Formats, blend
-attachment order, raster/depth state, topology, samples, entry points and artifact contents do.
-
-The MVP has one fixed empty pipeline layout and dynamic viewport/scissor, matching
-VulkanGraphicsPipeline. Descriptor layouts, push constants or a different dynamic-state
-policy must be added to the descriptor and key together when implemented; no native layout
-identity leaks into Renderer. Graphics' existing Create/Destroy handle registry semantics
-are unchanged. FEATURE-0031 wires this preparation cache into graph execution, rather than
-adding resource operations to the clear-only presentation profile.
-
-The manager owns one VkPipelineCache and all native pipelines/layouts, with no eviction.
-Concurrent Prepare calls serialize lookup/creation/publication and driver cache access.
-A failed creation publishes no entry; later preparation can retry. Prepare can run on a
-caller-owned loading executor as the extension point for background warmup; FindReady
-currently shares the cache mutex, so prepare before frames for the baseline. The hot path
-can retain stable pointers rather than repeatedly hash descriptors or contend with warmup.
-
-Stop/join all preparation and recording work and complete every GPU use before manager
-destruction; destroy the manager before its device. No manager/native object is shared
-across devices, and a new manager starts empty. It does not wait a queue or device during
-lookup, creation or destruction. Keeping entries until this shutdown boundary avoids unsafe
-eviction based only on CPU reference counts; hot reload/deferred eviction is separate work.
-Disk blobs/compatibility validation, eviction, async scheduling and warmup tuning remain
-production hardening, not implicit behavior of this foundation.
-
-CPU tests cover key snapshots, field coverage, canonical order, invalid admission, reload
-and hash-bucket collisions. The validation-required heavy device smoke checks real driver
-create/reuse, noncreating lookup, concurrent equal misses, non-null VkPipelineCache use,
-failure/retry and manager teardown/recreation. No submitted GPU work is live at teardown.
+## Пересоздание цепочки изображений
+
+Владелец отображения передаёт изменения размера кадрового буфера в `VulkanClearPresentPath::SetFramebufferSize`. Вызовы этого метода, `Render` и `PollCompletedFrames` должны внешне сериализоваться. Нулевой размер приостанавливает получение и отображение изображений без потери ожидающих событий завершения и без остановки моделирования. Восстановление ненулевого размера, изменение размера, `OUT_OF_DATE` при получении и `SUBOPTIMAL` при получении или отображении запрашивают пересоздание. `OUT_OF_DATE` при отображении всё равно возвращает завершение успешно отправленной графической работы.
+
+Перед заменой `Render` проверяет последний сигнал графической временной шкалы и возвращает `NOT_READY`, пока отправка не завершена. Устройство и кольцо контекстов кадра сохраняются. Обычные кадры и пересоздание не вызывают ожидание простоя очереди или устройства.
+
+Старые цепочки изображений, представления и двоичные семафоры отображения на изображения удерживаются вместе. После повторного получения первого успешно отображённого изображения новой цепочки завершение следующей графической отправки доказывает, что ожидание семафора получения закончилось и предыдущее отображение завершилось. Тогда можно освободить прежние поколения. Если пересоздание происходит до такой последовательности, старые поколения сохраняются, пока более поздняя цепочка не предоставит аналогичного подтверждения. Это соответствует [резервному подходу Khronos](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html) для реализаций без средств отслеживания завершения отображения. При непрерывном изменении размеров одновременно могут временно сохраняться несколько поколений. При остановке остаётся существующее ожидание простоя устройства.
+
+Низкоуровневый `VulkanSwapchain::Recreate` требует, чтобы вызывающий код завершил все обращения устройства к старым изображениям; исключение — приостановка с нулевым размером, когда ресурсы сохраняются. При наличии `VulkanClearPresentPath` только он владеет пересозданием и подтверждает безопасность освобождения. Ошибка замены требует остановки: Vulkan мог вывести старую цепочку из обращения даже при отказе создания новой. Устройство и поверхность должны пережить обоих владельцев.
+
+## Экземпляр Vulkan
+
+`VulkanInstance` — первый объект времени жизни Vulkan:
+
+- инициализирует загрузчик Volk одним способом;
+- проверяет запрошенную версию интерфейса до создания;
+- определяет обязательные и необязательные расширения текущего загрузчика;
+- при запросе включает `VK_KHR_portability_enumeration` для совместимого перечисления устройств, например через MoltenVK;
+- при запросе и наличии включает `VK_LAYER_KHRONOS_validation`;
+- при доступности в конфигурации разработки подключает `VK_EXT_debug_utils`;
+- владеет `VkInstance` и уничтожением отладочного обработчика по правилам RAII.
+
+Создание транзакционно: при исключении частично созданный экземпляр не публикуется, а созданные объекты уничтожаются до выхода из конструктора. `VulkanInstance` не создаёт физическое или логическое устройство, цепочку изображений, ресурсы устройства, очереди и буферы команд.
+
+## Создание поверхности через GLFW
+
+`glfw_surface.h` — единственная граница, объединяющая физические типы Vulkan и доступ к окну GLFW. Публичный `Window` не предоставляет метод получения физического дескриптора окна.
+
+Интеграция объявляет требуемые GLFW расширения экземпляра до его создания; создаёт и уничтожает одну `VkSurfaceKHR` через `VulkanSurface`; получает окно GLFW только через внутренний контракт `Window`. Объекты `Window`, `VulkanInstance` и среда GLFW должны пережить поверхность.
+
+## Выбор физического устройства
+
+Сначала свойства Vulkan копируются в `VulkanPhysicalDeviceCapabilities`, затем проверяется это значение, пригодное для тестов без графического устройства. Во время выполнения выбранный снимок только сопоставляется с `VkPhysicalDevice`; логическое `VkDevice` здесь не создаётся.
+
+Обязательные возможности по умолчанию:
+
+- Vulkan версии 1.3 или новее;
+- расширение `VK_KHR_swapchain`;
+- семафоры временной шкалы, Synchronization2 и динамический рендеринг;
+- как минимум одна очередь с поддержкой графики и одна с поддержкой отображения;
+- действительная поддержка поверхности хотя бы с одним форматом изображения и режимом отображения.
+
+Подходящие устройства оцениваются детерминированно. Основной приоритет задаёт тип устройства, меньшую прибавку получает общая семья графической и отображающей очередей, последнюю — `maxImageDimension2D`. При одинаковой оценке используется устойчивый порядок по UUID, идентификаторам изготовителя и устройства и имени; порядок перечисления не определяет выбор.
+
+Для каждого отклонённого кандидата сохраняются точные причины отсутствия обязательных возможностей. Если подходящих устройств нет, инициализация выдаёт диагностику всех кандидатов.
+
+## Логическое устройство
+
+`VulkanDevice` создаёт и владеет одним `VkDevice` выбранного физического устройства. Включаются только семейства очередей, необходимые для графики и отображения. Если обе роли находятся в одном семействе, создаётся один запрос очереди.
+
+Из снимка физического устройства включаются обязательные возможности Vulkan 1.2/1.3: семафоры временной шкалы, Synchronization2 и динамический рендеринг.
+
+После успешного создания `volkLoadDevice()` загружает функции уровня устройства. Дескрипторы графической и отображающей очередей получаются по одному разу и предоставляются только через `VulkanLockedQueue`, чтобы при использовании `VkQueue` код реализации удерживал мьютекс. Общая графическая и отображающая очередь, следовательно, имеет одну границу синхронизации на процессоре.
+
+`VulkanDevice` публикует неизменяемые `GraphicsCapabilities` из свойств выбранного устройства. Публичные возможности сейчас включают поддержку отображения, семафоров временной шкалы и политику одновременно активных кадров реализации.
+
+## Память и передача данных
+
+Выделение памяти устройства остаётся внутри Vulkan и использует VMA. Обёртки буферов и изображений владеют и объектом Vulkan, и выделением VMA: частично созданные ресурсы не выходят наружу, а освобождение согласовано.
+
+`VulkanUploadManager` помещает данные буферов и двухмерных цветных изображений в доступные процессору выделения VMA. Буферы команд передачи используют графическую очередь и существующий менеджер отправки с временной шкалой. Промежуточные буферы и буферы команд сохраняются до точного завершения отправки; `ReleaseCompleted()` возвращает только завершённые передачи. В обычном режиме `vkDeviceWaitIdle` не вызывается; остановка ждёт устройство лишь при наличии незавершённой передачи.
+
+`VulkanResourceStateTracker` управляет переходами состояний при передаче. Вызывающий код использует тот же отслеживатель для дальнейших потребителей, чтобы в нём отражались состояние буфера после передачи и состояние изображения для чтения шейдером, без скрытых раскладок и избыточных барьеров. Изменения отслеживателя фиксируются только после успешной отправки в очередь, а уничтожение выделения VMA удаляет состояние соответствующего физического ресурса.
+
+Текущая реализация менеджера последовательна. Постоянные арены промежуточной памяти и объединение отправок относятся к `FEATURE-0069`.
+
+## Цепочка изображений
+
+`VulkanSwapchain` владеет одной `VkSwapchainKHR` для одной `VkSurfaceKHR` и представлениями её изображений. Сами изображения принадлежат WSI Vulkan и предоставляются как индексированные дескрипторы с соответствующим представлением.
+
+Выбор параметров отделён от создания объектов. Предпочитаются:
+
+- `VK_FORMAT_B8G8R8A8_SRGB` с цветовым пространством `SRGB_NONLINEAR` при наличии, иначе первый формат поверхности;
+- режим отображения mailbox при наличии, иначе обязательный FIFO;
+- фиксированный размер поверхности, если он задан Vulkan, иначе текущий размер кадрового буфера, ограниченный диапазоном поверхности;
+- число изображений на одно больше `minImageCount`, но не выше `maxImageCount`;
+- исключительный доступ к изображениям при общем семействе графики и отображения, иначе совместный доступ двух семейств.
+
+Нулевая ширина или высота кадрового буфера означают приостановку отображения, а не ошибку. `VkSwapchainKHR` при этом не создаётся; цепочка пересоздаётся после восстановления ненулевого размера.
+
+Обёртки получения и отображения преобразуют результаты WSI в явные состояния: изображение получено или отображено, неоптимальный режим, устаревшая цепочка, истечение ожидания/неготовность и приостановка. Они не записывают команды рендеринга и не выполняют переходы раскладки: этим владеет путь записи и отправки команд.
+
+## Контексты кадров
+
+`VulkanFrameContextRing` владеет одним `VulkanFrameContext` на слот кадра `Engine`. Размер кольца строго равен `MaxActiveFrames`; индексы изображений цепочки — отдельные значения WSI, не выбирающие локальное состояние команд кадра.
+
+Каждый контекст владеет состоянием буферов команд Vulkan для графической очереди. Повторное получение контекста допускается только после завершения предыдущего значения временной шкалы. До этого `TryAcquire()` не возвращает контекст и вызывающий код ограничивает допуск, а не сбрасывает ещё используемые пулы. Если WSI не смог получить изображение, уже полученный контекст разрешается освободить до отправки.
+
+При остановке действует консервативное правило: при наличии активного контекста кольцо ждёт простоя логического устройства перед уничтожением пулов команд.
+
+## Менеджер отправки
+
+`VulkanSubmissionManager` владеет внутренним отслеживанием завершения работ очереди через временную шкалу. Графические отправки сериализуются блокировками очередей `VulkanDevice` и получают монотонное значение временной шкалы графической очереди.
+
+К каждой графической отправке менеджер добавляет сигнал собственного семафора временной шкалы, сохраняя переданные вызывающим кодом двоичные семафоры ожидания и сигнала. Поэтому получение и отображение WSI продолжают использовать двоичные семафоры, а владельцы кадров и ресурсов проверяют точное значение временной шкалы вместо номера кадра.
+
+## Очистка, отправка и отображение
+
+`VulkanClearPresentPath` — путь исполнения кадра с очисткой изображения. Для каждого логического кадра он:
+
+- проверяет получение изображения цепочки с двоичным семафором кадра;
+- отбрасывает прежнее содержимое изображения, переводит его из неопределённой раскладки в состояние записи при передаче, очищает и возвращает в состояние отображения;
+- отправляет буфер команд с семафором получения и сигналом двоичного семафора готовности отображения данного изображения вместе с временной шкалой;
+- отображает без ожидания объекта синхронизации процессора.
+
+Слоты выбираются по индексу логического кадра независимо от индекса изображения WSI и времени отображения. `PollCompletedFrames()` без блокировки выдаёт события завершения в порядке отправки и никогда не ожидает в рабочем потоке. Ожидание получения покрывает команды передачи. Семафоры отображения повторно используются лишь после повторного получения соответствующего изображения независимо от временной шкалы слота.
+
+Ошибка записи, отправки или отображения делает путь окончательно непригодным: перед повтором его нужно уничтожить. Остановка дожидается работы устройства до уничтожения средств синхронизации. `Render()` возвращает необязательный токен завершения независимо от результата отображения. Если токен есть, логический индекс кадра необходимо продвинуть даже при `OUT_OF_DATE`. Без токена работа не отправлена, и тот же кадр можно повторить. До уничтожения пути необходимо получить события завершения уже отправленных работ.
+
+## Отслеживание состояния ресурсов и завершения
+
+Интеграция кольца использует точный `VulkanQueueCompletion`, возвращённый отправкой. Внешняя служба событий реализации завершает соответствующий объект ожидания, заранее зарегистрированный через `FrameContext::RegisterGpuCompletion()`, лишь после достижения значения временной шкалы. Регистрация происходит до физической отправки, поэтому исключение после неё не теряет сигнал и не освобождает арену `Engine` раньше времени.
+
+`VulkanFrameContext` и `FrameExecutionSlot` используют одинаковое настроенное число слотов и общую идентичность слота кадра. `Engine` удерживает слот до возврата задачи рисования процессора и сигнала устройства; кольцо Vulkan независимо проверяет то же значение временной шкалы перед сбросом пулов команд. Время отображения не освобождает ни один слот. Служба завершения остаётся активной во время остановки `Engine` и завершения отправленных кадров.
+
+`VulkanResourceStateTracker` владеет внутренними состояниями изображений для Synchronization2. Вызывающий код импортирует внешние изображения, включая изображения цепочки, с явным исходным состоянием. Смысловое использование преобразуется внутри реализации в стадии Vulkan, права доступа, раскладку и состояние принадлежности семейству очередей.
+
+Переходы изображений создают `VkImageMemoryBarrier2` только при действительном изменении состояния. Отслеживатель также сохраняет принадлежность семейству очередей: будущий перенос между очередями сможет использовать тот же контракт, хотя текущий путь выполняется в одной графической очереди.
+
+## Графические конвейеры
+
+`VulkanGraphicsPipeline` получает неизменяемый дескриптор `Graphics` и снимки подготовленных шейдеров. Он транзакционно создаёт модули шейдеров, пустую раскладку конвейера и конвейер динамического рендеринга, затем освобождает временные модули. Область просмотра и прямоугольник отсечения — динамические состояния.
+
+Выбор физического устройства должен совпадать с использованным при создании переданного логического устройства. Устройство обязано пережить конвейер, а вызывающий код — завершить все обращения устройства к нему до уничтожения. Раскладки дескрипторов и передаваемые непосредственно константы не входят в начальное описание конвейера. Несплошная растеризация и независимое смешивание отклоняются: `VulkanDevice` не включает соответствующие необязательные возможности. Ограничения входных вершин и целевых изображений проверяются до обращения к драйверу. Повторное использование обеспечивает `VulkanPipelineManager`; исполнение графа подключается отдельно.
+
+Проверка на реальном устройстве создаёт цветовые и глубинные конвейеры из встроенных заранее подготовленных образцов SPIR-V, повторяет создание и уничтожение, проверяет неподдерживаемую растеризацию и отклоняет ошибки проверки корректности.
+
+## Загрузка функций Vulkan
+
+Глобальные точки входа загружает `volkInitialize()`. После создания экземпляра `volkLoadInstanceOnly()` загружает функции уровня экземпляра, а после создания логического устройства `volkLoadDevice()` — функции устройства.
+
+## Публичная интеграция отображения
+
+`CreatePresentationGraphics(Window&, PresentationConfig)` объединяет один экземпляр, поверхность GLFW, выбранное устройство, цепочку изображений и `VulkanClearPresentPath` за публичным интерфейсом `Graphics`. Фабрика требует Vulkan и GLFW; `Window` должен пережить `Graphics`. Публичный код приложения и примера не использует физические дескрипторы.
+
+`TrySubmitFrame` возвращает статус и независимый `CompletionPoint`; `OUT_OF_DATE` может означать уже принятую отправку. Проверяйте завершение до обработки `Failure`. Неотправленный кадр повторяется с той же логической идентичностью и слотом. Реализация только с очисткой отклоняет операции с ресурсами и графом до подключения исполнения графа; это не заменяет отдельные примитивы ресурсов Vulkan.
+
+Путь очистки публикует токен временной шкалы немедленно после возврата `SubmitGraphics`, до отображения и выделения памяти для последующего учёта. Поэтому предварительно зарегистрированное обещание `Application` безопасно удерживает ошибки после отправки. Завершение временной шкалы управляет памятью кадра устройства, а семафоры каждого изображения и протокол освобождения старых цепочек независимо управляют временем жизни WSI. Сквозной путь, диагностика, остановка и команды примера приведены в [документации приложения](../../application/README.md).
+
+## Проходы с динамическим рендерингом
+
+`VulkanRenderingScope` записывает цветовые проходы через `vkCmdBeginRendering` и `vkCmdEndRendering`. Он владеет только областью записи, но не изображениями, буферами команд и отправками. Путь очистки использует тот же примитив и переходы `COLOR_ATTACHMENT_OPTIMAL` с барьерами стадий вывода цвета. Представления цепочки и размеры выбираются при записи, включая после пересоздания. Постоянные `VkRenderPass` и `VkFramebuffer` отсутствуют.
+
+Совместимость форматов и образцов остаётся в независимом от реализации `GraphicsPipelineDescriptor`; `VulkanGraphicsPipeline` уже использует `VkPipelineRenderingCreateInfo`. Вызывающий код гарантирует соответствие размеров, слоёв, форматов и образцов прохода и конвейера и удерживает ресурсы до завершения отправки. Закрытие области не создаёт барьеры и не отправляет работу.
+
+При записи вторичных буферов команд задаётся `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`. Будущий планировщик рабочих потоков предоставляет соответствующий `VkCommandBufferInheritanceRenderingInfo` и владеет пулами команд на каждый кадр и поток. Запись целевых изображений глубины и трафарета добавляется при появлении потребителя; метаданные конвейера глубины уже сохраняются. Исполнение `RenderGraph` и интеграция рисования треугольника и текстур относятся к `FEATURE-0031` и `FEATURE-0067`.
+
+Проверки контрактов покрывают выбор изображений во время исполнения, параметры очистки/загрузки/сохранения, размер после изменения окна, содержимое вторичных команд, отклонение до начала записи и корректное закрытие области при исключениях. Проверки отображения приложения и жизненного цикла цепочки теперь исполняют настоящий цветовой проход динамического рендеринга с проверкой корректности при изменении размера, приостановке и восстановлении, статусах WSI и многократном освобождении кадров.
+
+## Подготовка и кэш графических конвейеров
+
+`VulkanPipelineManager` принадлежит реализации и ограничен одним логическим устройством. Создайте `NGraphics::PipelineKey` из проверенного дескриптора, вызовите `Prepare(key)` во время загрузки или предварительной подготовки и удерживайте полученный указатель на конвейер для записи команд. `FindReady(key)` ищет только опубликованные записи; при отсутствии возвращает `nullptr` и никогда не компилирует конвейер в пути рисования.
+
+Ключи удерживают снимки шейдеров и после проверки хеша сравнивают полные дескрипторы. Порядок объявления стадий шейдеров, привязок вершин и атрибутов не влияет на идентичность. Форматы, порядок целевых изображений для смешивания, растеризация/глубина, топология, число образцов, точки входа и содержимое артефактов влияют.
+
+Текущий конвейер использует одну фиксированную пустую раскладку и динамические область просмотра и отсечение, как и `VulkanGraphicsPipeline`. Новые раскладки дескрипторов, передаваемые непосредственно константы или другая политика динамических состояний должны добавляться одновременно в дескриптор и ключ, без раскрытия физических идентификаторов в `Renderer`. Семантика существующего реестра `Graphics` для создания и уничтожения не меняется. `FEATURE-0031` подключает кэш к выполнению графа, не добавляя операции ресурсов в профиль отображения только с очисткой.
+
+Менеджер владеет одним `VkPipelineCache` и всеми физическими конвейерами и раскладками без вытеснения. Конкурентные `Prepare` сериализуют поиск, создание, публикацию и доступ драйвера к кэшу. Ошибочное создание не публикует запись, следующая подготовка может повторить попытку. `Prepare` может выполняться во внешнем исполнителе загрузки для предварительной подготовки; `FindReady` сейчас использует тот же мьютекс кэша, поэтому в исходной реализации лучше подготовить конвейеры до кадров. В горячем пути можно хранить устойчивые указатели, не хешируя повторно дескрипторы и не конкурируя с подготовкой.
+
+До уничтожения менеджера необходимо остановить и присоединить подготовку и запись, дождаться всех использований на устройстве; сам менеджер уничтожается до устройства. Физические объекты и менеджер не разделяются между устройствами; новый менеджер начинается с пустого состояния. Поиск, создание и уничтожение не вызывают ожидание очереди или устройства. Удержание записей до полной остановки исключает небезопасное вытеснение по одним лишь ссылкам процессора. Перезагрузка ресурсов и отложенное вытеснение — отдельные задачи. Дисковые данные кэша и проверка совместимости, вытеснение, асинхронное планирование и настройка предварительной подготовки пока не реализованы этим механизмом.
+
+Тесты процессора проверяют снимки ключей, учитываемые поля, канонический порядок, неверный допуск, обновление артефактов и коллизии хеша. Проверка на настоящем устройстве с обязательным слоем проверки корректности выполняет создание и повторное использование конвейеров драйвером, поиск без создания, конкурентные одинаковые промахи, ненулевой `VkPipelineCache`, ошибку и повтор, уничтожение и создание нового менеджера. При уничтожении нет незавершённой отправленной работы устройства.

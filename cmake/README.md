@@ -1,9 +1,8 @@
-# CMake Utilities
+# Средства сборки CMake
 
-`utils.cmake` provides a small DSL for declaring GraphicsEngine modules, tests, benchmarks, samples, sources, and
-dependencies.
+`utils.cmake` предоставляет компактный набор команд для объявления модулей GraphicsEngine, тестов, измерений производительности, примеров, исходных файлов и зависимостей.
 
-The public API is:
+Публичные команды:
 
 ```cmake
 MODULE(name)
@@ -30,12 +29,11 @@ BENCHMARK_LABELS(...)
 RECURSE(...)
 ```
 
-Tests and benchmarks do not infer production dependencies from their names. Link every required module explicitly with
-`PRIVATE_DEPENDS(...)`.
+Тесты и измерения не выводят зависимости от производственных модулей по имени. Все нужные модули перечисляются явно через `PRIVATE_DEPENDS(...)`.
 
-## Entry Files
+## Входные файлы
 
-Directories participating in the build use one entry file:
+Каталог, участвующий в сборке, использует один входной файл из списка:
 
 ```text
 module.cmake
@@ -47,11 +45,11 @@ benchmark.cmake
 sample.cmake
 ```
 
-`RECURSE()` automatically finds the entry file. A directory must contain exactly one supported entry file.
+`RECURSE()` автоматически обнаруживает входной файл. В каждом каталоге должен быть ровно один поддерживаемый файл.
 
-## Production Modules
+## Модули библиотеки
 
-Create a module:
+Объявление модуля:
 
 ```cmake
 MODULE(Window)
@@ -74,18 +72,9 @@ RECURSE(
 )
 ```
 
-This creates:
+Создаются `GraphicsEngineWindow` и `GraphicsEngine::Window`. Модули библиотеки являются статическими. Так сохраняется смысл `PRIVATE_DEPENDS` независимо от `BUILD_SHARED_LIBS`: закрытые зависимости остаются необходимыми при связывании установленного потребителя, но не расширяют публичный интерфейс заголовков.
 
-```text
-GraphicsEngineWindow
-GraphicsEngine::Window
-```
-
-Production modules are static libraries. This keeps `PRIVATE_DEPENDS` semantics stable regardless of
-`BUILD_SHARED_LIBS`: private dependencies remain part of the installed consumer link closure, but they do not extend the
-public header API.
-
-Extend an existing module from a child directory:
+Дополнение существующего модуля из вложенного каталога:
 
 ```cmake
 SUBMODULE()
@@ -95,11 +84,11 @@ SOURCES(
 )
 ```
 
-`SUBMODULE()` does not create another target. It adds sources and local headers to the current module target.
+`SUBMODULE()` не создаёт отдельную цель. Он добавляет исходники и локальные заголовки к текущему модулю.
 
-## Tests
+## Тесты
 
-Create a test suite:
+Объявление набора тестов:
 
 ```cmake
 TEST_SUITE(Window)
@@ -121,103 +110,33 @@ TEST_LABELS(
 )
 ```
 
-This creates:
+Создаются `GraphicsEngineWindowTests` и `GraphicsEngine::WindowTests`. `TEST_SUITE(name)` создаёт исполняемый файл, `TEST(name)` открывает логическую группу внутри набора, а `TEST()` во вложенном каталоге продолжает активную группу.
 
-```text
-GraphicsEngineWindowTests
-GraphicsEngine::WindowTests
-```
+Отдельные проверки используют ту же структуру с собственным набором, например `TEST_SUITE(CommonLibs)` и явными зависимостями `GLM`, `StbImage`, `TinyObj`.
 
-`TEST_SUITE(name)` creates the executable. `TEST(name)` starts a logical test group inside the current suite. `TEST()`
-from a
-child directory continues the active test group:
-
-```cmake
-TEST()
-
-SOURCES(
-    factory_test.cpp
-)
-```
-
-Standalone checks use the same shape:
-
-```cmake
-TEST_SUITE(CommonLibs)
-
-TEST(CommonLibs)
-
-SOURCES(
-    common_libs.cpp
-)
-
-PRIVATE_DEPENDS(
-    GLM
-    StbImage
-    TinyObj
-)
-
-TEST_LABELS(
-    medium
-    cpp
-    libs
-)
-```
-
-Test labels are CTest labels. They are used by runner scripts and custom targets to run batches such as all `small`
-tests, all `libs` tests, or all tests owned by a directory-specific label. `TEST_LABELS(...)` also adds automatic
-labels:
+Метки тестов являются метками CTest. Сценарии запуска и пользовательские цели используют их, чтобы выбирать, например, все `small`, все `libs` или тесты конкретного каталога. `TEST_LABELS(...)` автоматически добавляет:
 
 ```text
 dir:<relative-source-directory>
 test:<current-test-name>
 ```
 
-Production `.cpp` files must not be added to test targets again. Tests use production code through explicit module
-dependencies.
+Файлы `.cpp` производственных модулей не добавляются повторно в тестовые цели: тесты используют код через зависимости модулей.
 
-## Benchmarks
+## Измерения производительности
 
-Create a benchmark suite:
-
-```cmake
-BENCHMARK_SUITE(Main)
-
-RECURSE(
-    smoke
-)
-```
-
-Add a benchmark group:
-
-```cmake
-BENCHMARK(Smoke)
-
-SOURCES(
-    smoke.cpp
-)
-
-BENCHMARK_LABELS(
-    smoke
-)
-```
-
-`BENCHMARK_SUITE(name)` creates the executable. `BENCHMARK(name)` starts a logical benchmark group inside the current
-suite.
-`BENCHMARK()` from a child directory continues the active benchmark group. `BENCHMARK_LABELS(...)` also records
-automatic
-labels:
+Набор объявляется `BENCHMARK_SUITE(name)`, логическая группа — `BENCHMARK(name)`, а `BENCHMARK()` во вложенном каталоге продолжает текущую группу. `BENCHMARK_LABELS(...)` добавляет метки, включая:
 
 ```text
 dir:<relative-source-directory>
 benchmark:<current-benchmark-name>
 ```
 
-Benchmarks are normally filtered at runtime by the benchmark runner, for example with `--benchmark_filter=Smoke`.
+Исполняемый файл создаёт `BENCHMARK_SUITE`. Обычно группы выбираются во время выполнения через параметры запуска, например `--benchmark_filter=Smoke`.
 
-## Samples
+## Примеры
 
-Create a sample executable:
+Объявление исполняемого примера:
 
 ```cmake
 SAMPLE(Base)
@@ -231,11 +150,11 @@ PRIVATE_DEPENDS(
 )
 ```
 
-Samples intentionally have no `SAMPLE_PART()` API until a sample grows enough structure to need it.
+Отдельной команды `SAMPLE_PART()` нет: она может появиться только при реальной необходимости более сложной структуры примеров.
 
-## Sources And Headers
+## Исходные файлы и заголовки
 
-`.cpp` files are always listed explicitly:
+Файлы `.cpp` всегда перечисляются явно:
 
 ```cmake
 SOURCES(
@@ -244,13 +163,7 @@ SOURCES(
 )
 ```
 
-MODULE() and SUBMODULE() automatically collect local .h files
-as private target sources.
-
-Public module headers are declared explicitly with API(...)
-in the root module.cmake.
-
-Headers not listed in API(...) are implementation headers.
+`MODULE()` и `SUBMODULE()` автоматически собирают локальные файлы `.h` как закрытые исходники цели. Открытые заголовки модуля явно перечисляются через `API(...)` в корневом `module.cmake`. Остальные заголовки являются внутренними.
 
 ```cmake
 API(
@@ -261,9 +174,9 @@ API(
 )
 ```
 
-## Dependencies
+## Зависимости
 
-Implementation-only dependencies:
+Внутренние зависимости:
 
 ```cmake
 PRIVATE_DEPENDS(
@@ -272,7 +185,7 @@ PRIVATE_DEPENDS(
 )
 ```
 
-Dependencies exposed through the public API:
+Зависимости публичного интерфейса:
 
 ```cmake
 PUBLIC_DEPENDS(
@@ -280,58 +193,33 @@ PUBLIC_DEPENDS(
 )
 ```
 
-Short project names are resolved automatically:
+Короткие имена проекта разрешаются автоматически: `Common` → `GraphicsEngine::Common`, `Window` → `GraphicsEngine::Window`. Полные имена целей CMake, такие как `Vulkan::Vulkan`, `Threads::Threads` и `GTest::gtest_main`, не изменяются.
+
+Вспомогательные команды покрывают только общие операции проекта. За пределами этой абстракции следует использовать обычный CMake напрямую.
+
+## Внутренняя организация
+
+`cmake/utils.cmake` — общая точка подключения. Реализация разделена по ответственности:
 
 ```text
-Common -> GraphicsEngine::Common
-Window -> GraphicsEngine::Window
-```
-
-Qualified CMake targets remain unchanged:
-
-```text
-Vulkan::Vulkan
-Threads::Threads
-GTest::gtest_main
-```
-
-The utilities organize common project operations only. Anything outside this abstraction should use regular CMake
-directly.
-
-## Internal Layout
-
-`cmake/utils.cmake` is the public include point. The implementation is split by responsibility:
-
-```text
-cmake/utils/context.cmake        # current DSL context and local header collection
-cmake/utils/target_options.cmake # project-wide target options
-cmake/utils/dependencies.cmake   # dependency resolution and public/private links
+cmake/utils/context.cmake        # контекст и локальные заголовки
+cmake/utils/target_options.cmake # общие настройки целей
+cmake/utils/dependencies.cmake   # разрешение зависимостей и связывание
 cmake/utils/sources.cmake        # SOURCES(...)
 cmake/utils/modules.cmake        # MODULE(...), SUBMODULE()
 cmake/utils/tests.cmake          # TEST_SUITE(...), TEST(...), TEST_LABELS(...), TEST_TARGET(...)
 cmake/utils/benchmarks.cmake     # BENCHMARK_SUITE(...), BENCHMARK(...), BENCHMARK_LABELS(...)
 cmake/utils/samples.cmake        # SAMPLE(...)
-cmake/utils/recurse.cmake        # RECURSE(...) and entry-file discovery
+cmake/utils/recurse.cmake        # RECURSE(...) и обнаружение входных файлов
 cmake/utils/external.cmake       # include_external(...)
 cmake/utils/package_api.cmake    # PACKAGE_ROOT(...), PACKAGE_COMPONENT(...), PACKAGE_DEPENDS(...)
 ```
 
-Files under `cmake/utils/` are implementation details of the project DSL. Module entry files should include
-`cmake/utils.cmake` through the top-level project setup, not the internal files directly.
+Файлы в `cmake/utils/` — внутренние детали набора команд. Входные файлы модулей подключают `cmake/utils.cmake` через конфигурацию корневого проекта, но не включают отдельные внутренние файлы напрямую.
 
-## Package
+## Устанавливаемый пакет
 
-GraphicsEngine can be installed as a CMake package.
-
-The public connection point is:
-
-```cmake
-GraphicsEngine::GraphicsEngine
-```
-
-Internal module targets are not part of the public CMake API.
-
-Normal usage:
+GraphicsEngine можно установить как пакет CMake. Публичная цель подключения — `GraphicsEngine::GraphicsEngine`; внутренние модули не входят в публичный интерфейс CMake.
 
 ```cmake
 find_package(
@@ -345,19 +233,13 @@ target_link_libraries(
 )
 ```
 
-If an application needs a specific installed capability:
+Если необходима конкретная возможность установленной сборки:
 
 ```cmake
 find_package(
     GraphicsEngine REQUIRED CONFIG
     COMPONENTS Vulkan GLFW
 )
-
-target_link_libraries(
-    MyApplication
-    PRIVATE
-    GraphicsEngine::GraphicsEngine
-)
 ```
 
-Components check installed build capabilities and do not add separate public targets.
+Компоненты проверяют возможности установленной сборки и не добавляют отдельных публичных целей.
