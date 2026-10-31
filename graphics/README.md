@@ -1,23 +1,43 @@
-# Графический интерфейс
+# Graphics
 
-`Graphics` задаёт независимую от конкретного графического интерфейса границу выполнения работы графическим устройством. Публичные дескрипторы описывают смысл операций над графическими ресурсами и не раскрывают внутренние дескрипторы реализации.
+`Graphics` is the backend-independent GPU execution boundary. Public descriptors describe semantic GPU work and never
+expose native backend handles.
 
-## Графические конвейеры
+## Graphics pipelines
 
-При создании конвейера `GraphicsPipelineDescriptor` копируется. Опубликованное состояние конвейера неизменно в течение всей жизни его `GraphicsPipelineHandle`: изменение исходного дескриптора вызывающим кодом не изменяет созданный конвейер.
+`GraphicsPipelineDescriptor` is copied when a pipeline is created. The published pipeline state is immutable for the
+lifetime of its `GraphicsPipelineHandle`; changing the caller's descriptor does not mutate an existing pipeline.
 
-`Shader` ссылается на типизированный `ResourceHandle<NResources::ShaderArtifact>`, сохраняет канонический идентификатор ресурса и удерживает неизменяемый совместно используемый снимок подготовленного артефакта в состоянии готовности. `Graphics` не вводит второй набор стадий шейдеров или вторую модель артефактов SPIR-V. Поэтому логическая выгрузка ресурса прекращает новые получения, но не делает недействительным дескриптор конвейера, уже удерживающий снимок артефакта.
+A `Shader` references a typed `ResourceHandle<NResources::ShaderArtifact>`, keeps its canonical resource identity,
+and retains an immutable shared snapshot of the ready cooked artifact. Graphics does not define a second shader stage or
+SPIR-V artifact model. Resource unload therefore stops future acquisition without invalidating a pipeline descriptor
+that already retained its artifact snapshot.
 
-Дескриптор содержит шейдеры, связанные с ресурсами, описание входных вершин, топологию, параметры растеризации, глубины и смешивания, форматы целевых изображений и число образцов. `PipelineKey` владеет проверенным неизменяемым снимком дескриптора для кэшей подготовки конвейеров. Порядок шейдеров в векторе не влияет на идентичность конвейера: поддерживаемые графические стадии канонизируются по типу стадии при сравнении и хешировании. Привязки вершин определяются номером привязки, а атрибуты — расположением; порядок соответствующих векторов также не влияет на идентичность. В текущем пути примитивов требуется вершинный шейдер. Фрагментный шейдер обязателен при наличии цветовых целевых изображений; конвейер только для глубины может обходиться без него. Компиляция шейдеров во время выполнения не входит в контракт `Graphics`.
+The descriptor contains resource-backed shaders, vertex input, topology, raster/depth/blend state, attachment formats,
+and sample count. PipelineKey owns a validated immutable descriptor snapshot for backend preparation caches. Shader vector order does not affect pipeline identity; supported graphics stages are canonicalized by
+stage for equality and hashing. Vertex bindings are identified by binding number and vertex attributes by location, so
+their vector order does not affect pipeline identity. A vertex shader is required for the current primitive path. A fragment shader is
+required when color attachments are declared, while depth-only pipelines may omit it. Runtime shader compilation is
+outside the Graphics runtime contract.
 
-Совместимость проверяется до создания конвейера в реализации. Недействительные стадии шейдеров, неподдерживаемые значения перечислений реализации, разметка вершин, форматы целевых изображений, количество параметров смешивания, настройки глубины и число образцов вызывают структурированную ошибку GraphicsEngine.
+Pipeline compatibility is validated before backend creation. Invalid shader stages, backend-mapped enum values, vertex
+layouts, attachment formats, blend counts, depth configuration, and sample counts fail with a structured GraphicsEngine
+error.
 
-Хеш дескриптора включает канонический идентификатор ресурса шейдера, точку входа, содержимое удерживаемого артефакта и всё фиксированное состояние конвейера. Он не зависит от слотов ресурсов во время выполнения. Повторная публикация артефакта шейдера с другим содержимым формирует новый ключ конвейера даже при неизменном логическом дескрипторе ресурса.
+The descriptor hash includes canonical shader resource identity, entry point, and the retained artifact contents
+together with all fixed-function pipeline state. It does not depend on runtime resource slots. Republishing different
+cooked shader contents therefore produces a different pipeline key even when the logical resource handle remains the
+same.
 
-## Граница реализации
+## Backend boundary
 
-Внутренние модули шейдеров и физические конвейеры принадлежат конкретной реализации. Публичный интерфейс предоставляет только `GraphicsPipelineDescriptor` и `GraphicsPipelineHandle`. Преобразования Vulkan, `VkShaderModule`, `VkPipeline` и устройство кэша конвейеров остаются внутри реализации.
+Native shader modules and native pipelines belong to the backend. The public API exposes only
+`GraphicsPipelineDescriptor` and `GraphicsPipelineHandle`. Vulkan conversion, `VkShaderModule`, `VkPipeline`, and
+pipeline cache mechanics remain backend-local.
 
-Уничтожение конвейера принимает необязательный `CompletionPoint`: реализация может отложить физическое уничтожение до завершения всех уже отправленных операций, использующих конвейер.
+Pipeline destruction accepts an optional `CompletionPoint`, so a backend can defer physical destruction until all
+submitted GPU users are complete.
 
-Идентификаторы физических конвейеров должны быть ненулевыми и уникальными среди живых конвейеров. Повторный действующий идентификатор нарушает контракт реализации: создание завершается ошибкой, но ранее зарегистрированный объект не уничтожается. Если публикация в реестре выбрасывает исключение, ещё не опубликованный объект с новым идентификатором уничтожается.
+Backend pipeline IDs must be nonzero and unique among live pipelines. A repeated live ID is a backend contract
+violation: creation fails without destroying the already registered object. Unpublished objects with a fresh ID
+are destroyed if registry publication throws.

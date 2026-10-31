@@ -1,39 +1,83 @@
-# Граф рендеринга
+# RenderGraph
 
-`RenderGraphBuilder` — граница управления кадром на процессоре между подготовкой рендеринга и выполнением через `Graphics`. `Compile()` публикует неизменяемый самодостаточный снимок объявлений и не записывает команды и не отправляет работу на графическое устройство. Публичный заголовок доступен при выключенных Vulkan и GLFW.
+`RenderGraphBuilder` is the CPU-only frame orchestration boundary between renderer preparation and Graphics execution.
+`Compile()` publishes an immutable, self-contained declaration snapshot; it never records commands or submits GPU work.
+The public header is usable in a build with Vulkan and GLFW disabled.
 
-## Объявление кадра
+## Declaring a frame
 
-Для действительного `RenderFrameIdentity` создаётся один построитель. Постоянные дескрипторы изображений и буферов `Graphics` импортируются с явным исходным и конечным `EResourceUsage`. Метаданные берутся из реестра `Graphics` с проверкой владельца и поколения; нельзя подставить произвольный дескриптор вместо существующего ресурса. Импорт не передаёт владение. Повторный импорт того же ресурса завершается ошибкой, чтобы не скрывать зависимости за псевдонимами. Идентификаторы принадлежат построителю и не переносятся в другой построитель или слот кадра.
+Create one builder for a live `RenderFrameIdentity`. Import persistent Graphics image/buffer handles with explicit initial
+and final `EResourceUsage`. Metadata comes from the Graphics registry, including owner/generation validation; callers cannot
+substitute arbitrary descriptors for live handles. Imports are non-owning. A duplicate import of the same resource fails
+instead of hiding hazards behind aliases. IDs belong to the builder and cannot be reused by a new builder/frame slot.
 
-Владелец интеграции WSI передаёт `SwapchainGraphTarget` для каждого поколения полученного изображения: непрозрачный уникальный ненулевой идентификатор и фактические метаданные формата, размера, числа образцов и возможностей. Исходное использование должно быть `UNDEFINED` (явное отбрасывание содержимого) либо `PRESENT` (сохранение содержимого); конечное `PRESENT` обязательно и добавляется `ImportSwapchain`. Объект — лишь связующий токен на процессоре, а не второй цикл отображения и не физический дескриптор изображения. WSI владеет каноническим отображением идентификаторов на физические изображения и синхронизацией получения. Одно физическое изображение не может иметь два действующих идентификатора. При изменении размера или освобождении токен становится недействительным; для следующего получения создаётся новый. Графы держат слабые ссылки; уничтожение или аннулирование цели вызывает ошибку при последующей проверке компиляции/записи.
+The WSI integration owner supplies a `SwapchainGraphTarget` for each acquired image generation with a nonzero, unique
+opaque identity and actual format/extent/sample/capability metadata. Its initial usage is `UNDEFINED` (explicitly discard
+contents) or `PRESENT` (preserve previous contents); terminal `PRESENT` is mandatory and is inserted by `ImportSwapchain`.
+The target is a CPU integration token, not a second presentation loop or a native image handle. WSI owns the canonical
+identity-to-native-image mapping and acquisition synchronization. The same underlying image must not have two live
+identities. Invalidate the token on resize/release and create a new token for the next acquisition. Graphs hold weak
+references; dropping or invalidating the target rejects subsequent compile/record validation.
 
-`GraphicsPassDescription` объявляет чтения, записи, цветовые и глубинные целевые изображения и копии пакетов `DrawCommandData`. Данные `RenderPlan::GetDrawCommands()` можно копировать в `DrawCommands`. Изменяемый `World`, `RenderWorld` и объекты реализации не передаются обработчикам исполнения. Метаданные целевых изображений выводятся из импорта, предотвращая противоречивые копии формата и размера.
+`GraphicsPassDescription` declares reads/writes, color/depth attachments and copied `DrawCommandData` packets. Existing
+`RenderPlan::GetDrawCommands()` can be copied into `DrawCommands`. No mutable World, RenderWorld or backend objects are
+passed to execution callbacks. Attachment metadata is resolved from imports, avoiding contradictory format/extent copies.
+Load/store/clear intent is explicit. `CLEAR` defines the whole attachment; `LOAD` requires and preserves defined contents.
+`DISCARD` load invalidates prior contents, and `STORE` alone does not initialize them. Draw packets do not prove full
+attachment coverage: output from a discard-load pass remains undefined even when draws exist. A subsequent clear can
+define it before any read/export. `DISCARD` store always invalidates contents.
 
-Намерения загрузки, сохранения и очистки выражаются явно. `CLEAR` определяет содержимое всего целевого изображения; `LOAD` требует определённого содержимого и сохраняет его. `DISCARD` при загрузке делает предыдущее содержимое неопределённым; один только `STORE` его не инициализирует. Пакеты рисования не гарантируют полного покрытия изображения: результат прохода с `DISCARD` остаётся неопределённым даже при наличии команд. Следующая очистка может определить его до чтения или экспорта. `DISCARD` при сохранении всегда делает содержимое неопределённым.
+## Compilation and inspection
 
-## Компиляция и просмотр
+Resources are versioned in declaration order at whole-image/buffer granularity. Reads depend on the preceding writer;
+writes depend on that writer and all intervening readers (RAW/WAW/WAR). Two reads do not create an edge. Duplicate or
+conflicting uses in one pass fail; in-place sampled/attachment feedback is outside this subset. Attachments must have
+matching write declarations, compatible extents/samples and supported format/usage combinations.
 
-Ресурсы получают версии в порядке объявления с гранулярностью целого изображения или буфера. Чтения зависят от предшествующей записи, записи — от неё и всех промежуточных чтений (`RAW`, `WAW`, `WAR`). Два чтения не создают ребра. Повторные либо конфликтующие обращения в одном проходе отклоняются; одновременное чтение как текстуры и запись в целевое изображение на месте здесь не поддерживаются. Для целевых изображений требуются соответствующие объявления записи, совместимые размеры и число образцов, допустимые сочетания формата и использования.
+Explicit edges order otherwise independent passes. An edge reversing a resource hazard produces a cycle and fails rather
+than silently changing resource version semantics. Stable Kahn ordering chooses the lowest declaration ID among ready
+passes. Edges are deduplicated and ordered deterministically. Read-before-produce, attachment LOAD after discard, invalid
+initial/final usages and final export of uninitialized contents fail with the existing `INVALID_ARGUMENT` error model.
+`UNDEFINED` is allowed only as an explicit initial discard state, never as a pass or final usage.
 
-Явные зависимости упорядочивают независимые проходы. Ребро против направления ресурсной зависимости создаёт цикл и вызывает ошибку вместо скрытого изменения смысла версий. Устойчивый алгоритм Кана выбирает минимальный идентификатор объявления среди готовых проходов. Рёбра устраняются от повторов и упорядочиваются детерминированно. Чтение до формирования данных, `LOAD` после отбрасывания, недействительные начальные или конечные состояния и экспорт неинициализированных данных вызывают существующую ошибку `INVALID_ARGUMENT`. `UNDEFINED` допускается только как исходное явное отбрасывание, никогда — как состояние прохода или результат.
+`CompiledGraph` exposes const spans of ordered passes, imports and dependencies. `GetResource(id)` resolves an import
+without native leakage. Pass order, semantic usages and attachment policies plus initial/final usages are the execution
+plan; native transitions are derived by the backend state tracker. Repeated compile is deterministic and old results
+remain independent of subsequent builder changes. Scratch and snapshot storage use ordinary owned vectors in this small
+CPU baseline; no arena-backed nontrivial object is leaked or silently retained through a frame reset.
 
-`CompiledGraph` открывает постоянные диапазоны упорядоченных проходов, импортов и зависимостей. `GetResource(id)` разрешает импорт без раскрытия физической реализации. Порядок проходов, семантика использования, правила целевых изображений и начальные/конечные состояния образуют план исполнения; физические переходы выводятся отслеживателем состояний реализации. Повторная компиляция детерминирована, а старые результаты не зависят от последующих изменений построителя. Для временного хранения и снимка используются обычные владеющие векторы: нет утечки нетривиальных объектов из арены или скрытого удержания их после сброса кадра.
+## Ownership and execution
 
-## Владение и исполнение
+Builder, compiled graph and their storage belong to one frame slot generation. Destroy their nontrivial objects on
+abort/recycle before resetting the slot arena, following the existing frame-owned-object convention. Graph data must not
+be cached across frames. `ValidateResources(frame)` rejects another slot/generation and released/reused Graphics handles
+or expired/invalidated swapchain sources. Executor must call it immediately before recording. The Graphics instance must
+outlive every import. Resource release/resize and validation/recording are externally serialized on the owner's thread.
 
-Построитель, скомпилированный граф и их память принадлежат одному поколению слота кадра. Нетривиальные объекты уничтожаются при аварийном завершении или освобождении перед сбросом арены слота. Данные графа нельзя кэшировать между кадрами. `ValidateResources(frame)` отклоняет другой слот/поколение, освобождённые или повторно использованные дескрипторы `Graphics`, а также уничтоженные или аннулированные цели обмена изображениями. Исполнитель обязан вызывать проверку непосредственно перед записью команд. Экземпляр `Graphics` должен пережить все импорты. Освобождение ресурсов, изменение размера и проверка/запись внешне сериализуются в потоке владельца.
+Graphs do not retain GPU allocations or resource leases. The frame's existing RenderWorld/resource use records retain
+the draw packets' exact logical resource versions through submission completion. Imported GPU resources and swapchain
+generations remain owned externally until all consuming submissions complete. Present is not GPU completion.
 
-Графы не удерживают выделенную память графического устройства или `ResourceLease`. Существующие записи использования ресурсов в кадре `RenderWorld` удерживают точные версии логических ресурсов пакетов рисования до завершения отправки. Импортированные ресурсы устройства и поколения обменных изображений принадлежат внешнему владельцу до окончания всех использующих их отправок. Отображение изображения не означает завершения исполнения на устройстве.
+FEATURE-0031 consumes this plan and resolves semantic usages via ResourceStateTracker/Sync2 and attachments via
+FEATURE-0066 Dynamic Rendering. It retains the existing Graphics submission and WSI acquire/present boundary. Integration
+must use the same frame identity and completion protocol for all active slots; resize/out-of-date must invalidate old
+imports. First Triangle and resize/MaxActiveFrames > 1 GPU validation are the joint FEATURE-0031/0066 integration gate,
+not implemented or claimed by this CPU boundary change.
 
-`FEATURE-0031` использует этот план, преобразует состояния через `ResourceStateTracker` и `Sync2`, а целевые изображения — через динамический рендеринг из `FEATURE-0066`. Сохраняются существующие границы отправки `Graphics` и получения/отображения WSI. Интеграция должна использовать один протокол идентичности кадра и завершения для всех активных слотов; изменение размера или устаревшее изображение аннулирует предыдущие импорты. Проверки первого треугольника и изменения размера при `MaxActiveFrames > 1` относятся к общей интеграции `FEATURE-0031/0066` и не объявляются реализованными этим независимым от устройства компонентом.
+## Current limits and extension points
 
-## Текущие ограничения и расширение
+One graphics queue; imported swapchain/persistent resources; one or more graphics passes. Graphics imports currently
+support single-mip, single-sample 2D RGBA8/BGRA8/D32 descriptors; multi-mip imports are rejected until subresource-aware
+declarations/tracking exist. Swapchain formats include sRGB as declared by WSI.
+Native device support and limits are rechecked by the executor. Resource usage vocabulary deliberately contains only the
+supported MVP subset; transfer usages describe external import/export states, not an independent copy-command API.
+`TRANSFER_DESTINATION` writes in graphics passes are rejected until an actual transfer execution payload exists; changing
+resource state never produces data. No transient
+allocation/aliasing, culling, compute passes, queue ownership transfers or parallel secondary recording is implemented.
 
-Одна графическая очередь, импортированные изображения обмена и постоянные ресурсы, один или несколько графических проходов. Сейчас поддерживается импорт описаний двухмерных изображений RGBA8/BGRA8/D32 с одним уровнем детализации и образцом; импорт нескольких уровней запрещён до появления объявлений и отслеживания подресурсов. Форматы изображений обмена включают sRGB согласно WSI. Исполнитель повторно проверяет возможности и ограничения физического устройства.
+Future transient declarations can extend the resource registry, while lifetimes, culling, queue assignments and recording
+ranges extend compile output. Direct draw packets are the current CPU fallback payload; indirect/GpuScene payloads can
+extend pass work without introducing native types or replacing the declaration/compile/execution boundary.
 
-Набор состояний использования содержит только поддерживаемые варианты. Состояния переноса описывают внешние входные и выходные состояния, а не самостоятельный интерфейс команд копирования. Запись `TRANSFER_DESTINATION` в графических проходах запрещена, пока не появится выполняемая операция переноса; переход состояния не создаёт содержимое. Не реализованы временные выделения с совместным использованием памяти, отсечение невидимых объектов, вычислительные проходы, переносы владения очередями или параллельная запись вторичных буферов команд.
-
-В будущем временные объявления могут расширить реестр ресурсов; сведения о времени жизни, отсечении, назначении очередей и диапазонах записи расширят результат компиляции. Сейчас запасным вариантом являются прямые пакеты рисования; косвенные команды и `GpuScene` смогут расширить описание работы, не раскрывая физических типов и не заменяя границу объявления, компиляции и исполнения.
-
-Проверки контрактов процессора в `test/render_graph.cpp` охватывают детерминизм, ресурсные зависимости, явные рёбра и циклы, содержимое, проверку целевых изображений, действительность импорта и изоляцию слотов кадров; графическое устройство и окно им не нужны.
+CPU contract tests in `test/render_graph.cpp` cover determinism, hazards, explicit edges/cycles, contents, attachment
+validation, import validity and frame-slot isolation. They require no GPU/window backend.

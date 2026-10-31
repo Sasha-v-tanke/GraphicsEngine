@@ -1,41 +1,80 @@
-# Приложение и отображение кадров
 
-## Вывод кадра на графическое устройство
+## First GPU Frame (MVP-2)
 
-Для включения вывода очищенного изображения задайте `ApplicationConfig::Presentation` равным `NGraphics::PresentationConfig{}`. Поле `MaxActiveFrames` в `Application` — единственный параметр глубины исполнения кадров; оно имеет приоритет над отдельным значением фабрики отображения. Должны быть включены Vulkan и GLFW. Приложения без графического устройства оставляют `Presentation` незаданным.
+Set `ApplicationConfig::Presentation` to `NGraphics::PresentationConfig{}` to enable the clear presentation path.
+`MaxActiveFrames` on Application is the only runtime depth setting; it overrides the presentation factory's
+standalone count. Vulkan/GLFW must be enabled. CPU-only applications leave Presentation unset.
 
-`Application` обрабатывает события `Window` и обслуживает `Graphics` вокруг существующих контрольных точек `Engine`. Рабочие потоки рисования `Engine` публикуют намерения кадра с логическими `FrameIndex` и `FrameSlotIndex`, но не обращаются к окну или физическим дескрипторам. Поток приложения владеет `Graphics`, единственной поверхностью и цепочкой изображений обмена, а также обслуживает запись команд, отправку и завершение. Пользовательское обновление начинается только после резервирования физического слота в `Engine`; его завершение публикует моделирование ровно один раз. При закрытом допуске ожидание условия продвижения не более 8 мс поддерживает обработку окна и WSI без горячего цикла повторных попыток. При успешном отображении сохраняется ожидание 1 мс для ограничения темпа. Рабочие потоки не ждут WSI или графическое устройство. `OnUpdate()` остаётся в основном потоке до отдельной интеграции обновления в рабочих потоках.
+Application processes Window events and pumps Graphics around the existing Engine checkpoints.
+Engine draw workers publish frame intents with their logical FrameIndex and FrameSlotIndex; they never
+access Window or native handles. The application thread owns Graphics, its one surface/swapchain and
+all recording/submission/completion maintenance. User update runs only after Engine reserves its physical frame slot;
+completion publishes Engine simulation exactly once. When admission is blocked, a progress condition wait bounded to 8 ms
+keeps Window/WSI maintenance live without a hot retry loop. Successful presentation steps retain the 1 ms pacing wait.
+No worker waits for WSI/GPU. OnUpdate stays on main until the separate worker-update integration.
 
-`FrameStorage` регистрирует объект `future` до того, как намерение станет видимым основному потоку. Состояния `NOT_READY`, `OUT_OF_DATE` и `SUSPENDED` сохраняют намерение и его идентичность без повторного вызова пользовательских методов. Сигнал завершения публикуется сразу после физической отправки, до потенциально ошибочной операции отображения и последующего учёта. Ошибки после отправки сохраняют токен и обещание до точного завершения работы устройства; потеря устройства завершает обещание исключением. `Engine` освобождает кадр только после окончания задачи рисования процессора и зарегистрированного завершения устройства. Vulkan отдельно запрещает повторное использование пула команд до достижения значения временной шкалы. Индекс изображения `ImageIndex` и время жизни двоичных семафоров изображения не смешиваются с идентичностью слота кадра.
+A future is registered in FrameStorage before an intent is visible to the main thread. NOT_READY,
+OUT_OF_DATE and SUSPENDED retain that intent and identity without repeating user callbacks. A completion
+is published immediately after native submit, before fallible presentation/bookkeeping. Post-submit
+failures retain the token and promise until exact GPU completion; device loss ends it exceptionally.
+Engine reaps only after CPU draw and the registered completion finish. Vulkan separately gates pool reuse
+on that timeline value. Swapchain ImageIndex and per-image binary semaphore lifetime remain separate.
 
-При выходе `Run()` закрывает допуск, присоединяет производителей задач процессора, отменяет неотправленные намерения, дожидается принятой работы графического устройства и затем освобождает слоты `Engine`. `Graphics` и средства отображения уничтожаются до `Window`. Ожидание продвижения временной шкалы при освобождении ограничено 10 секундами; превышение или ошибка устройства сообщается через `Engine` и `Run()`. За безопасность физических объектов при окончательном уничтожении отвечает сама реализация. После ошибки подсистемы отображения повторный запуск запрещён; после штатного завершения `Run()` можно вызвать снова с новыми идентификаторами кадров. Обработчики сообщений проверки корректности не должны выбрасывать исключения и обязаны пережить `Application`.
+Run stops admission, joins CPU producers, cancels unsubmitted intents, drains accepted GPU work, then
+recycles Engine slots. Graphics/presentation destruction precedes Window destruction. Drain waits at most
+10 seconds for timeline progress; a timeout/device error is reported through Engine and Run. The native
+backend's final device teardown remains responsible for native object safety. A failed presentation
+runtime cannot be restarted. A clean Run may be restarted with fresh Engine frame identities.
 
-`GetFrameDiagnostics()` показывает числа отправленных, завершённых и освобождённых после работы устройства кадров, а также оставленные намерения процессора, не дошедшие до физической отправки. При штатном завершении выполняется `Submitted == Completed == Recycled`; оставленные намерения не входят в эти счётчики устройства.
+`GetFrameDiagnostics()` reports submitted, completed and GPU-recycled counts plus Abandoned CPU intents
+that never reached native submit. Clean stop has Submitted == Completed == Recycled; abandoned intents
+are excluded from those GPU counts. Validation handlers must not throw and must outlive the Application.
 
-Реализация, выполняющая только очистку кадра, намеренно отклоняет создание графических ресурсов и исполнение графа. Существующие границы намерения, завершения и владения впоследствии позволяют передавать через них работу `RenderGraph` без раскрытия Vulkan вызывающему коду.
+The clear-only backend deliberately rejects resource creation and graph execution. The same frame intent,
+completion and lifetime boundary can carry subsequent RenderGraph work without exposing Vulkan to callers.
 
-Сборка и запуск:
+Build and run: `cmake --preset ci-vulkan-glfw -DGRAPHICS_ENGINE_BUILD_SAMPLES=ON`,
+`cmake --build --preset ci-vulkan-glfw`, then `./cmake-build-ci-vulkan-glfw/GraphicsEngineSampleClearFrame`.
+The sample presents 240 colored clear frames and prints submitted/completed/recycled counters.
+`GraphicsEngineApplicationPresentationTests` exercises public Application/Engine/Graphics with one and three
+slots and resize, requires validation, and fails on every ERROR including teardown. Unsupported initialization
+explicitly skips; runtime errors do not skip. CPU contract tests cover suspension, retry identities, worker
+ordering, post-submit present failure and device loss.
 
-```bash
-cmake --preset ci-vulkan-glfw -DGRAPHICS_ENGINE_BUILD_SAMPLES=ON
-cmake --build --preset ci-vulkan-glfw
-./cmake-build-ci-vulkan-glfw/GraphicsEngineSampleClearFrame
-```
+Supplementary heavy lifecycle tests use the same FrameLoop/Engine/Graphics pump with controlled platform
+intake: native iconify plus explicit zero extent, restore and resumed submissions, for N=1 and N=3.
+They also inject NOT_READY, OUT_OF_DATE and SUBOPTIMAL at the Vulkan dispatch boundary; successful
+acquire/present still call the real driver. These deterministic status cases are separate from the
+unmodified public Application smoke. Both check validation through teardown and clean-stop counters;
+the lifecycle cases additionally restart the clean frame loop and verify recycling again.
 
-Пример отображает 240 кадров с очисткой изображения и выводит счётчики `submitted`, `completed` и `recycled`. `GraphicsEngineApplicationPresentationTests` проверяет публичную интеграцию `Application`, `Engine` и `Graphics` с одним и тремя слотами и изменением размера, требует проверки корректности Vulkan и сообщает ошибку при любом сообщении уровня ERROR, включая уничтожение объектов. Отсутствие необходимых условий приводит к явно указанному пропуску; ошибки исполнения тест не пропускают. Проверки контрактов без устройства покрывают приостановку, идентификаторы повторных попыток, порядок рабочих потоков, ошибку отображения после отправки и потерю устройства.
+## Internal main executor (FEATURE-0073)
 
-Дополнительные проверки жизненного цикла используют тот же путь `FrameLoop`, `Engine` и `Graphics` с управляемой обработкой платформенных событий: физическое сворачивание окна и явный нулевой размер, восстановление и возобновление отправок при одном и трёх слотах. Они также внедряют `NOT_READY`, `OUT_OF_DATE` и `SUBOPTIMAL` на границе вызовов Vulkan; успешные получение и отображение по-прежнему обращаются к настоящему драйверу. Эти детерминированные проверки статусов отделены от обычного теста публичного `Application`. Обе группы проверяют корректность вплоть до уничтожения и счётчики штатного завершения; проверки жизненного цикла дополнительно повторно запускают цикл и проверяют освобождение кадров.
+Application owns a FIFO `MainExecutor` through its FrameLoop. Each Run opens a fresh monotonic admission generation;
+producers capture that generation before dispatch. Commands from older Runs or a stopped executor become SKIPPED.
+Posting before the first Start is an INVALID_STATE error. Payloads accept move-only void callables and remain owned by
+queue/execution state; completion handles may outlive the executor. A failed command retains its exception separately
+and does not terminate the event loop. Consumers can observe QUEUED, RUNNING, COMPLETED, FAILED or SKIPPED and wait on
+an independent condition variable. The application consumer must not wait for its own pending command.
 
-## Внутренний исполнитель основного потока
+Only the creating application thread starts/drains the executor. Producers may post concurrently; only accepted queue
+insertion order determines FIFO. A main-thread iteration processes Window events first, dispatches at most 64 commands,
+then advances frame/presentation checkpoints even under backpressure. A running callback cannot be preempted, so each
+command must be short. Neither callbacks nor captured-object destructors execute under the queue/completion mutex.
+An internal nonthrowing platform wake signal is serialized with admission/Stop; it must not reenter the executor.
 
-`Application` владеет очередью FIFO `MainExecutor` через `FrameLoop`. Каждый `Run()` открывает новое монотонное поколение допуска; производители захватывают его до публикации действий. Команды прежнего запуска или остановленного исполнителя получают `SKIPPED`. Публикация до первого `Start()` вызывает `INVALID_STATE`. Допускаются перемещаемые обработчики, возвращающие `void`, включая захваты с уникальным владением; очередь и выполняющееся состояние удерживают их. Дескрипторы завершения могут пережить исполнитель. Ошибка команды сохраняет собственное исключение и не прерывает цикл событий. Потребители видят `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED` или `SKIPPED` и ожидают через отдельную условную переменную. Поток приложения не должен ожидать собственную ещё не исполненную команду.
+Idle/backpressured iterations wait for Window events with a bounded 8 ms completion-maintenance timeout instead of
+busy-spinning (active presentation retains the 1 ms cadence). GLFW uses `glfwWaitEventsTimeout` and thread-safe `glfwPostEmptyEvent`; the internal window-engine default
+uses a retained condition-variable signal. These are internal event-loop operations, not additional public Window API.
+Completion polling remains bounded until Engine/GPU supplies event-driven wake notifications in a later integration.
 
-Только создавший приложение поток запускает и опустошает исполнитель. Производители могут публиковать конкурентно; FIFO определяется порядком успешного помещения в очередь. Итерация основного потока сначала обрабатывает события окна, затем не более 64 команд и после этого продвигает контрольные точки кадра и отображения даже при ограничении допуска. Уже начатый обработчик нельзя вытеснить, поэтому команды должны быть короткими. Ни обработчики, ни деструкторы захваченных объектов не выполняются под блокировкой очереди или завершения. Внутренний сигнал пробуждения платформы без исключений сериализуется с допуском и `Stop()` и не должен повторно входить в исполнитель.
+On close, failure or normal Run exit, main-command admission closes and pending commands become SKIPPED before Engine
+joins workers. All completion waiters are notified, while a RUNNING command finishes normally. Captures are released
+before terminal notification. Stop does not wait for a concurrently executing callback; the consumer and all producers
+must be joined before executor destruction. Reentrant Start/Drain is rejected. User payload destruction must not wait
+for another queued main command. Window/native resources outlive executor Stop and worker drain.
 
-При простое и ограничении допуска итерации ожидают оконные события с ограничением 8 мс для обслуживания завершений, а не активно опрашивают состояние. Активное отображение сохраняет период ожидания 1 мс. GLFW использует `glfwWaitEventsTimeout` и потокобезопасный `glfwPostEmptyEvent`; внутренняя реализация по умолчанию удерживает сигнал условной переменной. Это операции внутреннего цикла событий, а не дополнительный публичный интерфейс `Window`. Опрос завершений остаётся ограниченным по времени до отдельного механизма пробуждения по сигналам `Engine` и устройства.
+Subclasses use protected `RunOnMainThread` for synchronous void actions; see [main-thread dispatch](main_thread.md).
+Moving OnUpdate to workers and frame-origin ordering/fairness remain separate integration stages.
 
-При закрытии, ошибке или штатном выходе `Run()` допуск действий закрывается и команды в очереди получают `SKIPPED` до присоединения рабочих потоков `Engine`. Все ожидающие завершения уведомляются; уже исполняемая команда завершается обычным образом. Захваты освобождаются до сообщения о конечном состоянии. `Stop()` не ждёт конкурентно выполняемый обработчик; перед уничтожением исполнителя должны завершиться потребитель и все производители. Повторный вход в `Start()` и опустошение отклоняются. Деструктор пользовательского захвата не должен ждать другую команду в очереди основного потока. `Window` и физические ресурсы переживают остановку исполнителя и завершение рабочих потоков.
-
-Наследники используют защищённый `RunOnMainThread` для синхронных действий без результата; см. [выполнение в основном потоке](main_thread.md). Перенос `OnUpdate()` на рабочие потоки и справедливость упорядочивания относительно кадров относятся к отдельным изменениям.
-
-Независимые вычислительные задачи запускаются через `RunAsync` и `Job<T>`; см. [пользовательские задачи](user_jobs.md).
+User-facing independent compute work is available through `RunAsync` and `Job<T>`; see [user jobs](user_jobs.md).

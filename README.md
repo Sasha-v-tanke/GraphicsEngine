@@ -1,125 +1,762 @@
-# GraphicsEngine
+# Graphics Engine
 
-GraphicsEngine — графический движок на C++ с модульной архитектурой, системой задач и разделением моделирования, подготовки данных для рендеринга и исполнения команд на графическом устройстве. Высокоуровневые подсистемы не зависят от конкретного графического интерфейса.
+Движок для рендеринга графики на C++. Планируется поддержка Vulkan, OpenGL; GLFW, Qt etc.
 
-## Основные возможности
+## Setup
 
-- Управление жизненным циклом приложения и оконной системой через `Application` и `Window`; оконная реализация на GLFW.
-- Планирование задач с зависимостями, обработкой ошибок и управлением завершением через `TaskSystem`.
-- Управление кадрами, ограничением числа одновременно активных кадров и временем жизни временной памяти через `Engine` и `FrameScheduler`.
-- Хранение сущностей, компонентов и систем моделирования в `Ecs`, управление сценами через `SceneManager`.
-- Логические дескрипторы ресурсов и контроль времени жизни данных через `Resources`.
-- Подготовка данных рендеринга через `Renderer` и описание проходов через `RenderGraph`.
-- Независимые от графического интерфейса дескрипторы ресурсов и графических конвейеров в `Graphics`; реализация на Vulkan с проверкой возможностей устройства.
-- Отображение кадров с очисткой изображения, обработкой изменения размера окна и отслеживанием завершения работы графического устройства.
+Установит pre-commit хук для форматирования коммита:
 
-Наличие отдельных подсистем не означает, что все они уже объединены в полноценный путь отрисовки произвольной сцены. Пример с выводом кадра демонстрирует очистку изображения; поддержку рисования треугольников и моделей следует проверять по соответствующим примерам и тестам.
+```bash
+git config core.hooksPath .githooks
+```
 
 ## Архитектура
 
-```text
+GraphicsEngine разделён на независимые модули с явно определёнными зонами ответственности и зависимостями.
+
+```text id="fai033"
 Application
-├── Window
-└── Engine
-    ├── TaskSystem
-    ├── FrameScheduler
-    ├── Ecs / Scene
-    └── Renderer
-        └── Graphics
-            └── Vulkan
-
-Resources ── логические ресурсы для моделирования и рендеринга
-Math      ── математические типы движка
+    │
+    ├── Window
+    │     └── GLFW / Qt / SDL
+    │
+    └── Engine
+          ├── ECS
+          ├── Resources
+          ├── TaskSystem
+          └── Renderer
+                 │
+                 ▼
+              Graphics
+                 │
+          ┌──────┴──────┐
+          ▼             ▼
+       Vulkan         OpenGL
 ```
 
-`Application` управляет основным циклом и событиями окна. `Engine` организует выполнение задач и жизненный цикл кадра. `Ecs` хранит изменяемое состояние мира, а подготовка рендеринга использует отделённые от него данные. `Graphics` изолирует взаимодействие с графическим интерфейсом и управление ресурсами графического устройства.
+### Модули
 
-Конкретные правила синхронизации, владения памятью и работы с кадрами описаны в документации соответствующих подсистем. Их не следует выводить только из этой обзорной схемы.
+- **Application** — жизненный цикл приложения и основной цикл. Пользователь может наследоваться от базового
+  `Application` и переопределять необходимое поведение.
+- **Window** — абстракция окна без зависимости от конкретной оконной библиотеки. GLFW, Qt, SDL и другие реализации
+  скрыты за внутренними интерфейсами и фабриками.
+- **Engine** — основной runtime и координатор подсистем. Связывает мир, ресурсы, renderer и систему задач.
+- **Math** — engine-owned value types и conventions для World/Renderer. GLM остаётся implementation detail и не входит
+  в public API.
+- **ECS** — entities, components, systems и состояние мира. Не зависит от graphics backend.
+- **Resources** — backend-independent ресурсы и управление их жизненным циклом: textures, meshes, materials, shaders и
+  т.д.
+- **TaskSystem** — общий thread pool и выполнение задач с учётом их зависимостей.
+- **Render** — высокоуровневая подготовка отрисовки: extraction, culling, LOD, sorting, batching и построение render
+  lists.
+- **Graphics** — низкоуровневая backend-independent graphics abstraction, используемая renderer.
+- **Vulkan / OpenGL** — реализации Graphics. Все API-specific объекты, synchronization, command recording и
+  GPU-представления ресурсов остаются внутри соответствующего backend.
 
-## Технологии и требования
+### Window abstraction
 
-- **C++23** и CMake **3.31 или новее**.
-- Совместимый компилятор C++ и инструменты сборки для выбранной платформы.
-- Vulkan и GLFW — для сборки с графическим устройством и оконным выводом.
-- Clang-Tidy и ShellCheck — для соответствующих дополнительных проверок.
+Пользователь выбирает тип оконной системы, но не работает напрямую с `GLFWwindow`, `QWindow`, `SDL_Window` и другими
+native-типами.
 
-Поддерживаемые конфигурации определяются настройками сборки. Без Vulkan и GLFW можно собирать и проверять независимые от графического устройства компоненты. Наличие Vulkan и GLFW не гарантирует, что на каждой машине доступно подходящее графическое устройство, оконная среда и слои проверки корректности.
-
-## Сборка и проверка
-
-Для сборки и запуска независимых от графического устройства тестов:
-
-```bash
-cmake --preset ci-lite
-cmake --build --preset ci-lite
-ctest --preset ci-lite
+```text id="o6fgux"
+Window
+    │
+    ▼
+IWindowImpl / IWindowSystem
+    │
+    ├── GLFW
+    ├── Qt
+    └── SDL
 ```
 
-Для сборки с Vulkan и GLFW:
+Window system и graphics backend являются независимыми подсистемами.
 
-```bash
-cmake --preset ci-vulkan-glfw
-cmake --build --preset ci-vulkan-glfw
-ctest --preset ci-vulkan-glfw
+Места, где необходима информация сразу о двух сторонах, например создание Vulkan surface для GLFW, выносятся в отдельный
+integration layer.
+
+### Application main loop
+
+`Application` является единственным внешним владельцем main loop. Пользователь создаёт наследника, задаёт
+`ApplicationConfig`, переопределяет `OnUpdate()` и `OnDraw()`, затем вызывает `Run()`:
+
+```cpp
+#include <GraphicsEngine/application/application.h>
+#include <GraphicsEngine/window/window_type.h>
+
+class MyApplication final: public NApplication::Application {
+public:
+    MyApplication()
+        : Application({
+                  .Window = NWindow::WindowConfig{NWindow::EWindowType::GLFW},
+          }) {
+    }
+
+private:
+    void OnUpdate() override {
+    }
+
+    void OnDraw() override {
+    }
+};
+
+int main() {
+    MyApplication application;
+    application.Run();
+}
 ```
 
-Для полного набора малых проверок в подготовленном окружении проекта предусмотрен сценарий:
+Каждый кадр выполняется в фиксированном порядке:
 
-```bash
-bash tests/test_small.sh
+```text
+Window events
+user OnUpdate()
+Engine Update checkpoint
+user OnDraw()
+Engine Draw checkpoint
 ```
 
-Команды используют конфигурации из `CMakePresets.json`. Тесты с графическим устройством требуют совместимого окружения; некоторые проверки могут быть пропущены, если обязательная внешняя инфраструктура недоступна.
+Два `Update` checkpoint подряд запрещены, как и `Draw` checkpoint без предшествующего `Update`. При выходе
+`Application` сначала останавливает `Engine`, затем уничтожает `Window`.
 
-### Пример вывода кадра
+Если `Engine` не принимает checkpoint из-за занятых frame slots, `Application` остаётся в соответствующем waiting-state.
+Следующие итерации продолжают обрабатывать Window events и повторяют тот же Engine checkpoint, но не вызывают повторно
+`OnUpdate()` или `OnDraw()` для уже ожидающего user stage.
+Новый frame принимается только когда следующий mapped slot уже `FREE`; это одинаково для `MaxActiveFrames = 1` и
+больших значений. Reset/reuse frame-local storage происходит после full completion/recycle frame, а не при публикации
+draw checkpoint.
 
-Для сборки примеров включите `GRAPHICS_ENGINE_BUILD_SAMPLES`:
+`Application`, Window events и пользовательские callbacks имеют affinity к application/main thread. Этот поток не
+является worker-потоком `TaskSystem`: workers выполняют только задачи engine/runtime, а user callbacks и Window API не
+должны исполняться из worker callbacks.
 
-```bash
-cmake --preset ci-vulkan-glfw -DGRAPHICS_ENGINE_BUILD_SAMPLES=ON
-cmake --build --preset ci-vulkan-glfw
-./cmake-build-ci-vulkan-glfw/GraphicsEngineSampleClearFrame
+### Границы абстракций
+
+- ECS не знает о Render, Vulkan или OpenGL.
+- Resources не предоставляет наружу `VkImage`, OpenGL handles и другие backend-specific объекты.
+- Render работает через backend-independent Graphics API.
+- Graphics не зависит от конкретной оконной библиотеки.
+- Vulkan/OpenGL implementation details не выходят за границы соответствующего backend.
+- GLFW/Qt/SDL types не выходят в публичный Engine/Graphics API.
+- Backend-specific поведение выбирается через capabilities backend, а не через проверки `if Vulkan` / `if OpenGL` в
+  высокоуровневых модулях.
+- Высокоуровневые системы зависят от абстракций, а конкретные реализации остаются изолированными внутри своих модулей.
+
+### Graphics core
+
+`Graphics` задаёт backend-independent границу GPU execution. Public core отвечает за:
+
+- lifecycle backend через единый facade `NGraphics::Graphics`;
+- immutable `GraphicsCapabilities` и проверку `RequiredGraphicsCapabilities`;
+- единственный presentation-aware frame submission path;
+- backend-independent `CompletionPoint`, который можно использовать для frame/resource lifetime decisions;
+- backend-independent `BufferDescriptor`, `ImageDescriptor`, `ImageViewDescriptor`, `SamplerDescriptor` и opaque
+  handles без native API handles в public API.
+
+Concrete backend выбирается централизованно через graphics backend factory. Public Graphics API не содержит Vulkan,
+OpenGL, GLFW или других native types.
+
+Graphics владеет GPU resource lifetime на уровне public handles. `BufferHandle`, `ImageHandle`, `ImageViewHandle` и
+`SamplerHandle` привязаны к origin `Graphics`, имеют generation и становятся недействительными после destroy, поэтому
+stale/cross-backend handles не принимаются обратно. `BufferDescriptor` описывает semantic size/usage/access/lifetime, а
+backend сам выбирает native memory usage, allocation strategy и concrete buffer creation flags.
+
+`ImageDescriptor`, `ImageViewDescriptor` и `SamplerDescriptor` описывают backend-independent texture resource contract:
+format, usage, access, lifetime, subresource range и sampling state. Текущий MVP subset поддерживает только 2D
+single-layer images/views; 2D-array, 3D и cube dimensions должны вводиться отдельным dimension/view-type contract перед
+их backend mapping.
+
+`Material` связывает logical pipeline identity с immutable binding layout и resource bindings для uniform/storage
+buffers, sampled images и samplers. Public contract хранит backend-independent resource identities, ranges и semantic
+binding slots, а не concrete GPU handles. Resource classes фиксированы: `pipeline`, `buffer`, `image`, `sampler`.
+Vulkan descriptor sets, descriptor pools, uniform alignment и backend limits остаются ответственностью concrete backend
+при подготовке submit. Материал config-driven в пределах frame usage: опубликованный resource snapshot удерживает
+immutable binding configuration, а backend descriptor path должен резолвить и удерживать concrete dependencies для GPU
+lifetime.
+
+Physical destruction backend resources может быть immediate или deferred до заданного `CompletionPoint`. Фиксированное
+количество кадров не считается доказательством GPU completion. Frame-local buffers явно помечаются lifetime policy, а
+recycle transient/staging памяти должен быть completion-aware.
+
+Shader, Pipeline и RenderGraph API добавляются только при появлении их прямых потребителей.
+
+## Frame Pipeline and Multithreading
+
+### Общая модель
+
+Engine использует **task-based multithreading**.
+
+Стадии кадра не привязаны к конкретным потокам. Вместо `UpdateThread`, `RenderThread`, `ThreadPerFrame` работа
+представляется как граф задач с зависимостями.
+
+```text
+Frame N
+
+Update World N
+      │
+      ▼
+Extract RenderWorld N
+      │
+      ├──────────────────────────────► Update World N+1
+      │
+      ▼
+Render Preparation N
+      │
+      ▼
+Backend Preparation N
+      │
+      ▼
+Submit N
+      │
+      ▼
+GPU Execute N
+      │
+      ▼
+Frame Complete N
+      │
+      ▼
+Recycle FrameContext N
 ```
 
-Пример `ClearFrame` отображает последовательность кадров с очисткой изображения и выводит счётчики отправленных, завершённых и освобождённых кадров. Для запуска необходимы Vulkan, GLFW и доступная оконная среда. Подробнее: [Application](application/README.md).
+`World` изменяется последовательно между simulation frames:
 
-## Использование установленной библиотеки
+```text
+Update N
+   │
+   ▼
+Extract N
+   │
+   ▼
+Update N+1
+```
 
-После установки пакета CMake проект может подключить GraphicsEngine:
+Но сам `Update N` может состоять из множества параллельных задач.
+
+После `Extract N` создаётся независимый `RenderWorld N`, поэтому одновременно могут выполняться:
+
+```text
+World:       Update N+1
+Render:      Prepare N
+GPU:         Execute N-1
+```
+
+Это основная pipeline-модель для всех graphics backends.
+
+---
+
+### Разделение ответственности
+
+#### World / ECS
+
+Хранит текущее mutable-состояние мира.
+
+```text
+World
+├── Entities
+├── Components
+└── Systems
+```
+
+Update состоит из задач:
+
+```text
+              Update
+          /      |      \
+         ▼       ▼       ▼
+    Animation  Physics  Gameplay
+         \       |       /
+          ▼      ▼      ▼
+            Transforms
+                │
+                ▼
+             Extract
+```
+
+Независимые systems выполняются параллельно.
+
+Зависимые systems запускаются только после выполнения необходимых предыдущих задач.
+
+Два `Update` одного World одновременно не выполняются.
+
+---
+
+### RenderWorld
+
+После World Update выполняется extraction:
+
+```text
+World N
+   │
+   ▼
+Extract
+   │
+   ▼
+RenderWorld N
+```
+
+`RenderWorld` содержит только данные, необходимые renderer'у.
+
+После завершения extraction renderer больше не обращается к mutable `World N`.
+
+Это позволяет одновременно выполнять:
+
+```text
+Update World N+1
+        +
+Render RenderWorld N
+        +
+GPU Execute N-1
+```
+
+---
+
+### Render Preparation
+
+Backend-independent подготовка кадра выполняется через общий `TaskSystem`.
+
+`TaskSystem` — базовый backend-independent runtime для CPU-задач. Он не содержит renderer/resource/backend-specific API
+и используется как общий механизм планирования работы внутри engine.
+
+Жизненный цикл задачи:
+
+```text
+CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
+                         │          │
+                         │          └── FAILED
+                         └───────────── CANCELLED
+```
+
+Полный contract `TaskHandle`, task lifetime, dependency ordering, worker exception boundary и blocking API описан в
+[`lib/thread/README.md`](lib/thread/README.md).
+
+Пример графа:
+
+```text
+                    RenderWorld
+                         │
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+       Culling          LOD        Materials
+          │              │              │
+          └──────────────┼──────────────┘
+                         ▼
+                   BuildRenderItems
+                         │
+                         ▼
+                       Sort
+                         │
+                         ▼
+                       Batch
+                         │
+                         ▼
+                  DrawCommandData
+```
+
+Крупные операции дополнительно разбиваются на chunks:
+
+```text
+Culling
+├── Chunk 0
+├── Chunk 1
+├── Chunk 2
+└── Chunk 3
+```
+
+Chunks являются независимыми tasks и могут выполняться любыми workers.
+
+---
+
+### Backend Preparation
+
+До этой точки pipeline одинаков для всех backends.
+
+Дальнейшая многопоточность определяется возможностями конкретного backend.
+
+#### Vulkan
+
+Vulkan поддерживает параллельную запись command buffers:
+
+```text
+DrawCommandData
+       │
+ ┌─────┼─────┬─────┐
+ ▼     ▼     ▼     ▼
+Task  Task  Task  Task
+ │     │     │     │
+Sec0  Sec1  Sec2  Sec3
+ └─────┼─────┴─────┘
+       ▼
+    Primary
+       │
+       ▼
+     Submit
+       │
+       ▼
+      GPU
+```
+
+Каждый worker использует собственный context текущего frame:
+
+```text
+FrameContext 0
+├── WorkerContext 0
+├── WorkerContext 1
+├── WorkerContext 2
+└── WorkerContext 3
+
+FrameContext 1
+├── WorkerContext 0
+├── WorkerContext 1
+├── WorkerContext 2
+└── WorkerContext 3
+```
+
+`WorkerContext` может содержать:
+
+```text
+VkCommandPool
+DescriptorPool
+Transient allocators
+Temporary backend resources
+```
+
+Таким образом `FramesInFlight = 2` и `WorkerCount = 4` означают 8 `WorkerContext`, но только 4 worker threads.
+
+Primary command buffer выполняет secondary buffers. После этого производится submit.
+
+`FrameContext` нельзя reset/reuse до завершения соответствующей GPU работы.
+
+---
+
+#### OpenGL
+
+Вся backend-independent подготовка остаётся многопоточной:
+
+```text
+Culling
+LOD
+Animation
+Sorting
+Batching
+Render item generation
+...
+```
+
+Но окончательное выполнение OpenGL API сериализуется:
+
+```text
+DrawCommandData
+       │
+       ▼
+ OpenGL execution
+       │
+       ├── glBind...
+       ├── glDraw...
+       ├── glDraw...
+       └── ...
+       │
+       ▼
+      GPU
+```
+
+Таким образом OpenGL backend не делает весь Engine однопоточным.
+
+Ограничивается только backend-specific command execution.
+
+---
+
+### TaskSystem
+
+Engine содержит общий thread pool:
+
+```text
+                    TaskSystem
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+     Worker 0        Worker 1        Worker 2 ...
+```
+
+Количество workers задаётся независимо от количества frames:
+
+```cpp
+TaskConfig{
+    .WorkerCount = 4,
+};
+
+RenderConfig{
+    .FramesInFlight = 2,
+};
+```
+
+`ThreadsPerFrame` отсутствует.
+
+Workers не принадлежат кадрам, системам или стадиям rendering.
+
+Один worker последовательно может выполнить:
+
+```text
+Physics N
+    ↓
+CullingChunk N
+    ↓
+RecordSecondary N
+    ↓
+Animation N+1
+```
+
+---
+
+#### Task dependencies
+
+Каждая задача знает количество незавершённых dependencies:
+
+```text
+Task A ─────┐
+            ├──► Task D
+Task B ─────┤
+            │
+Task C ─────┘
+```
+
+Логически:
+
+```cpp
+Task D:
+    RemainingDependencies = 3;
+```
+
+После завершения каждой зависимости:
+
+```text
+A complete -> 2
+B complete -> 1
+C complete -> 0
+```
+
+При достижении `0` задача становится `READY` и помещается в очередь TaskSystem.
+
+`RemainingDependencies` обновляется atomic decrement-ом при завершении prerequisite. Та task, которая последней довела
+счётчик dependent до `0`, активирует dependent и публикует её в READY queue.
+
+Модель поддерживает:
+
+- fan-in: несколько prerequisites для одной task;
+- fan-out: одна prerequisite разблокирует несколько dependents;
+- dynamic publication: running task может публиковать новые tasks через `TaskContext::Spawn()`;
+- immutable dependencies: после publication dependency set задачи не меняется, новые constraints выражаются новой task;
+- independent READY tasks: порядок выполнения не задан и не должен использоваться как контракт.
+
+```text
+CREATED
+   │
+   ▼
+WAITING
+   │
+   │ dependencies == 0
+   ▼
+ READY
+   │
+   ▼
+RUNNING
+   │
+   ▼
+COMPLETED
+```
+
+Worker никогда не должен занимать поток ожиданием dependency.
+
+Нельзя:
+
+```text
+Worker 0
+    Task B
+        wait(Task A)   <- worker заблокирован
+```
+
+Вместо этого:
+
+```text
+Task B waits logically
+
+Worker 0
+    выполняет другую READY task
+
+Task A completes
+    ↓
+Task B becomes READY
+    ↓
+любой worker выполняет Task B
+```
+
+---
+
+#### Task scheduling
+
+Концептуально scheduler работает так:
+
+```text
+                 Waiting Tasks
+                       │
+              dependencies ready
+                       │
+                       ▼
+                  Ready Queue
+               /      |       \
+              ▼       ▼        ▼
+           Worker0 Worker1  Worker2
+              │       │        │
+              ▼       ▼        ▼
+           Complete Complete Complete
+              │       │        │
+              └───────┼────────┘
+                      ▼
+             unlock dependents
+```
+
+В дальнейшем scheduler может использовать per-worker queues и work stealing, но это implementation detail `TaskSystem`.
+
+Основной контракт остаётся тем же:
+
+> задача исполняется любым доступным worker только после выполнения всех её dependencies.
+
+---
+
+### Frame synchronization
+
+`FramesInFlight` ограничивает количество frame contexts, которые backend может одновременно использовать.
+
+Например:
+
+```text
+FramesInFlight = 2
+
+FrameContext[0] -> GPU still executing
+FrameContext[1] -> CPU preparing/submitting
+
+next frame wants FrameContext[0]
+              │
+              ▼
+wait until GPU completed FrameContext[0]
+              │
+              ▼
+reset/recycle
+```
+
+При этом simulation, render preparation и backend frame slots не должны искусственно иметь фиксированное смещение на
+один кадр.
+
+Scheduler запускает работу настолько рано, насколько позволяют зависимости и доступные frame resources.
+
+---
+
+### Итоговый pipeline
+
+```text
+               TaskSystem
+         Worker 0 ... Worker N
+                  │
+                  ▼
+World N ──► Update Task Graph
+                  │
+                  ▼
+              Extract N
+             /         \
+            /           \
+           ▼             ▼
+   RenderWorld N      Update World N+1
+           │
+           ▼
+    Render Task Graph
+     /    /   \    \
+   Cull LOD Sort  Batch
+     \    \   /    /
+           ▼
+    DrawCommandData
+           │
+           ▼
+     Backend Policy
+       /        \
+      ▼          ▼
+   Vulkan      OpenGL
+      │           │
+ parallel       serial
+ recording     API calls
+      │           │
+      └─────┬─────┘
+            ▼
+          Submit
+            │
+            ▼
+           GPU
+            │
+            ▼
+     Frame Complete
+            │
+            ▼
+    Recycle FrameContext
+```
+
+Главное архитектурное правило:
+
+**Engine описывает зависимости между работами, а не назначает работы конкретным потокам.**
+
+Backend сообщает ограничения своей модели исполнения. `TaskSystem` выполняет максимально возможную параллельную
+CPU-работу, а `FramesInFlight` управляет независимым pipeline CPU ↔ GPU.
+
+## Подключение GraphicsEngine
+
+GraphicsEngine устанавливается как CMake package и подключается через `find_package`.
+
+Минимальное подключение:
 
 ```cmake
-find_package(GraphicsEngine REQUIRED CONFIG)
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+)
 
 target_link_libraries(
     MyApplication
-    PRIVATE GraphicsEngine::GraphicsEngine
+    PRIVATE
+    GraphicsEngine::GraphicsEngine
 )
 ```
 
-Для конфигурации, которой необходимы конкретные компоненты:
+`GraphicsEngine::GraphicsEngine` является единственным публичным CMake target библиотеки.
+
+Внутреннее разделение GraphicsEngine на модули является implementation detail движка и не является частью публичного
+CMake API.
+
+### Components
+
+Graphics и window backends представлены как capabilities установленной сборки GraphicsEngine.
+
+Если приложению требуется конкретный backend, его можно указать через `COMPONENTS`:
 
 ```cmake
-find_package(GraphicsEngine REQUIRED CONFIG COMPONENTS Vulkan GLFW)
+find_package(
+    GraphicsEngine REQUIRED CONFIG
+    COMPONENTS Vulkan GLFW
+)
 ```
 
-`COMPONENTS` проверяет наличие компонентов в установленной сборке; отдельные библиотеки вместо `GraphicsEngine::GraphicsEngine` подключать не требуется. Совместимость двоичного интерфейса между версиями не гарантируется.
+В этом случае конфигурация проекта успешно завершится только в том случае, если установленная сборка GraphicsEngine
+содержит поддержку всех запрошенных components.
 
-## Структура проекта и документация
+Components не являются отдельными библиотеками и не меняют способ линковки приложения. Независимо от выбранных
+components приложение всегда использует:
 
-| Каталог | Назначение |
-| --- | --- |
-| [`application/`](application/README.md) | Жизненный цикл приложения, основной цикл и пользовательские задачи |
-| [`window/`](window/README.md) | Окно, события и оконная реализация |
-| [`engine/`](engine/README.md) | Система кадров и координация выполнения |
-| [`lib/thread/`](lib/thread/README.md) | Планировщик задач и зависимости |
-| [`ecs/`](ecs/README.md) | Мир, сущности, компоненты и системы |
-| [`scene/`](scene/README.md) | Управление сценами |
-| [`resources/`](resources/README.md) | Логические ресурсы |
-| [`renderer/`](renderer/README.md) | Подготовка рендеринга и [граф рендеринга](renderer/render_graph.md) |
-| [`graphics/`](graphics/README.md) | Графический интерфейс и [реализация Vulkan](graphics/vulkan/README.md) |
-| [`math/`](math/README.md) | Математические типы |
-| [`cmake/`](cmake/README.md) | Устройство системы сборки |
-| [`tests/`](tests/README.md) | Организация проверок |
-| [`benchmarks/renderer/`](benchmarks/renderer/README.md) | Измерения производительности рендеринга |
+```text
+GraphicsEngine::GraphicsEngine
+```
 
-Правила оформления исходного кода приведены в [`STYLE.md`](STYLE.md).
+Примеры возможных components: `Vulkan`, `OpenGL`, `GLFW`, `Qt`.
+
+Набор доступных components определяется конфигурацией, с которой был собран GraphicsEngine. Если приложение не требует
+конкретной реализации graphics или window backend, `COMPONENTS` указывать не требуется.
+
+До определения отдельной versioning и compatibility policy GraphicsEngine не гарантирует ABI compatibility между
+версиями.
+
+## MVP-2 — First GPU Frame
+
+Clear-frame sample через Application/Engine/Graphics, ownership slots и инструкции запуска: [Application](application/README.md).
