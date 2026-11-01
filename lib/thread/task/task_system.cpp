@@ -75,8 +75,7 @@ struct TaskHandle::State {
     std::atomic<TaskHandle::State*> RetiredNext = nullptr;
     std::atomic_bool RetirementQueued = false;
     std::uint64_t Id = 0;
-    std::shared_ptr<State> FinalizationPin;
-    State* FinalizationNext = nullptr;
+    std::shared_ptr<State> FinalizationNext;
     TaskSystem::Task Task;
 };
 
@@ -588,20 +587,18 @@ TaskSystem::FinalizationBatch::~FinalizationBatch() {
 }
 
 void TaskSystem::FinalizationBatch::Add(const std::shared_ptr<TaskHandle::State>& state) noexcept {
-    state->FinalizationPin = state;
     if (Last != nullptr) {
-        Last->FinalizationNext = state.get();
+        Last->FinalizationNext = state;
     } else {
-        First = state.get();
+        First = state;
     }
     Last = state.get();
 }
 
 void TaskSystem::DrainFinalizations(FinalizationBatch& batch) noexcept {
     while (batch.First != nullptr) {
-        std::shared_ptr<TaskHandle::State> state = std::move(batch.First->FinalizationPin);
-        batch.First = state->FinalizationNext;
-        state->FinalizationNext = nullptr;
+        std::shared_ptr<TaskHandle::State> state = std::move(batch.First);
+        batch.First = std::move(state->FinalizationNext);
         TaskFunction function;
         {
             std::lock_guard taskLock{state->Mutex};
@@ -740,7 +737,7 @@ void TaskSystem::PropagateCancellationLocked(Task& task, FinalizationBatch& batc
 
 void TaskSystem::PrepareCancellationsLocked(FinalizationBatch& batch) {
     // No nested State locks: detach the graph before any user destructor can reenter it.
-    for (TaskHandle::State* state = batch.First; state != nullptr; state = state->FinalizationNext) {
+    for (TaskHandle::State* state = batch.First.get(); state != nullptr; state = state->FinalizationNext.get()) {
         m_registry.UnlinkDependencyEdgesLocked(state->Id, state->Task);
         PropagateCancellationLocked(state->Task, batch);
     }

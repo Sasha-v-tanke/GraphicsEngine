@@ -251,7 +251,7 @@ private:
         void ReleaseOutstandingTask() noexcept;
     };
 
-    // Each enqueued State pins itself until this batch drains outside all executor locks.
+    // The batch owns an acyclic State chain and drains it outside all executor locks.
     class FinalizationBatch final {
     public:
         explicit FinalizationBatch(TaskSystem& owner) noexcept;
@@ -260,7 +260,7 @@ private:
         FinalizationBatch& operator=(const FinalizationBatch&) = delete;
         void Add(const std::shared_ptr<TaskHandle::State>& state) noexcept;
 
-        TaskHandle::State* First = nullptr;
+        std::shared_ptr<TaskHandle::State> First;
         TaskHandle::State* Last = nullptr;
 
     private:
