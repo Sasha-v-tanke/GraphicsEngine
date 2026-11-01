@@ -279,6 +279,45 @@ TEST_F(RuntimeMvpTest, UserJobFacadeRetainsResultAfterRunAndRejectsStoppedAdmiss
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { static_cast<void>(application.RunAsync([] {})); });
 }
 
+class UserTaskApplication final: public NApplication::Application {
+public:
+    explicit UserTaskApplication(const NApplication::ApplicationConfig& config)
+        : Application(config) {
+    }
+    using Application::Spawn;
+    NCommon::Job<int> Result;
+    bool CompletedOnMain = false;
+
+private:
+    NCommon::UserTask<int> Build() {
+        EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
+        const std::stop_token token = co_await NCommon::UserTaskStopToken{};
+        EXPECT_FALSE(token.stop_requested());
+        RunOnMainThread([this] { CompletedOnMain = !NCommon::TaskSystem::IsCurrentThreadWorker(); });
+        co_return 93;
+    }
+    void OnUpdate() override {
+        if (!m_started) {
+            m_started = true;
+            Result = Spawn(Build());
+        }
+        if (Result.IsReady()) {
+            RequestShutdown();
+        }
+    }
+    bool m_started = false;
+};
+
+TEST_F(RuntimeMvpTest, UserTaskFacadeUsesWorkerAndMainDispatchAndRetainsResultAfterRun) {
+    UserTaskApplication application{MakeRuntimeConfig()};
+    application.Run();
+    EXPECT_TRUE(application.CompletedOnMain);
+    ASSERT_TRUE(application.Result.IsReady());
+    EXPECT_EQ(application.Result.TryTake()->value(), 93);
+    NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                       [&] { static_cast<void>(application.Spawn(NCommon::UserTask<int>{})); });
+}
+
 TEST_F(RuntimeMvpTest, ApplicationOwnsSingleWindowAndStopsBeforeWindowDestruction) {
     {
         RuntimeMvpApplication application{MakeRuntimeConfig(), m_state};

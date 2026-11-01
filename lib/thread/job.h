@@ -19,6 +19,7 @@
 #include <GraphicsEngine/lib/common/error/exception.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
 #include <GraphicsEngine/lib/thread/job_control.h>
+#include <GraphicsEngine/lib/thread/user_task.h>
 
 namespace NCommon {
 
@@ -157,6 +158,16 @@ void SetFailure(JobState<T>& state, std::error_code code, std::string_view messa
 }
 
 struct JobFactory {
+    template<typename Submit, typename T>
+    [[nodiscard]] static Job<T> Spawn(Submit&& submit, UserTask<T>&& task) {
+        if (!task.IsValid()) {
+            GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Cannot spawn an invalid or already spawned UserTask");
+        }
+        return Run(std::forward<Submit>(submit), [owned = std::move(task)](std::stop_token token) mutable -> T {
+            return NUserTaskInternal::TaskAccess::Run(owned, std::move(token));
+        });
+    }
+
     template<typename Submit, UserJobFunction Function>
     [[nodiscard]] static auto Run(Submit&& submit, Function&& function) {
         using Callable = std::decay_t<Function>;

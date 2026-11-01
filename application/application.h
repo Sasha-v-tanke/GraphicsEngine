@@ -75,6 +75,15 @@ protected:
                 std::forward<Function>(function));
     }
 
+    // Consumes a lazy coroutine and schedules it as frame-independent work on TaskSystem.
+    // Admission, cancellation, retained result and capture lifetimes follow RunAsync.
+    template<typename T>
+    [[nodiscard]] NCommon::Job<T> Spawn(NCommon::UserTask<T>&& task) {
+        return NCommon::NJobInternal::JobFactory::Spawn(
+                [this](const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) { SubmitUserJob(job); },
+                std::move(task));
+    }
+
     // Called on the application thread, never on TaskSystem workers.
     virtual void OnUpdate();
 

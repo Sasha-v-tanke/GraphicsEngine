@@ -78,3 +78,5 @@ Subclasses use protected `RunOnMainThread` for synchronous void actions; see [ma
 Moving OnUpdate to workers and frame-origin ordering/fairness remain separate integration stages.
 
 User-facing independent compute work is available through `RunAsync` and `Job<T>`; see [user jobs](user_jobs.md).
+
+Lazy coroutine work is available through `UserTask<T>` and `Spawn`; see [coroutine ownership](user_tasks.md).

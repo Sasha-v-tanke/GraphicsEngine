@@ -18,6 +18,7 @@
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/lib/thread/job.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
+#include <GraphicsEngine/lib/thread/user_task.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/renderer/render_graph.h>
 #if __has_include(<GraphicsEngine/renderer/presentation/presentation.h>)
@@ -45,6 +46,14 @@ public:
     }
     NCommon::Job<std::unique_ptr<int>> StartJob() {
         return RunAsync([value = std::make_unique<int>(1)](std::stop_token) mutable { return std::move(value); });
+    }
+    NCommon::Job<int> StartCoroutine() {
+        return Spawn(MakeTask());
+    }
+
+private:
+    static NCommon::UserTask<int> MakeTask() {
+        co_return 3;
     }
 };
 
