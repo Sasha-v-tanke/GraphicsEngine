@@ -292,3 +292,7 @@ submissions on the application thread; Stop never waits on a future whose main-t
 GPU recycle diagnostics count registered completion frames; Application subtracts abandoned unsubmitted
 intents when reporting GPU-only counters. Normal frame reuse still requires both terminal CPU work and
 the exact registered completion.
+
+Внутренний `runtime/engine_state_manager.*` хранит lifecycle и координирует конкурентные Stop по поколению запуска.
+Engine::Impl сохраняет ownership и очистку TaskSystem/FrameScheduler. Общий metadata mutex защищает и lifecycle,
+и admission кадров/jobs; snapshot поколения читается атомарно до захвата mutex. Публичный Engine API не меняется.
