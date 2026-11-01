@@ -25,12 +25,21 @@ void* operator new(std::size_t size) {
     if (AllocationBudget > 0) {
         --AllocationBudget;
     }
+#ifdef GRAPHICS_ENGINE_TASK_FAULT_ASAN
+    // ASan's nothrow interceptor allocates with operator-new provenance. Its default delete
+    // must release these blocks, including allocations made inside the shared C++ runtime.
+    if (void* memory = ::operator new(size, std::nothrow)) {
+        return memory;
+    }
+#else
     if (void* memory = std::malloc(size == 0 ? 1 : size)) {
         return memory;
     }
+#endif
     throw std::bad_alloc{};
 }
 
+#ifndef GRAPHICS_ENGINE_TASK_FAULT_ASAN
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
 void operator delete(void* memory) noexcept {
     std::free(memory);
@@ -41,7 +50,28 @@ void operator delete(void* memory, std::size_t) noexcept {
     std::free(memory);
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+    try {
+        return ::operator new(size);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
+void operator delete(void* memory, const std::nothrow_t&) noexcept {
+    ::operator delete(memory);
+}
+#endif
+
 namespace {
+
+TEST(TaskRetirementFault, NothrowAllocationUsesMatchingRelease) {
+    std::unique_ptr<int> value{new (std::nothrow) int{7}};
+    ASSERT_NE(value, nullptr);
+    EXPECT_EQ(*value, 7);
+}
 
 struct RollbackProbe {
     NCommon::TaskSystem* Pool = nullptr;
