@@ -61,10 +61,15 @@ TEST(EngineStateManager, OnlyOneConcurrentStopCallerOwnsCleanup) {
     const auto generation = lifecycle.ObserveGeneration();
     ASSERT_TRUE(lifecycle.BeginStop(lock, generation));
     lock.unlock();
+    std::promise<void> followerEntered;
+    std::future<void> followerEnteredResult = followerEntered.get_future();
     auto follower = std::async(std::launch::async, [&] {
         std::unique_lock followerLock{mutex};
+        followerEntered.set_value();
         return lifecycle.BeginStop(followerLock, generation);
     });
+    followerEnteredResult.get();
+    // The follower keeps this mutex until BeginStop releases it inside the condition-variable wait.
     lock.lock();
     lifecycle.CompleteStop();
     lock.unlock();
