@@ -1,32 +1,62 @@
-# GraphicsEngine Style Guide
+# Правила оформления кода GraphicsEngine
 
-This document defines the project-wide code style for GraphicsEngine.
+Этот документ устанавливает единые правила оформления исходного кода GraphicsEngine. Основная версия средства форматирования — **clang-format 23.1.0**. Некоторые автоматически проверяемые правила продублированы здесь для самостоятельного чтения документа.
 
-The formatter baseline is **clang-format 23.1.0**. Formatting rules enforced by
-clang-format are duplicated here intentionally so that the style remains readable
-without inspecting the formatter configuration.
+## 1. Язык C++
 
-## 1. C++ language
-
-- Use C++23.
-- Use 4 spaces for indentation. Tabs are not used.
-- Maximum line width is 120 columns.
-- Opening braces stay on the same line.
-- Do not put non-empty functions, control-flow blocks, or class bodies on one line.
-- Use one empty line at most between code blocks.
-- Files end with a newline.
-- Pointer and reference symbols bind to the type:
+- Использовать C++23.
+- Отступ — четыре пробела, табуляция не применяется.
+- Максимальная длина строки — 120 столбцов.
+- Открывающая фигурная скобка располагается на строке объявления.
+- Непустые функции, тела классов и блоки управления не помещаются целиком в одну строку.
+- Между блоками кода не более одной пустой строки; файл заканчивается переводом строки.
+- Указатель и ссылка пишутся рядом с типом:
 
 ```cpp
 Device* device = nullptr;
 const Resource& resource = GetResource();
 ```
 
-## 2. Naming
+## 2. Именование
 
-### 2.1. Types
+| Сущность | Правило | Пример |
+| --- | --- | --- |
+| Классы, структуры, псевдонимы, концепты, параметры типов | `PascalCase` | `ResourceManager` |
+| Полиморфные интерфейсы | `I<Name>` | `IGraphicsBackend` |
+| Классы реализации соответствующей абстракции | `<Name>Impl` | `EngineImpl` |
+| Пространства имён | `N<Name>`, включая вложенные | `NGraphics::NVulkan` |
+| Функции и методы | `PascalCase` | `DrawFrame()` |
+| Локальные переменные и параметры | `camelCase` | `frameIndex` |
+| Закрытые поля | `m_<camelCase>` | `m_currentFrame` |
+| Открытые поля структур | `PascalCase` | `Width` |
+| Типы перечислений | `E<Name>` | `EGraphicsBackend` |
+| Элементы перечислений и макросы | `UPPER_SNAKE_CASE` | `VULKAN` |
+| Константы в пространстве имён и классе | `UPPER_SNAKE_CASE` | `MAX_FRAMES_IN_FLIGHT` |
+| Константы внутри функций | `camelCase` | `frameCount` |
 
-Classes, structs, aliases, concepts, and template type parameters use `PascalCase`.
+Префикс `I` допускается только для настоящего интерфейса. Суффикс `Impl` не добавляется только потому, что класс определён в `.cpp`. Макросы, общие для проекта, должны иметь префикс `GRAPHICS_ENGINE_`; допустим префикс реализации, например `GRAPHICS_ENGINE_VULKAN_CHECK`. Каждое значение перечисления пишется на отдельной строке.
+
+Аббревиатуры в идентификаторах считаются обычными словами: `GpuResource`, `CpuBuffer`, `ApiVersion`, `Url`, `Uuid`; не `GPUResource`, `CPUBuffer`, `APIVersion`, `URL`, `UUID`. Имена технологий сохраняют принятую форму, например `OpenGL` и `Vulkan`.
+
+Избегать `using namespace`: в заголовках он запрещён, в файлах реализации допускается лишь при исключительном локальном обосновании. Отдельные объявления `using` разрешены.
+
+```cpp
+namespace NGraphics::NVulkan {
+
+class Device;
+
+} // namespace NGraphics::NVulkan
+
+struct TextureDescription {
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    ETextureFormat Format = ETextureFormat::RGBA8;
+};
+```
+
+### 2.1. Типы
+
+Пример:
 
 ```cpp
 class ResourceManager;
@@ -37,32 +67,27 @@ template<typename ResourceType>
 class ResourcePool;
 ```
 
-### 2.2. Interfaces
+### 2.2. Интерфейсы
 
-Polymorphic interfaces use the `I<Name>` form.
+Пример:
 
 ```cpp
 class IGraphicsBackend;
 class IResourceProvider;
 ```
 
-Use the `I` prefix only for actual interfaces.
+### 2.3. Типы реализаций
 
-### 2.3. Implementation types
-
-An implementation class may use `<Name>Impl` when it implements a corresponding
-abstraction.
+Пример:
 
 ```cpp
 class EngineImpl;
 class ResourceManagerImpl;
 ```
 
-Do not add `Impl` merely because a class is defined in a `.cpp` file.
+### 2.4. Пространства имён
 
-### 2.4. Namespaces
-
-Namespaces use the `N<Name>` form.
+Пример:
 
 ```cpp
 namespace NGraphics {
@@ -72,7 +97,7 @@ class Device;
 } // namespace NGraphics
 ```
 
-Nested namespaces use the same rule:
+Пример:
 
 ```cpp
 namespace NGraphics::NVulkan {
@@ -82,21 +107,9 @@ class Device;
 } // namespace NGraphics::NVulkan
 ```
 
-Examples:
+### 2.5. Функции и методы
 
-- `NEngine`
-- `NGraphics`
-- `NGraphics::NVulkan`
-- `NGraphics::NOpenGL`
-- `NCommon`
-
-Avoid `using namespace`. It is forbidden in headers and should not be used in
-engine `.cpp` files unless there is an exceptional local reason. Specific `using`
-declarations are allowed.
-
-### 2.5. Functions and methods
-
-Functions and methods use `PascalCase`.
+Пример:
 
 ```cpp
 void DrawFrame();
@@ -104,27 +117,27 @@ ResourceManager& GetResourceManager();
 bool IsComplete() const;
 ```
 
-### 2.6. Local variables and parameters
+### 2.6. Локальные переменные и параметры
 
-Local variables and function parameters use `camelCase`.
+Пример:
 
 ```cpp
 uint32_t frameIndex = 0;
 void SetActiveScene(SceneHandle scene);
 ```
 
-### 2.7. Private data members
+### 2.7. Закрытые поля
 
-Private data members use the `m_<camelCase>` form.
+Пример:
 
 ```cpp
 Device m_device;
 uint32_t m_currentFrame = 0;
 ```
 
-### 2.8. Public struct fields
+### 2.8. Открытые поля структур
 
-Public data fields use `PascalCase`.
+Пример:
 
 ```cpp
 struct TextureDescription {
@@ -134,13 +147,9 @@ struct TextureDescription {
 };
 ```
 
-### 2.9. Enums
+### 2.9. Перечисления
 
-Enum types use the `E<Name>` form.
-
-Enum values use `UPPER_SNAKE_CASE`.
-
-Each enum value is always written on a separate line.
+Пример:
 
 ```cpp
 enum class EGraphicsBackend {
@@ -150,42 +159,38 @@ enum class EGraphicsBackend {
 };
 ```
 
-### 2.10. Constants
+### 2.10. Константы
 
-Namespace-scope and class-scope constants use `UPPER_SNAKE_CASE`.
+Пример:
 
 ```cpp
 constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 ```
 
-Function-local constants follow normal local-variable naming and use `camelCase`.
+Пример:
 
 ```cpp
 constexpr uint32_t frameCount = 2;
 ```
 
-### 2.11. Macros
+### 2.11. Макросы
 
-Macros use `UPPER_SNAKE_CASE`.
-
-Public/project-wide macros should use a project prefix.
+Пример:
 
 ```cpp
 GRAPHICS_ENGINE_ASSERT(...);
 GRAPHICS_ENGINE_ENSURE(...);
 ```
 
-Backend-specific macros may include the backend in the prefix.
+Пример:
 
 ```cpp
 GRAPHICS_ENGINE_VULKAN_CHECK(...);
 ```
 
-### 2.12. Acronyms
+### 2.12. Аббревиатуры
 
-Acronyms are treated as normal words in identifiers.
-
-Use:
+Предпочтительные имена:
 
 ```text
 GpuResource
@@ -195,7 +200,7 @@ Url
 Uuid
 ```
 
-Do not use:
+Неправильные варианты:
 
 ```text
 GPUResource
@@ -205,19 +210,17 @@ URL
 UUID
 ```
 
-Official technology names keep their established spelling where appropriate,
-for example `OpenGL` and `Vulkan`.
+## 3. Типы и объявления
 
-## 3. Type spelling and declarations
+Предпочтительны явные типы. `auto` используется, когда тип неудобен, избыточно длинен, зависит от реализации или представляет итератор. Не скрывать короткий полезный тип только ради краткости.
 
-### 3.1. `auto`
+Использовать `using` вместо `typedef`. Не создавать псевдонимы лишь для маскировки указателя вроде `DevicePtr = Device*`; смысловые псевдонимы дескрипторов допустимы. Владение выражать стандартными `std::unique_ptr`, `std::shared_ptr` и `std::weak_ptr` без необоснованных дополнительных имён.
 
-Prefer explicit types.
+Типы целых чисел фиксированной ширины использовать, когда ширина является частью контракта, двоичного представления, сериализации, графического или публичного интерфейса. `size_t` применять для размеров контейнеров и памяти. Преобразования в стиле C запрещены; применять подходящий `static_cast`, `reinterpret_cast` или `const_cast`, причём последние два требуют ясного обоснования. Нулевые указатели записывать через `nullptr`; специальные значения интерфейса, например `VK_NULL_HANDLE`, допускаются.
 
-Use `auto` only when the explicit type is genuinely inconvenient, excessively
-verbose, implementation-dependent, or for iterator types.
+### 3.1. Выбор `auto`
 
-Prefer:
+Предпочтительны явные типы:
 
 ```cpp
 VkResult result = vkCreateDevice(...);
@@ -228,41 +231,35 @@ for (std::vector<Resource>::iterator it = resources.begin(); it != resources.end
 }
 ```
 
-Typical acceptable uses include:
+Допустимо при неудобном типе итератора:
 
 ```cpp
 auto it = resources.find(handle);
 ```
 
-Do not use `auto` merely to avoid writing a short, useful type.
+### 3.2. Псевдонимы типов
 
-### 3.2. Type aliases
-
-Use `using`, not `typedef`.
+Смысловой псевдоним:
 
 ```cpp
 using ResourceId = uint64_t;
 ```
 
-Do not create aliases merely to hide raw-pointer syntax.
-
-Avoid:
+Не рекомендуется использовать псевдоним только для указателя:
 
 ```cpp
 using DevicePtr = Device*;
 ```
 
-Prefer:
+Предпочтительно:
 
 ```cpp
 Device* device = nullptr;
 ```
 
-Semantic handle aliases are allowed when the alias represents a real concept.
+### 3.3. Умные указатели
 
-### 3.3. Smart pointers
-
-Spell ownership explicitly.
+Пример:
 
 ```cpp
 std::unique_ptr<Device>
@@ -270,13 +267,9 @@ std::shared_ptr<Resource>
 std::weak_ptr<Resource>
 ```
 
-Do not introduce aliases such as `DeviceUniquePtr` without a concrete semantic
-reason.
+### 3.4. Целые числа
 
-### 3.4. Integer types
-
-Use fixed-width integer types where width is part of the contract, binary
-layout, serialization format, graphics API, or public API.
+Пример:
 
 ```cpp
 uint32_t
@@ -284,13 +277,9 @@ uint64_t
 int32_t
 ```
 
-Use `size_t` where it naturally represents a container or memory size.
+### 3.5. Преобразования типов
 
-### 3.5. Casts
-
-Do not use C-style casts.
-
-Use the appropriate C++ cast:
+Пример:
 
 ```cpp
 static_cast<Type>(value);
@@ -298,36 +287,11 @@ reinterpret_cast<Type*>(pointer);
 const_cast<Type*>(pointer);
 ```
 
-`reinterpret_cast` and `const_cast` should remain uncommon and require a clear
-reason.
+## 4. Классы и структуры
 
-### 3.6. Null pointers
+`struct` предназначен для простых типов данных с открытым состоянием, `class` — для сущностей с инвариантами, инкапсуляцией, владением или поведением.
 
-Use `nullptr`.
-
-API-specific null handles such as `VK_NULL_HANDLE` remain valid.
-
-## 4. Classes and structs
-
-### 4.1. `struct` vs `class`
-
-Use `struct` for simple value/data types with public state.
-
-Use `class` for types with invariants, encapsulation, ownership, or meaningful
-behavior.
-
-### 4.2. Class member ordering
-
-Prefer the following order:
-
-1. public nested types and constants;
-2. constructors and destructor;
-3. public methods;
-4. protected section, only if needed;
-5. private helper methods;
-6. private data members.
-
-Private helper methods and private data members use separate `private:` sections.
+Предпочтительный порядок: открытые вложенные типы и константы; конструкторы и деструктор; открытые методы; при необходимости защищённый раздел; закрытые вспомогательные методы; закрытые поля. Для последних двух использовать отдельные разделы `private:`.
 
 ```cpp
 class Device: public NCommon::NonCopyable {
@@ -350,31 +314,9 @@ private:
 };
 ```
 
-### 4.3. Ownership and transfer restrictions
+При существующей общей основе владения не дублировать группы удалённых специальных методов. Использовать соответствующие `NCommon::NonCopyable` или `NCommon::NonTransferable`, не меняя их собственных контрактов.
 
-Do not repeatedly spell copy/move restrictions with groups of deleted special
-members when the project has a corresponding reusable ownership base.
-
-Use project utility bases such as:
-
-```cpp
-NCommon::NonCopyable
-NCommon::NonTransferable
-```
-
-The exact semantics of these base classes must remain clearly defined in their
-own API.
-
-### 4.4. Constructors
-
-Single-argument constructors are `explicit` unless implicit conversion is an
-intentional part of the type's semantics.
-
-```cpp
-explicit EngineImpl(const EngineConfig& config);
-```
-
-Constructor initializer lists use leading commas:
+Конструктор с одним параметром — `explicit`, кроме намеренно допустимого неявного преобразования. В списках инициализации конструкторов запятые находятся в начале строк:
 
 ```cpp
 EngineImpl::EngineImpl(const EngineConfig& config)
@@ -383,68 +325,85 @@ EngineImpl::EngineImpl(const EngineConfig& config)
 }
 ```
 
-### 4.5. Overrides
+Для переопределений использовать `override`, не повторяя `virtual`. `final` применять при намеренном запрете наследования. `noexcept` обозначает реальную гарантию отсутствия исключений и не добавляется механически. Изменяемые открытые поля допустимы для простых структур данных или конфигураций, но состояние классов обычно закрыто.
 
-Use `override` on overrides.
+### 4.3. Ограничения владения и копирования
 
-Do not repeat `virtual` on an overriding declaration.
+Пример:
+
+```cpp
+NCommon::NonCopyable
+NCommon::NonTransferable
+```
+
+### 4.4. Конструкторы
+
+Пример:
+
+```cpp
+explicit EngineImpl(const EngineConfig& config);
+```
+
+### 4.5. Переопределения
+
+Пример:
 
 ```cpp
 void DrawFrame() override;
 ```
 
-Use `final` when further inheritance is intentionally forbidden.
+## 5. Функции
 
-### 4.6. `noexcept`
+Если изменение аргумента не требуется, использовать ссылку на `const`. Не добавлять верхнеуровневый `const` к скалярному параметру по значению только ради оформления. Локальные переменные, не изменяемые после инициализации, обычно объявлять `const`.
 
-Use `noexcept` when it is part of the real semantic contract.
+Логические переменные использовать с осмысленными префиксами `isValid`, `hasSurface`, `canPresent`, `shouldRecreate`. Методы — `IsValid()`, `HasSurface()`, `CanPresent()`; избегать `GetIsValid()`. Доступ к свойствам оформлять через `Get<Name>` и `Set<Name>`, а самостоятельные операции называть глаголом, например `QueryCapabilities()`.
 
-Typical uses include trivial accessors and operations that genuinely guarantee
-not to throw.
+Предпочитать ранний возврат, если он уменьшает вложенность. В цикле по диапазону не ставить пробел перед двоеточием и по возможности писать явный тип элемента:
 
-Do not add `noexcept` mechanically.
+```cpp
+for (const Resource& resource: resources) {
+    Process(resource);
+}
+```
 
-### 4.7. Public fields
+Списки захватов лямбд должны быть минимальными; в долгоживущих и асинхронных лямбдах предпочитать явный захват. Локальный `[&]` допустим при очевидной области видимости и времени жизни.
 
-Mutable public fields are appropriate for simple data/description/configuration
-structs.
+Объявления шаблонов располагать на отдельной строке. Для параметров типов последовательно использовать `typename`, а имена концептов писать в `PascalCase`.
 
-Classes should normally keep mutable state private.
+```cpp
+template<typename T>
+concept GraphicsResource = ...;
+```
 
-## 5. Functions
+### 5.1. Постоянство значений и `const`
 
-### 5.1. `const`
-
-Use `const` references when mutation is not required.
+Параметр по постоянной ссылке:
 
 ```cpp
 void Submit(const FrameSubmission& submission);
 ```
 
-Do not add top-level `const` to scalar/by-value parameters merely for style.
-
-Prefer:
+Предпочтительно передавать значение без избыточного верхнеуровневого `const`:
 
 ```cpp
 void Wait(CompletionToken completion);
 ```
 
-not:
+Не рекомендуется:
 
 ```cpp
 void Wait(const CompletionToken completion);
 ```
 
-Local variables that are not modified after initialization should normally be
-`const`.
+Локальная неизменяемая переменная:
 
 ```cpp
 const VkResult result = vkCreateDevice(...);
 ```
 
-### 5.2. Boolean naming
+### 5.2. Именование логических значений
 
-Boolean variables use descriptive prefixes such as:
+Логические переменные:
 
 ```text
 isValid
@@ -454,7 +413,7 @@ canPresent
 shouldRecreate
 ```
 
-Boolean methods use:
+Методы, возвращающие логические значения:
 
 ```text
 IsValid()
@@ -464,27 +423,24 @@ CanPresent()
 ShouldRecreate()
 ```
 
-Avoid names such as `GetIsValid()`.
+### 5.3. Методы доступа к свойствам
 
-### 5.3. Getters and setters
-
-Property-like accessors use `Get<Name>` / `Set<Name>` where appropriate.
+Методы доступа:
 
 ```cpp
 uint32_t GetWidth() const noexcept;
 void SetActiveScene(SceneHandle scene);
 ```
 
-Operations should use verbs that describe the operation rather than being
-forced into `Get...`.
+Самостоятельная операция:
 
 ```cpp
 DeviceCapabilities QueryCapabilities();
 ```
 
-### 5.4. Early returns
+### 5.4. Ранние возвраты
 
-Prefer early returns when they reduce nesting.
+Пример:
 
 ```cpp
 if (!IsValid()) {
@@ -494,60 +450,32 @@ if (!IsValid()) {
 DoWork();
 ```
 
-### 5.5. Range-based loops
+### 5.6. Захваты лямбда-выражений
 
-Do not put a space before the range colon.
-
-Prefer an explicit element type whenever practical.
-
-```cpp
-for (const Resource& resource: resources) {
-    Process(resource);
-}
-```
-
-Use `auto` only when the element type is genuinely inconvenient.
-
-### 5.6. Lambdas
-
-Keep capture lists minimal.
-
-Prefer explicit captures for long-lived or asynchronous lambdas.
+Пример:
 
 ```cpp
 [this, frameIndex]
 ```
 
-A local `[&]` capture is acceptable when its scope and lifetime are obvious.
+### 5.7. Шаблоны и концепты
 
-### 5.7. Templates
-
-Template declarations stay on their own line.
+Пример:
 
 ```cpp
 template<typename T>
 void Process(T&& value);
 ```
 
-Use `typename` consistently for template type parameters.
+## 6. Управляющие конструкции
 
-Concept names use `PascalCase`.
+Метки `case` выравниваются с `switch`, без пустых строк между ветвями. Не допускать неявного или явного перехода из одной ветви в другую: каждая заканчивается `break`, `return`, `throw` или эквивалентом. Для полного `switch` по перечислению не добавлять необязательный `default`, чтобы компилятор выявлял новые значения.
 
-```cpp
-template<typename T>
-concept GraphicsResource = ...;
-```
+Сравнения записывать естественно: `pointer == nullptr`, `count == 0`. Не менять местами константу и значение ради особого стиля.
 
-## 6. Control flow
+### 6.1. Ветвление `switch`
 
-### 6.1. `switch`
-
-`case` labels are aligned with `switch`.
-
-Do not insert blank lines between cases.
-
-Do not use implicit or explicit fallthrough between cases. Each case must
-terminate through `break`, `return`, `throw`, or equivalent control transfer.
+Пример:
 
 ```cpp
 switch (backend) {
@@ -558,29 +486,40 @@ case EGraphicsBackend::OPENGL:
 }
 ```
 
-For exhaustive enum switches, avoid an unnecessary `default` so compiler
-diagnostics can detect newly added enum values.
+### 6.2. Сравнения
 
-### 6.2. Comparisons
-
-Write comparisons naturally.
+Пример:
 
 ```cpp
 pointer == nullptr
 count == 0
 ```
 
-Do not use Yoda-style comparisons.
+## 7. Инициализация
 
-## 7. Initialization
+Предпочитать инициализацию значением для нулевого или стандартного состояния:
 
-Prefer value initialization when an object should be zero/default initialized.
+```cpp
+VkDeviceCreateInfo createInfo{};
+
+TextureDescription description{
+    .Width = width,
+    .Height = height,
+    .Format = ETextureFormat::RGBA8,
+};
+```
+
+Использовать именованные инициализаторы агрегатов, когда они повышают понятность. В многострочных списках инициализации и перечислениях ставить завершающую запятую там, где язык её допускает. Одно объявление — одна переменная.
+
+### Дополнительные примеры и противопоставления
+
+Инициализация значением:
 
 ```cpp
 VkDeviceCreateInfo createInfo{};
 ```
 
-Use designated initializers for aggregates when they improve clarity.
+Именованная инициализация агрегата:
 
 ```cpp
 TextureDescription description{
@@ -590,54 +529,24 @@ TextureDescription description{
 };
 ```
 
-Use a trailing comma in multiline initializer lists, enum lists, and similar
-multiline lists where the language permits it.
-
-Declare one variable per declaration.
-
-Prefer:
+Предпочтительно объявлять переменные отдельно:
 
 ```cpp
 uint32_t width = 0;
 uint32_t height = 0;
 ```
 
-not:
+Не рекомендуется объединять объявления:
 
 ```cpp
 uint32_t width = 0, height = 0;
 ```
 
-## 8. Headers and includes
+## 8. Заголовочные файлы
 
-### 8.1. Header protection
+Применять `#pragma once` вместо ручной защиты от повторного включения. Каждый заголовок обязан самостоятельно подключать необходимые зависимости; нельзя полагаться на транзитивные включения.
 
-Use:
-
-```cpp
-#pragma once
-```
-
-Do not use manual include guards for project headers.
-
-### 8.2. Include what you use
-
-Every header must directly include the headers required for the declarations it
-contains. Do not rely on transitive includes.
-
-### 8.3. Include order
-
-In a `.cpp` file, its corresponding header comes first.
-
-Then group includes as:
-
-1. C and C++ standard library;
-2. third-party/external libraries;
-3. project headers.
-
-Separate groups with one empty line.
-
-Example:
+В `.cpp` первым подключать соответствующий заголовок, затем группы стандартной библиотеки, сторонних библиотек и заголовков проекта. Группы разделять пустой строкой и сортировать внутри по алфавиту. Для собственного заголовка использовать кавычки, для остальных — угловые скобки.
 
 ```cpp
 #include "device.h"
@@ -651,40 +560,46 @@ Example:
 #include <lib/common/exception.h>
 ```
 
-Sort includes alphabetically inside a group.
+Предварительные объявления применять для снижения связанности, когда полный тип не нужен. Не объявлять типы стандартной библиотеки вручную.
 
-Use quotes for the corresponding local header:
+### 8.1. Защита заголовка
+
+Пример:
+
+```cpp
+#pragma once
+```
+
+### 8.3. Порядок включений
+
+Пример:
 
 ```cpp
 #include "device.h"
 ```
 
-Use angle brackets for other project, standard-library, and external headers.
+## 9. Организация исходников
 
-### 8.4. Forward declarations
+Имена исходников: `snake_case.h` и `snake_case.cpp`, каталогов — `snake_case`. Другие расширения (`.hpp`, `.hh`, `.cc`, `.cxx`) требуют явного исключения.
 
-Use forward declarations when they meaningfully reduce dependency coupling and a
-complete type is not required.
+Имя файла должно отражать ответственность, не дублируя однозначный контекст каталога: `graphics/backend/vulkan/device.h` предпочтительнее `graphics/backend/vulkan/vulkan_device.h`. Имя класса при этом может содержать `Vulkan`. `helper.cpp`, `utils.cpp` и `common.cpp` допустимы для связанных локальных вспомогательных функций, но не как свалка несвязанных реализаций.
 
-Do not manually forward-declare standard-library types.
+Свободные функции и объекты, принадлежащие только одному `.cpp`, размещать в анонимном пространстве имён.
 
-## 9. Source organization
+Тесты располагаются в каталогах `test/`, в том числе на разных уровнях модулей. Файл теста называют по проверяемому объекту или поведению без суффикса `test`, добавленного только из-за его назначения: `math/test/matrix.cpp`, `graphics/backend/vulkan/test/command_buffer.cpp`.
 
-### 9.1. Header/source pairs
+### 9.1. Пары заголовков и исходников
 
-Project C++ files use:
+Пример:
 
 ```text
 snake_case.h
 snake_case.cpp
 ```
 
-Do not mix `.hpp`, `.hh`, `.cc`, or `.cxx` for project code without an explicit
-exception.
+### 9.2. Названия каталогов
 
-### 9.2. Directories
-
-Directories use `snake_case`.
+Пример:
 
 ```text
 graphics/
@@ -693,12 +608,9 @@ graphics/backend/vulkan/
 graphics/resources/
 ```
 
-### 9.3. File names and directory context
+### 9.3. Имена файлов и контекст каталогов
 
-Name a file after its responsibility or primary entity, but do not repeat context
-that is already unambiguous from the directory path.
-
-Prefer:
+Предпочтительные имена файлов:
 
 ```text
 graphics/backend/vulkan/device.h
@@ -706,7 +618,7 @@ graphics/backend/vulkan/command_buffer.h
 graphics/backend/vulkan/pipeline.h
 ```
 
-over:
+Избыточное повторение контекста каталога:
 
 ```text
 graphics/backend/vulkan/vulkan_device.h
@@ -714,12 +626,9 @@ graphics/backend/vulkan/vulkan_command_buffer.h
 graphics/backend/vulkan/vulkan_pipeline.h
 ```
 
-The C++ type may still include backend context where useful, for example
-`VulkanDevice`.
+### 9.4. Локальные вспомогательные файлы
 
-### 9.4. Local utility files
-
-Names such as the following are valid:
+Пример:
 
 ```text
 helper.cpp
@@ -727,15 +636,9 @@ utils.cpp
 common.cpp
 ```
 
-They are appropriate when the file contains cohesive local helpers or shared
-implementation details for the surrounding module.
+### 9.5. Вспомогательные функции в файле реализации
 
-Do not use such files as unrelated catch-all storage.
-
-### 9.5. File-local implementation helpers
-
-Use an anonymous namespace for free functions and objects that are private to a
-`.cpp` file.
+Пример:
 
 ```cpp
 namespace {
@@ -747,17 +650,9 @@ bool IsSuitableDevice(...) {
 } // namespace
 ```
 
-### 9.6. Tests
+### 9.6. Файлы тестов
 
-Tests live in `test/` directories.
-
-A repository may contain multiple `test/` directories at different module
-levels.
-
-Test file names describe the tested entity or functionality and do not contain a
-`test` suffix merely because they are test files.
-
-Examples:
+Пример:
 
 ```text
 graphics/resource/test/resource_manager.cpp
@@ -765,64 +660,52 @@ graphics/backend/vulkan/test/command_buffer.cpp
 math/test/matrix.cpp
 ```
 
-## 10. Comments
+## 10. Комментарии
 
-Comments should primarily explain:
+Комментарии прежде всего объясняют причины решений, неочевидные инварианты, владение, время жизни, синхронизацию, особенности платформы/реализации и нетривиальные решения по производительности. Не комментировать очевидные операции.
 
-- why a decision exists;
-- non-obvious invariants;
-- ownership and lifetime requirements;
-- synchronization requirements;
-- platform/backend quirks;
-- non-obvious performance choices.
+Новые замечания `TODO` сначала записываются без номера задачи. При проверке работы для действительно отслеживаемого замечания создаётся задача, после чего добавляется её настоящий идентификатор. Нельзя придумывать номера заранее.
 
-Do not comment obvious code.
+Публичный интерфейс документируется, если сигнатура не раскрывает важные правила: владение, время жизни, потокобезопасность, синхронизацию, допустимые состояния и ошибки. Очевидные методы доступа не требуют комментариев ради формальной полноты.
 
-Avoid:
+### Пример избыточного комментария
+
+Неудачный комментарий, пересказывающий очевидное действие:
 
 ```cpp
 // Increment frame index.
 ++frameIndex;
 ```
 
-Prefer comments that explain the reason behind unusual behavior.
+### Пример заметки TODO
 
-### 10.1. TODO
-
-New TODO comments are initially written without a task tag.
+Новая заметка в исходном коде не должна содержать выдуманного идентификатора задачи:
 
 ```cpp
 // TODO: Support multiple graphics queues.
 ```
 
-A TODO that represents real tracked work should be surfaced during review. The
-review process should ask for a task to be created and then update the TODO with
-the resulting task identifier/tag.
+## 11. Стиль CMake
 
-Do not invent task identifiers in advance.
+Этот раздел определяет синтаксис и имена, но не фиксирует устройство перечней исходников и модулей.
 
-### 10.2. Public API documentation
+Команды CMake записываются строчными буквами и без пробела перед `(`:
 
-Document public API behavior when the signature alone does not make important
-semantics clear, especially:
+```cmake
+add_library(...)
+target_link_libraries(...)
+if (GRAPHICS_ENGINE_BUILD_SAMPLES)
+    add_subdirectory(samples)
+endif ()
+```
 
-- ownership;
-- lifetime;
-- thread safety;
-- synchronization;
-- valid states;
-- failure behavior.
+Переменные и параметры проекта используют `UPPER_SNAKE_CASE`, общие параметры — префикс `GRAPHICS_ENGINE_`; избегать слишком общих `BUILD_SAMPLES`. Внутренние физические цели имеют имена проекта в `PascalCase`, открытые псевдонимы — пространство `GraphicsEngine::<Name>`.
 
-Do not add documentation comments to trivial accessors solely for completeness.
+В многострочных командах областей видимости `PUBLIC`, `PRIVATE` и `INTERFACE` ключи отступают на один уровень, значения — ещё на один. Такое же правило действует для `target_include_directories`. Механизм перечисления исходников и рекурсивных модулей регулируется отдельно.
 
-## 11. CMake style
+### 11.1. Команды
 
-This section defines syntax and naming style only. The source-listing/module
-architecture is intentionally not fixed yet.
-
-### 11.1. Commands
-
-CMake commands use lowercase and have no space before `(`.
+Пример:
 
 ```cmake
 add_library(...)
@@ -831,11 +714,9 @@ if (...)
 endif ()
 ```
 
-### 11.2. Variables and options
+### 11.2. Переменные и параметры
 
-Project variables and options use `UPPER_SNAKE_CASE`.
-
-Project-wide options use the project prefix.
+Пример:
 
 ```cmake
 GRAPHICS_ENGINE_BUILD_SAMPLES
@@ -843,13 +724,9 @@ GRAPHICS_ENGINE_BUILD_TESTS
 GRAPHICS_ENGINE_ENABLE_VULKAN
 ```
 
-Avoid generic options such as `BUILD_SAMPLES` in library projects.
+### 11.3. Цели сборки
 
-### 11.3. Targets
-
-Internal physical target names use project-specific `PascalCase` names.
-
-Public aliases use the `GraphicsEngine::<Name>` namespace.
+Пример:
 
 ```cmake
 add_library(GraphicsEngineCore STATIC ...)
@@ -859,10 +736,9 @@ add_library(GraphicsEngineVulkan STATIC ...)
 add_library(GraphicsEngine::Vulkan ALIAS GraphicsEngineVulkan)
 ```
 
-### 11.4. Multiline target commands
+### 11.4. Многострочные вызовы
 
-Scopes such as `PUBLIC`, `PRIVATE`, and `INTERFACE` are indented one level.
-Their values are indented one additional level.
+Пример:
 
 ```cmake
 target_link_libraries(Target
@@ -874,12 +750,9 @@ target_link_libraries(Target
 )
 ```
 
-Use the same layout for similar scoped commands such as
-`target_include_directories`.
+### 11.5. Условия
 
-### 11.5. Conditions
-
-Use:
+Допустимый вариант:
 
 ```cmake
 if (GRAPHICS_ENGINE_BUILD_SAMPLES)
@@ -887,27 +760,28 @@ if (GRAPHICS_ENGINE_BUILD_SAMPLES)
 endif ()
 ```
 
-Do not use:
+Не следует оставлять пустую ветвь:
 
 ```cmake
 if (GRAPHICS_ENGINE_BUILD_SAMPLES)
 endif ()
 ```
 
-### 11.6. Source listing
+## 12. Форматирование и статические проверки
 
-The source-listing and recursive module mechanism is intentionally not specified
-by this style guide yet. It will be designed separately.
+Стандартная версия — `clang-format 23.1.0`. Сценарии форматирования располагаются в `tools/formatter/` (например, `run.sh`, `check.sh` и `ignore`). Форматирование и статический анализ — разные задачи: форматтер меняет только оформление, а анализ считается проверкой и располагается в соответствующей инфраструктуре.
 
-## 12. Formatting and linting tooling
+Сторонние, автоматически созданные и сборочные файлы не должны изменяться форматтером проекта. Типовые исключения: `external/`, `third_party/`, `build/`, `cmake-build-*/` и `generated/`. Точные правила исключений и порядок вызова определяет сам инструмент форматирования.
 
-The project standard formatter version is:
+### Примеры раздела 12
+
+Пример:
 
 ```text
 clang-format 23.1.0
 ```
 
-Repository formatting tooling should live under:
+Пример:
 
 ```text
 tools/
@@ -918,17 +792,7 @@ tools/
         ...
 ```
 
-Formatting and linting are separate responsibilities.
-
-Formatter tooling changes formatting only.
-
-Lint/static-analysis checks are treated as tests and should live in the testing
-or checking infrastructure rather than being folded into the formatter.
-
-External, generated, vendored, and build output should not be modified by
-project formatters.
-
-Typical excluded areas include:
+Пример:
 
 ```text
 external/
@@ -938,5 +802,3 @@ cmake-build-*/
 generated/
 ```
 
-The exact ignore syntax and formatter orchestration are defined by the formatter
-tooling itself.

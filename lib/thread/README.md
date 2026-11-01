@@ -1,13 +1,8 @@
-# Thread Module
+# Система задач
 
-`Thread` содержит backend-independent CPU scheduling utilities. Текущая публичная часть модуля - `TaskSystem`.
+Модуль `Thread` содержит независимые от графической реализации средства планирования вычислительных задач. Его публичная часть — `TaskSystem`: пул рабочих потоков для выполнения `TaskFunction` по графу зависимостей. Он не зависит от рендеринга, ресурсов, оконной системы или графического интерфейса.
 
-## TaskSystem
-
-`TaskSystem` - thread pool для выполнения `TaskFunction` с dependency graph. Он не зависит от renderer, resources,
-window system или graphics backend.
-
-### Task Lifecycle
+## Жизненный цикл задачи
 
 ```text
 CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
@@ -16,114 +11,70 @@ CREATED -> WAITING -> READY -> RUNNING -> COMPLETED
                          +------------> CANCELLED
 ```
 
-`CREATED` является внутренним pre-publication state. После возврата из `Submit()` пользователь может наблюдать только
-`WAITING`, `READY`, `RUNNING` и terminal states.
+`CREATED` — внутреннее состояние до публикации. После возврата `Submit()` пользователь видит только `WAITING`, `READY`, `RUNNING` и конечные состояния.
 
-- `WAITING`: задача опубликована, но ожидает успешного завершения prerequisites.
-- `READY`: все prerequisites успешно завершены, задача находится в очереди worker pool.
-- `RUNNING`: задача выполняется на worker thread.
-- `COMPLETED`: callback завершился без исключения.
-- `FAILED`: callback выбросил исключение, которое преобразовано в `ErrorInfo`.
-- `CANCELLED`: задача отменена явно или из-за failed/cancelled prerequisite.
+- `WAITING` — задача опубликована, но ждёт успешного завершения зависимостей.
+- `READY` — все зависимости завершены, задача в очереди рабочего пула.
+- `RUNNING` — задача исполняется в рабочем потоке.
+- `COMPLETED` — обработчик завершился без исключения.
+- `FAILED` — исключение обработчика преобразовано в `ErrorInfo`.
+- `CANCELLED` — явная отмена либо отмена вследствие ошибки или отмены зависимости.
 
-### Handles And Lifetime
+## Дескрипторы и время жизни
 
-`TaskHandle` - стабильная ссылка на опубликованную задачу. Handle привязан к конкретному instance identity
-`TaskSystem` и opaque task state; локальный числовой id используется только для диагностики. Handle из другого
-`TaskSystem`, включая уничтоженный scheduler и новый scheduler, созданный по тому же адресу памяти, никогда не alias-ит
-локальную задачу и отклоняется как invalid argument.
+`TaskHandle` — устойчивый дескриптор опубликованной задачи. Он привязан к идентичности конкретного экземпляра `TaskSystem` и непрозрачному состоянию задачи; локальный числовой идентификатор служит только для диагностики. Дескриптор другого `TaskSystem`, в том числе уничтоженного планировщика и нового планировщика по тому же адресу, не считается локальным и отклоняется как неправильный аргумент.
 
-Terminal state остаётся доступным через `TaskHandle`, пока пользователь хранит handle и соответствующий `TaskSystem`
-жив. Scheduler при переходе в terminal state сразу освобождает execution payload: callback, dependency edges и captured
-resources, которые удерживались только callback-ом. Registry record публикуется в allocation-free intrusive retirement
-list и удаляется из active lookup при следующем drain. Поэтому память scheduler не растёт пропорционально total
-submissions за всё время жизни `TaskSystem`.
+Конечное состояние доступно через `TaskHandle`, пока вызывающий код удерживает дескриптор и соответствующий `TaskSystem` существует. При переходе в конечное состояние планировщик сразу освобождает данные исполнения: обработчик, рёбра зависимостей и захваченные ресурсы, удерживаемые только обработчиком. Запись реестра переносится в связанный список освобождения без выделения памяти и удаляется из активного поиска при следующей очистке. Поэтому память планировщика не растёт пропорционально общему числу задач за всю его жизнь.
 
-После уничтожения `TaskSystem` оставшийся `TaskHandle` является stale value object. Использовать его с новым или другим
-`TaskSystem` нельзя; такой handle должен быть отвергнут.
+После уничтожения `TaskSystem` сохранённый `TaskHandle` становится устаревшим значением. Его нельзя использовать с новым или другим планировщиком.
 
-`TaskContext` живёт только во время callback. Его нельзя сохранять или использовать после возврата из `TaskFunction`.
-`TaskContext::GetTask()` возвращает handle текущей задачи, `TaskContext::GetWorkerIndex()` - stable index worker thread,
-на котором выполняется callback.
+`TaskContext` живёт только во время вызова обработчика; сохранять его и использовать после возврата из `TaskFunction` запрещено. `TaskContext::GetTask()` возвращает дескриптор текущей задачи, `TaskContext::GetWorkerIndex()` — устойчивый индекс исполняющего её рабочего потока.
 
-`TaskSystem` фиксирует `WorkerCount` при construction. Значение `0` нормализуется в `1`, после запуска pool размер не
-меняется и доступен через `GetWorkerCount()`. `WorkerIndex` всегда находится в диапазоне `[0, GetWorkerCount())` и
-стабилен для конкретного worker thread.
+`TaskSystem` фиксирует `WorkerCount` при создании. Ноль нормализуется до единицы; после запуска число потоков неизменно и доступно через `GetWorkerCount()`. `WorkerIndex` находится в диапазоне `[0, GetWorkerCount())` и остаётся постоянным для рабочего потока.
 
-### Dependencies And Ordering
+## Зависимости и порядок
 
-Dependency set копируется при `Submit()`. Последующие изменения контейнера, из которого был создан `std::span`, не
-меняют dependency graph. После publication dependency edges задачи immutable: новые ordering constraints выражаются
-только публикацией новой задачи с собственным dependency set.
+Набор зависимостей копируется при `Submit()`. Изменение исходного контейнера, из которого создан `std::span`, не меняет граф. После публикации рёбра задачи неизменны: дополнительные ограничения порядка выражаются новой задачей с собственными зависимостями.
 
-Задача становится `READY`, когда все prerequisites завершились `COMPLETED`. Если любой prerequisite завершился
-`FAILED` или `CANCELLED`, dependent task переходит в `CANCELLED`. Несколько dependents и несколько prerequisites
-поддерживаются: fan-in хранится как `RemainingDependencies`, fan-out - как список dependents у каждой prerequisite.
-Завершающаяся prerequisite atomically уменьшает `RemainingDependencies` каждого dependent; task, которая последней
-довела счётчик до `0`, переводит dependent в `READY`.
+Задача становится `READY`, только когда все предшественники достигли `COMPLETED`. Если один из них достиг `FAILED` или `CANCELLED`, зависимая задача отменяется. Поддерживаются несколько предшественников и несколько последователей: для объединения зависимостей хранится `RemainingDependencies`, а для разветвления — список зависимых задач каждой исходной. Завершающийся предшественник атомарно уменьшает счётчик зависимых; последний, доведший счётчик до нуля, переводит задачу в `READY`.
 
-Running task может публиковать новые задачи через `TaskContext::Spawn()`. Если child зависит от уже существующих задач,
-нужно передать dependencies в `Spawn(function, dependencies)`, а не блокировать worker ожиданием.
+Выполняющаяся задача может создавать новые через `TaskContext::Spawn()`. Если дочерняя зависит от существующих задач, передавайте их через `Spawn(function, dependencies)` вместо ожидания в рабочем потоке.
 
-Для независимых `READY` задач порядок выполнения не гарантируется. Зависимости между worker-задачами должны выражаться
-через graph, а не через blocking wait внутри callback.
+Порядок независимых `READY` задач не гарантирован. Между рабочими задачами порядок выражается графом, а не блокирующим ожиданием внутри обработчика.
 
-`READY` задачи распределяются по worker-local queues. Задачи, опубликованные worker thread, сначала попадают в локальную
-очередь этого worker; задачи, опубликованные внешними потоками, идут через отдельный low-contention global injection
-path. Idle workers сначала берут локальную работу, затем global injection и после этого steal-ят work из других workers.
-Workers не привязаны к frame, subsystem или rendering stage: любой idle worker может взять любую `READY` задачу.
-Application thread не выполняет worker callbacks; он только публикует задачи, читает состояние и блокируется в
-`Wait()`/`WaitIdle()`.
+Готовые задачи распределяются по локальным очередям рабочих потоков. Публикации из рабочего потока сначала попадают в его очередь; внешние потоки используют отдельную общую очередь входящих задач с низкой конкуренцией. Свободный рабочий поток сначала проверяет свою очередь, затем общую, затем забирает работу из очередей других потоков. Потоки не закреплены за кадрами, подсистемами и стадиями рендеринга: любой свободный поток может выполнить любую готовую задачу. Поток приложения не исполняет рабочие обработчики, а только публикует задачи, наблюдает состояния и может блокироваться в `Wait()` или `WaitIdle()`.
 
-### Error Boundary
+## Граница обработки ошибок
 
-Исключения не выходят за границу worker thread. Callback exceptions преобразуются в `ErrorInfo`:
+Исключения не выходят за пределы рабочего потока. Они преобразуются в `ErrorInfo`:
 
-- `NCommon::Exception`: сохраняются project `std::error_code` и diagnostic message.
-- `std::system_error`: сохраняется исходный `std::error_code` и message.
-- `std::exception`: `EError::UNKNOWN` и `what()`.
-- unknown exception: `EError::UNKNOWN` и generic diagnostic message.
+- `NCommon::Exception` — исходные код `std::error_code` проекта и сообщение.
+- `std::system_error` — исходный `std::error_code` и сообщение.
+- `std::exception` — `EError::UNKNOWN` и `what()`.
+- Неизвестное исключение — `EError::UNKNOWN` и общее диагностическое сообщение.
 
-`GetError()` возвращает `std::optional<ErrorInfo>`. Для `COMPLETED` и `CANCELLED` задач ошибки нет.
+`GetError()` возвращает `std::optional<ErrorInfo>`. Для `COMPLETED` и `CANCELLED` ошибки нет.
 
-`FAILED` и `CANCELLED` являются terminal states. По умолчанию `FAILED` или `CANCELLED` prerequisite каскадно отменяет
-все non-running dependents. Running task не прерывается принудительно: она сама доходит до callback boundary, а итог
-фиксируется как `COMPLETED` или `FAILED`.
+`FAILED` и `CANCELLED` — конечные состояния. По умолчанию ошибка либо отмена предшественника каскадно отменяет всех ещё не выполняющихся последователей. Уже выполняющаяся задача не прерывается принудительно: её обработчик доходит до конца, а результат фиксируется как `COMPLETED` или `FAILED`.
 
-### Thread Safety
+## Потокобезопасность
 
-`Submit()`, `GetStatus()`, `GetError()`, `Cancel()`, `Wait()` и `WaitIdle()` можно вызывать с внешних потоков
-одновременно. `Wait()` и `WaitIdle()` запрещены из worker thread того же `TaskSystem`; worker callbacks должны создавать
-новые задачи через `TaskContext::Spawn()` и выражать ordering через dependencies.
+`Submit()`, `GetStatus()`, `GetError()`, `Cancel()`, `Wait()` и `WaitIdle()` допускают одновременные вызовы из внешних потоков. `Wait()` и `WaitIdle()` из рабочего потока собственного `TaskSystem` запрещены: для создания дочерней работы используйте `TaskContext::Spawn()`, для порядка — зависимости.
 
-`Wait(task)` блокирует caller до terminal state задачи. Он не бросает из-за `FAILED` или `CANCELLED`: итог нужно читать
-через `GetStatus()` и `GetError()`.
+`Wait(task)` блокирует вызывающий поток до конечного состояния; при `FAILED` или `CANCELLED` он не выбрасывает исключение. Результат следует проверить через `GetStatus()` и `GetError()`.
 
-`WaitIdle()` блокирует caller до момента, когда нет running/active scheduler tasks. Внутренние tombstones в очередях,
-оставшиеся после cancellation, не считаются outstanding work. Terminal task state может оставаться живым во внешних
-handles.
+`WaitIdle()` блокирует до отсутствия активных и выполняющихся задач. Остаточные пометки отменённых задач в очередях не считаются незавершённой работой. Конечные состояния могут по-прежнему удерживаться внешними дескрипторами.
 
-READY hot path не использует один общий mutex вокруг всех READY operations: worker-local queues, global injection queue
-и task state имеют отдельную синхронизацию. Worker claim-ит `READY -> RUNNING` через task-local state, а independent
-task completion не требует global registry lock. Dependency graph updates остаются под graph/registry lock только для
-задач с dependents или cancellation propagation. Terminal task records попадают в intrusive retirement list и чистятся
-targeted drain вне per-task completion path.
-Idle workers блокируются на semaphore wakeup primitive; atomic READY counter используется для shutdown/drain checks и
-защиты от lost wakeups. Ожидание idle state не требует busy spin.
+Горячий путь `READY` не имеет одного общего мьютекса для всех операций: локальные очереди, общая входная очередь и состояния отдельных задач синхронизируются отдельно. Рабочий поток захватывает переход `READY -> RUNNING` через локальное состояние задачи; завершение независимой задачи не требует общей блокировки реестра. Обновления графа выполняются под блокировкой графа/реестра только для задач с последователями или распространением отмены. Конечные записи помещаются в связанный список освобождения и удаляются при целевой очистке вне пути завершения каждой задачи.
 
-Performance coverage живёт в `benchmarks/task`: `BM_TaskSystemIndependentThroughput` измеряет throughput независимых
-READY tasks, `BM_TaskSystemFanInLatency` измеряет latency fan-in dependent task от фактического завершения последнего
-prerequisite до завершения dependent callback.
+Свободные потоки блокируются на семафоре пробуждения. Атомарный счётчик готовых задач служит для проверки остановки и завершения, защищая от потерянного пробуждения. При ожидании простоя нет активного цикла опроса.
 
-Debug builds выполняют lightweight validation DAG invariants при изменении graph/state: duplicate edges, обратные
-dependency/dependent links и consistency `RemainingDependencies`. Эти проверки не входят в release hot path.
+Измерения находятся в `benchmarks/task`: `BM_TaskSystemIndependentThroughput` измеряет пропускную способность независимых готовых задач, `BM_TaskSystemFanInLatency` — задержку от фактического завершения последнего предшественника до завершения зависимой задачи.
 
-### Ownership And Shutdown
+Отладочные сборки при изменениях графа или состояния выполняют облегчённую проверку инвариантов ацикличного графа: повторных рёбер, обратных связей предшественник/последователь и согласованности `RemainingDependencies`. Эти проверки не входят в горячий путь выпускаемой сборки.
 
-`TaskSystem` владеет worker threads. Конструктор запускает pool и rollback-ит частично созданные workers, если запуск
-одного из threads бросает исключение.
+## Владение и остановка
 
-Деструктор переводит pool в stopping state. После этого normal runtime submission через `Submit()` или
-`TaskContext::Spawn()` отклоняется. `READY` и `WAITING` tasks отменяются и drained как queue tombstones; cancellation
-каскадирует в их dependents. Уже взятые worker-ами `RUNNING` tasks не убиваются принудительно и могут завершить callback.
-Shutdown будит workers и join-ит все созданные threads, поэтому после разрушения `TaskSystem` worker threads не остаются.
+`TaskSystem` владеет рабочими потоками. Конструктор запускает пул, а при исключении во время создания одного потока уничтожает уже созданные.
+
+Деструктор переводит пул в состояние остановки. После этого новые задачи через `Submit()` или `TaskContext::Spawn()` отклоняются. Задачи `READY` и `WAITING` отменяются и убираются как пометки очередей, отмена распространяется на их последователей. Уже захваченные рабочими потоками задачи `RUNNING` не прерываются насильно и завершают обработчик. Остановка пробуждает рабочие потоки и присоединяет все созданные потоки; после уничтожения `TaskSystem` его рабочие потоки не остаются.
