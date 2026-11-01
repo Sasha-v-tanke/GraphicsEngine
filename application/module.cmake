@@ -28,6 +28,7 @@ PRIVATE_DEPENDS(
 
 if (GRAPHICS_ENGINE_BUILD_VULKAN AND GRAPHICS_ENGINE_BUILD_GLFW)
     PRIVATE_DEPENDS(VulkanBackend)
+    PUBLIC_DEPENDS(GraphPresentation)
     target_compile_definitions(GraphicsEngineApplication PRIVATE GRAPHICS_ENGINE_HAS_PRESENTATION=1)
 endif ()
 

@@ -99,3 +99,8 @@ Chunk size is a workload setting, with a measured default of 4096 items. Workloa
 preparation task. The reference `Prepare()` avoids scheduling overhead entirely; the current inexpensive visibility path
 can be faster serially even for thousands of objects. Choose parallel preparation by measurement, not by entity count
 alone. See [preparation benchmark](../benchmarks/renderer/README.md) for the tuning sweep and its limits.
+
+### Vulkan execution
+
+[Serial graph execution and triangle scenario](graph_execution.md) connects compiled color passes and Renderer
+indexed draws to backend-owned Dynamic Rendering, prepared GPU assets and exact frame completion.

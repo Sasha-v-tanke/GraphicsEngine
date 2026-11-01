@@ -1391,4 +1391,17 @@ TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredGraphicsPipelineDestruct
     EXPECT_EQ(m_state.DestroyedGraphicsPipelines.size(), 0U);
 }
 
+TEST_F(GraphicsTest, VertexPushConstantRangeParticipatesInPipelineKey) {
+    auto descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    const NGraphics::PipelineKey original{descriptor};
+    descriptor.VertexPushConstantBytes = 64;
+    const NGraphics::PipelineKey transformed{descriptor};
+    EXPECT_NE(original, transformed);
+    EXPECT_NE(original.GetHash(), transformed.GetHash());
+    descriptor.VertexPushConstantBytes = 129;
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { NGraphics::ValidateGraphicsPipelineDescriptor(descriptor); });
+    descriptor.VertexPushConstantBytes = 3;
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { NGraphics::ValidateGraphicsPipelineDescriptor(descriptor); });
+}
+
 } // namespace

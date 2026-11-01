@@ -143,9 +143,11 @@ bool VulkanClearPresentPath::IsCompleted(VulkanQueueCompletion completion) const
     return m_submissions.IsCompleted(completion);
 }
 
-VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex,
-                                                        VkClearColorValue clearColor,
-                                                        const std::function<void(VulkanQueueCompletion)>& onSubmitted) {
+VulkanClearPresentResult VulkanClearPresentPath::Render(
+        std::uint64_t frameIndex,
+        VkClearColorValue clearColor,
+        const std::function<void(VulkanQueueCompletion)>& onSubmitted,
+        const std::function<void(VkCommandBuffer, VkImage, VkImageView, const VulkanSwapchainPlan&)>& record) {
     if (m_failed) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Vulkan clear/present path requires shutdown after failure");
@@ -209,10 +211,17 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(std::uint64_t frameIndex
             created->PresentReady = CreateSemaphore(m_device.GetHandle());
             presentResources = std::move(created);
         }
-        RecordClear(resources.CommandBuffer,
-                    m_swapchain.GetImages()[acquired.ImageIndex].Handle,
-                    m_swapchain.GetImages()[acquired.ImageIndex].View,
-                    clearColor);
+        if (record) {
+            record(resources.CommandBuffer,
+                   m_swapchain.GetImages()[acquired.ImageIndex].Handle,
+                   m_swapchain.GetImages()[acquired.ImageIndex].View,
+                   m_swapchain.GetPlan());
+        } else {
+            RecordClear(resources.CommandBuffer,
+                        m_swapchain.GetImages()[acquired.ImageIndex].Handle,
+                        m_swapchain.GetImages()[acquired.ImageIndex].View,
+                        clearColor);
+        }
         const VkSemaphoreSubmitInfo waitSemaphore{
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                 .semaphore = resources.ImageAvailable,

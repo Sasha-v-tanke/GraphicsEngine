@@ -1,0 +1,6 @@
+MODULE(GraphPresentation)
+API(presentation.h)
+SOURCES(presentation.cpp)
+PUBLIC_DEPENDS(Renderer Window)
+PRIVATE_DEPENDS(VulkanBackend VulkanMemoryAllocator)
+RECURSE(test)
