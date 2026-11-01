@@ -273,7 +273,7 @@ private:
                        ETaskStatus status,
                        std::optional<ErrorInfo> error,
                        TaskFunction& function);
-    void CancelTaskLocked(const std::shared_ptr<TaskHandle::State>& state, FinalizationBatch& batch);
+    static void CancelTaskLocked(const std::shared_ptr<TaskHandle::State>& state, FinalizationBatch& batch);
     void PropagateCancellationLocked(Task& task, FinalizationBatch& batch);
     void PrepareCancellationsLocked(FinalizationBatch& batch);
     void CancelPendingTasksLocked(FinalizationBatch& batch) noexcept;
