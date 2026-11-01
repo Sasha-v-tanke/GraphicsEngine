@@ -1,6 +1,5 @@
-# Graph presentation
+# Отображение графа рендеринга
 
-Backend-owned serial Vulkan execution of compiled color passes and indexed Renderer draw packets.
-Native recording, WSI synchronization, pipeline preparation and GPU asset ownership stay behind a neutral API.
+Подсистема последовательно исполняет на Vulkan скомпилированные цветовые проходы и индексированные команды рисования `Renderer`, сохраняя владение исполнением за графической реализацией. Нативная запись команд, синхронизация WSI, подготовка конвейеров и владение ресурсами графического устройства скрыты за независимым от реализации интерфейсом.
 
-[Execution contract and triangle scenario](../graph_execution.md).
+Подробности: [контракт исполнения и пример треугольника](../graph_execution.md).

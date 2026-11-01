@@ -1,25 +1,19 @@
-# Renderer preparation tuning
+# Измерение производительности подготовки рендеринга
 
-Build with `cmake --preset benchmark` and `cmake --build --preset benchmark`, then run:
+Для сборки выполните `cmake --preset benchmark` и `cmake --build --preset benchmark`, затем запустите:
 
 ```sh
 cmake-build-benchmark/GraphicsEngineBenchmarks --benchmark_filter=BM_RendererPreparation \
   --benchmark_min_time=0.05s --benchmark_repetitions=3 --benchmark_report_aggregates_only=true
 ```
 
-The sweep uses two views, shared mesh/material, four persistent workers and chunk sizes 64/256/1024/4096. Chunk size 0
-is the synchronous reference. Wall time includes task submission, join, sorting, batching and per-iteration arena lifetime;
-scene setup and worker construction are outside the timed loop. It measures the current conservative visibility path,
-not future culling or expensive material processing.
+Измерения используют две камеры, общие сетку и материал, четыре постоянных рабочих потока и размеры порций 64, 256, 1024 и 4096. Размер 0 обозначает эталонное синхронное выполнение. Измеряемое время включает публикацию задач, ожидание их общего завершения, сортировку, группировку и время жизни арены в одной итерации. Создание сцены и рабочих потоков не входит в измерение. Проверяется существующая консервативная модель видимости, а не предполагаемое отсечение невидимых объектов или затратная обработка материалов.
 
-Local Release sample on macOS arm64, 2026-10-22, median of three repetitions (microseconds):
+Локальное измерение в сборке Release на macOS arm64, 22 октября 2026 года; медиана трёх повторов, мкс:
 
-| Objects | Serial | Chunk 64 | Chunk 256 | Chunk 1024 | Chunk 4096 |
+| Объекты | Последовательно | Порция 64 | Порция 256 | Порция 1024 | Порция 4096 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 1024 | 19.6 | 80.2 | 49.8 | 53.0 | 36.7 |
 | 16384 | 311.4 | 966.1 | 475.9 | 382.4 | 379.3 |
 
-4096 avoids excessive scheduling overhead and was the best scheduled choice in this sample. Serial preparation was
-still faster for this inexpensive workload; these results do not establish a general parallel speedup or a universal
-threshold. Retune for target hardware, views, scene/resource distribution and visibility/material work. The chunk size
-remains caller-selectable, and the synchronous path remains available.
+Размер 4096 ограничивает накладные расходы на планирование и оказался лучшим среди параллельных вариантов в этом измерении. Однако последовательная подготовка оставалась быстрее для столь дешёвой обработки. Эти результаты не доказывают общего ускорения или универсального порога распараллеливания. Повторяйте настройку для целевого оборудования, количества камер, распределения объектов и ресурсов, а также реальной работы с видимостью и материалами. Размер порции выбирает вызывающий код; синхронный путь остаётся доступным.

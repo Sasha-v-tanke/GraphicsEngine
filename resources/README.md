@@ -1,138 +1,65 @@
-# Resources
+# Ресурсы
 
-`Resources` owns backend-independent logical resource identity and lifecycle.
+`Resources` владеет логическими идентификаторами ресурсов и их жизненным циклом независимо от графического интерфейса. Этот основной слой намеренно не включает ввод-вывод во время выполнения, передачу данных на графическое устройство, физические дескрипторы и политику размещения. Он предоставляет устойчивую модель состояний, которую расширяют загрузчики и графические реализации без изменения смысла дескрипторов.
 
-This core layer intentionally stops before runtime I/O, GPU upload, descriptors, and residency policy. It provides the
-stable state model that later loaders and graphics backends will extend without changing handle semantics.
+## Контракт
 
-## Contract
+- `ResourceHandle<T>` — типизированный идентификатор без владения. Он не владеет данными процессора и не является объектом графического устройства.
+- `ResourceLease<T>` удерживает конкретную версию представления данных процессора, полученную только из состояния `READY`. Логическая выгрузка запрещает новые получения, но существующие удержания сохраняют опубликованную версию до освобождения владельцем.
+- `ResourceManager::TryAcquire()` не блокирует поток: для неготового ресурса он не возвращает удержание и никогда не переключает уже полученную версию на более позднюю.
+- `ResourceUseRecord` — совместимый псевдоним записи с удалённым типом для передачи между снимками кадров и графическими отправками; запись удерживает конкретную версию на границах времени жизни процессора и графического устройства.
+- `ResourceIdentity` — детерминированный ключ кэша для запроса логического ресурса.
+- `ResourceIdentity::FromPath` выполняет лексическую нормализацию пути и сохраняет унифицированные разделители без обращения к файловой системе.
+- Повторные запросы с одинаковыми каноническими идентификаторами и типами, включая одновременные, возвращают один и тот же дескриптор.
+- Автомат состояний: `UNLOADED -> LOADING -> READY -> UNLOADING -> UNLOADED`; при ошибке `LOADING -> FAILED` и при повторе `FAILED -> LOADING`.
+- У операций загрузки собственное поколение. Повтор или выгрузка делает публикацию устаревшего результата недействительной.
+- Выгрузка в состоянии `LOADING` регистрирует запрос совместной отмены. Загрузка может вызывать `IsCancellationRequested` в безопасных точках до публикации.
+- `ResourceManager` сериализует изменения состояния, разрешая одновременное наблюдение состояний, идентификаторов и данных через публичный интерфейс. Вызывающий код не изменяет внутренние атомарные переменные и состояние напрямую.
+- Данные процессора отделены от будущего представления на графическом устройстве и видимы только после `READY`.
+- `Forget` допускается исключительно из `UNLOADED` и делает прежние логические дескрипторы недействительными через поколение.
 
-- `ResourceHandle<T>` is a typed, non-owning identifier. It does not own CPU data and is not a GPU object.
-- `ResourceLease<T>` is a versioned retained CPU representation acquired only from READY state. Logical unload
-  stops new acquisitions, while existing leases keep their published version alive until their owner releases it.
-- `ResourceManager::TryAcquire()` is non-blocking: it returns no lease for a non-READY resource and never switches an
-  existing lease to a later publication.
-- `ResourceUseRecord` is a compatibility alias for the common type-erased handoff record used by frame snapshots and
-  graphics submissions to keep a retained resource version alive across CPU/GPU lifetime boundaries.
-- `ResourceIdentity` is the deterministic cache key for a logical resource request.
-- Path-backed identities use `ResourceIdentity::FromPath`, which performs lexical normalization and stores generic
-  separators without resolving the filesystem.
-- Duplicate requests for the same canonical identity and type return the same handle, including concurrent requests.
-- The state machine is `UNLOADED -> LOADING -> READY -> UNLOADING -> UNLOADED`, with `LOADING -> FAILED` and
-  `FAILED -> LOADING` for retry.
-- Loading operations have their own generation. Retry or unload invalidates stale completion publication.
-- Unloading a `LOADING` resource records cooperative cancellation for that operation. Load work can query
-  `IsCancellationRequested` at safe points before publishing.
-- `ResourceManager` serializes state mutations and allows concurrent state/identity/payload observation through its
-  public API. Callers never mutate public atomics or internal state directly.
-- CPU payload is separate from future GPU representation and is visible only after `READY`.
-- `Forget` is only legal from `UNLOADED` and invalidates existing logical handles through the handle generation.
+## Артефакты шейдеров
 
-## Shader artifacts
+Ресурсы шейдеров загружают только заранее собранные артефакты SPIR-V. Загрузчик записывает явные метаданные стадии и проверяет контейнер в объёме, необходимом для исполнения: данные должны быть непустыми, выровненными по 32-битным словам и содержать корректные сигнатуру, версию и поле границы идентификаторов SPIR-V.
 
-Shader resources load prebuilt SPIR-V artifacts only. The loader records explicit shader stage metadata and validates the
-binary container enough for runtime ingestion: non-empty word-aligned data, SPIR-V magic, version, and bound fields.
+Компиляция шейдеров во время выполнения, отражение метаданных и создание физических модулей шейдеров относятся к другим подсистемам. Неудачная загрузка публикует `FAILED` с идентификатором и путём файла в `ErrorInfo`.
 
-Runtime shader compilation, reflection, and backend-native shader module creation are separate responsibilities. A failed
-shader load publishes `FAILED` with resource identity and file path context in `ErrorInfo`.
+## Изображения
 
-## Images
+Изображения загружаются как данные пикселей процессора через stb_image в `ImageData`. Загрузчик всегда использует формат `RGBA8`: исходные каналы преобразуются в четыре 8-битных канала; если альфа-канала нет, он создаётся. Вертикального отражения нет. Преобразования систем координат и ориентации относятся к предварительной обработке ресурсов или настройкам импорта.
 
-Image resources load CPU pixel data through stb_image into `ImageData`.
+Загрузчик не создаёт изображения, представления, сэмплеры графического устройства или объекты рендеринга. Ошибки приводят к `FAILED` с идентификатором ресурса и путём файла в `ErrorInfo`.
 
-The runtime format policy for this loader is fixed `RGBA8`: source channels are converted to four 8-bit channels and
-alpha is synthesized when the source has no alpha channel. The loader does not flip images vertically; coordinate-space
-or authoring-specific flip policy belongs to asset cooking or higher-level import configuration.
+Физические изображения принадлежат `Graphics`. `NGraphics::ImageDescriptor`, `ImageViewDescriptor` и `SamplerDescriptor` определяют независимый от реализации контракт: формат, использование, доступ, время жизни, диапазоны подресурсов и режимы выборки выражены явно; физические дескрипторы остаются внутренними. `ImageData` может позднее передаваться механизму загрузки данных на устройство без изменения идентичности ресурса и автомата состояний.
 
-The image loader does not create GPU images, image views, samplers, or renderer objects. Failed image loads publish
-`FAILED` with resource identity and file path context in `ErrorInfo`.
+## Сетки
 
-GPU image objects live in the Graphics module. `NGraphics::ImageDescriptor`, `ImageViewDescriptor`, and
-`SamplerDescriptor` define the backend-independent contract for renderer/backend use: format, usage, access, lifetime,
-subresource range, and sampling state are explicit, while native image, view, sampler, and descriptor handles remain
-backend-private. CPU `ImageData` can feed later upload code without changing the resource-manager identity or load-state
-contract.
+`LoadMesh(ResourceManager&, ResourceIdentity, const std::filesystem::path&)` синхронно импортирует OBJ через tinyobjloader в неизменяемый `MeshData` процессора, используя существующие поколения операций запроса, загрузки, готовности и ошибки. Этот адаптер блокирует поток при чтении файла и не должен выполняться в рабочем потоке кадра. Асинхронный ввод-вывод и заранее подготовленные артефакты — отдельные слои. Здесь нет зависимости от `Graphics` или Vulkan, выделения памяти графического устройства, передачи данных, создания материалов либо рисования.
 
-## Meshes
+`MeshVertex` содержит `Position` и `Normal` как `std::array<float, 3>`, а `Texcoord` как `std::array<float, 2>`. `MeshData` предоставляет постоянные массивы вершин и 32-битных индексов с топологией списка треугольников. `GetAttributeMasks()` содержит один байт на вершину: `NORMAL_PRESENT` и `TEXCOORD_PRESENT` отмечают атрибуты, действительно присутствовавшие в OBJ. При отсутствии нормали или текстурных координат значение обнуляется, а соответствующий бит снимается, в том числе в гранях со смешанным присутствием. Маски — метаданные происхождения на процессоре, отдельно от потока вершин. Компоновку данных для графического устройства выбирает последующий слой передачи и конвейера.
 
-`LoadMesh(ResourceManager&, ResourceIdentity, const std::filesystem::path&)` imports OBJ through tinyobjloader into
-an immutable CPU `MeshData`, using the existing request/loading/ready/failure operation generations. This synchronous
-source-import adapter performs blocking file I/O and must not run on a frame worker. Async I/O and cooked artifacts
-remain separate layers; no Graphics/Vulkan dependency, GPU allocation, upload, material creation or draw occurs here.
+Триангуляция включена. Повторы вершин удаляются по исходной тройке индексов позиции, нормали и текстурных координат, включая специальные значения отсутствующих атрибутов, с сохранением порядка первого появления в треугольниках. Разрывы по нормалям и текстурным координатам остаются раздельными; порядок обхода хеш-таблицы не влияет на вывод. Сохраняются координаты, величины нормалей, ориентация треугольников и текстурных координат. Нормали, касательные и текстурные координаты не генерируются; координаты и изображения не отражаются.
 
-`MeshVertex` contains `Position` / `Normal` as `std::array<float, 3>` and `Texcoord` as `std::array<float, 2>`.
-`MeshData` exposes const vertex and uint32 index arrays with triangle-list topology. `GetAttributeMasks()` has one byte
-per vertex: `NORMAL_PRESENT` and `TEXCOORD_PRESENT` record which attributes came from OBJ. Missing normal/UV values
-are zero and their presence bits are cleared, including mixed-presence faces. Masks are CPU provenance metadata and
-are separate from the vertex stream. A later upload/pipeline layer chooses its GPU layout explicitly.
+Поддерживаются записи `v`, `vn`, `vt` и многоугольные `f`. Индексы должны указывать на уже объявленные атрибуты; поддерживаются положительные и относительные отрицательные индексы. Позиция требует три компонента; необязательный однородный вес и цвета вершин игнорируются. Нормаль требует три компонента; текстурные координаты принимают от одного до трёх (отсутствующий V равен нулю, необязательный W игнорируется). Поддерживаются комментарии, метка UTF-8 BOM и окончания строк CRLF. Продолжения строк не поддерживаются. Остальные директивы игнорируются: группы и объекты объединяются в одну геометрию по порядку граней; сглаживание, линии, точки, назначения материалов и файлы `.mtl` не импортируются и не открываются. Подсетки и предварительная обработка сеток остаются отдельной работой.
 
-Triangulation is enabled. Vertices are deduplicated by the original position/normal/texcoord index tuple (including
-missing-attribute sentinels), in first-encounter order through triangulated faces. UV and normal seams remain distinct;
-hash-table iteration never determines output order. Coordinates, normal magnitudes, winding and UV orientation are
-preserved. No normal/tangent/UV generation, coordinate conversion or texture flip is performed.
+Неправильная или пустая геометрия, нечисловые и бесконечные значения, выход за диапазон, неверные индексы, отброшенные многоугольники и превышение ограничений uint32 вызывают `FAILED` с контекстом идентификатора и пути; частичные данные не публикуются как `READY`. Ошибки выделения памяти проходят через существующую модель ошибок. Повторные идентификаторы в `READY`, `LOADING` или `UNLOADING` возвращают текущий дескриптор без чтения файла; `FAILED` допускает повтор. Вызывающий код координирует загрузку и выгрузку по правилам `ResourceManager`; устаревшие результаты не публикуются. `ResourceLease<MeshData>` удерживает конкретную версию процессора при логической выгрузке и повторной загрузке. Тесты проверяют геометрию, порядок, ориентацию, разрывы атрибутов, маски, некорректный ввод, кэш, повторы, версии, устаревшие операции и ограничения количества без больших выделений памяти.
 
-The supported subset is `v`, `vn`, `vt` and polygon `f` records. Indices must refer to already declared attributes;
-positive and relative negative indices are accepted. Positions require three components; optional homogeneous weight
-and vertex colors are ignored. Normals require three components; texcoords accept one to three (missing V is zero,
-optional W is ignored). Comments, UTF-8 BOM and CRLF are accepted. Line continuations are unsupported. Other directives
-are ignored: groups/objects flatten into a single geometry payload in face order; smoothing, lines, points, material
-assignments and `.mtl` files are not imported or opened. Submeshes and cooked mesh processing remain separate work.
+## Материалы
 
-Malformed/empty geometry, nonfinite/out-of-range numbers, invalid indices, discarded polygons and uint32 size overflow
-publish `FAILED` with identity/path context; no partial payload becomes READY. Allocation failures are reported through
-the existing error model. Duplicate READY/LOADING/UNLOADING identities return their current handle without file I/O;
-FAILED identities may retry. Callers coordinate load/unload for an identity using the existing ResourceManager rules;
-stale operation publication is rejected. `ResourceLease<MeshData>` keeps a published CPU version alive across logical
-unload and later reload. Tests cover geometry/order/winding, tuple seams, per-vertex masks, invalid inputs, cache,
-retry, retained versions, stale operations and count limits without large allocations.
+Материалы — типизированные ресурсы процессора на основе `NGraphics::Material`. `Resources` владеет идентичностью, состоянием загрузки, версиями и удержанием данных кадрами. Объект материала содержит независимый от реализации идентификатор конвейера и неизменяемые описания привязок буферов, изображений и сэмплеров, выраженные через логические идентификаторы. Новые потребители не получают выгруженные версии, а опубликованные снимки кадров могут удерживать свою версию до освобождения записей использования ресурсов.
 
-## Materials
+Выделение физических дескрипторов и проверка выравнивания и ограничений реализации не относятся к `Resources`. Реализация `Graphics` преобразует привязки материалов в собственные дескрипторы при отправке работы и удерживает разрешённые физические зависимости до завершения работы устройства.
 
-Material resources are typed CPU resources backed by `NGraphics::Material`.
+## Ввод-вывод ресурсов
 
-Resources owns the material identity, load state, versioning, and frame-retained leases. The material object itself
-contains a backend-independent pipeline identity plus immutable buffer/image/sampler binding descriptors expressed as
-logical resource identities. New consumers do not acquire unloaded material versions, while already published frame
-snapshots may retain their acquired material version until the frame resource records are recycled.
+`ResourceIo` читает необработанные байты в фиксированном пуле выделенных потоков. `Read(path, completion)` немедленно возвращает копируемый удерживаемый `ResourceIoRequest`; ни публикация, ни получение результата не выполняют файловых операций в вызывающем потоке. Служба не декодирует изображения или OBJ, не изменяет `ResourceManager`, не выделяет память устройства и не добавляет задачи опроса в `TaskSystem`. `WorkerCount` ограничивает число одновременных чтений, `MaxPendingReads` — все допущенные операции, включая активные чтения и обработчики завершения. Заполненная или остановленная служба отклоняет запрос с `INVALID_STATE`. `MaxReadBytes` ограничивает размер каждого результата; по умолчанию выделяются два потока ввода-вывода, допускаются 64 операции и 64 МиБ на одно чтение. Результаты принадлежат вызывающему коду и не образуют кэш с вытеснением.
 
-Native descriptor allocation and backend alignment/limit validation are not part of the Resources contract. Concrete
-Graphics backends translate material bindings into their private descriptor infrastructure during submission and must
-retain the resolved concrete resource dependencies for GPU lifetime.
+`GetResult()` возвращает `null` до завершения, затем неизменяемый удерживаемый результат с путём, статусом `SUCCEEDED`, `FAILED` или `CANCELLED` и либо разделяемыми байтами, либо `ErrorInfo` с контекстом. Чтение обычного пустого файла успешно и возвращает пустые байты. Отсутствующие или необычные файлы, ошибки чтения и превышение лимита приводят к ошибке без публикации частичных байтов. Реализация файловой системы читает порциями и отклоняет необычные файлы до открытия; она не может предотвратить подмену пути внешним процессом или прервать заблокированный системный вызов. Пути должны указывать на доверенные обычные ресурсы. Необязательная внедряемая `ReadFunction` позволяет использовать другой источник либо детерминированную тестовую реализацию; она должна быть потокобезопасной, учитывать токен остановки и соблюдать ограничение размера, повторно проверяемое при возврате.
 
-## Resource I/O
+Для принятого запроса не более одного вызова чтения и ровно один обработчик завершения, включая ошибку или отмену. Обработчик исполняется в потоке ввода-вывода вне блокировок после публикации результата. Он должен только передавать удерживаемые байты, например вызвав `TaskSystem::Submit([result](TaskContext&) { /* разбор result->Bytes */ })` при успехе. Разбор выполняется вычислительным рабочим потоком, а поток ввода-вывода его не ждёт. Вызывающий код обязан удерживать `TaskSystem` и захваченные обработчиком объекты до остановки службы и завершения всех обработчиков. Служба не владеет `TaskSystem` или `Engine` неявно. Исключения обработчика завершения перехватываются и отдельно доступны через `GetCompletionFailure()`; результат чтения остаётся действительным.
 
-`ResourceIo` reads raw bytes on a fixed pool of dedicated threads. `Read(path, completion)` returns a copyable,
-retained `ResourceIoRequest` immediately; neither submission nor result observation performs filesystem I/O on the caller.
-This service does not decode image/OBJ, mutate ResourceManager, allocate GPU objects or add polling tasks to TaskSystem.
-`WorkerCount` limits concurrent reads; `MaxPendingReads` limits all accepted work including active reads and completions.
-A full or stopped service rejects admission with INVALID_STATE. `MaxReadBytes` caps each result; defaults are two I/O
-threads, 64 pending operations and 64 MiB per read. Retained results belong to callers and are not an eviction cache.
+`Cancel()` запрашивает совместную отмену и безопасен для пустого или завершённого дескриптора. Отмена из очереди пропускает чтение. Активное чтение останавливается в следующей безопасной точке реализации и отбрасывает частичные данные; отмена, совпавшая с окончательной публикацией, может проиграть завершению. Дескрипторы запроса и результата остаются действительными после уничтожения службы.
 
-`GetResult()` returns null while pending, then an immutable retained result containing the path, SUCCEEDED/FAILED/CANCELLED
-status and either shared bytes or contextual ErrorInfo. Empty regular files succeed with empty bytes. Missing/nonregular
-files, read errors and oversized data fail without publishing partial bytes. The filesystem implementation reads in chunks
-and rejects nonregular files before opening them; it cannot prevent external path replacement or interrupt a blocked OS
-call. Paths therefore refer to trusted ordinary assets. Optional `ReadFunction` injection provides another I/O source or a
-deterministic test backend; it must be thread-safe, honor its stop token and obey the byte limit (also checked on return).
+`Shutdown()` запрещает новые запросы, запрашивает отмену, дожидается всех принятых операций и обработчиков и присоединяет потоки. Повторный вызов безопасен, в том числе со стороны нескольких управляющих потоков. Деструктор делает то же самое. Останавливайте службу из потока владельца, а не из вычислительного потока, обработчика ввода-вывода или отмены: остановка ожидает активные системные вызовы и обработчики. Присоединение потока к самому себе отклоняется; уничтожение службы из её обработчика запрещено. Порядок жизненного цикла: остановить производителей запросов → `ResourceIo::Shutdown()` → дождаться разбора данных → `TaskSystem::Stop()`. Чтение, наблюдение и отмена потокобезопасны при жизни службы; уничтожение требует внешней координации времени жизни.
 
-Accepted requests deliver at most one read invocation and exactly one completion invocation, including failure/cancellation.
-Completion runs on an I/O thread, outside service locks, after result publication. It should only hand off retained bytes,
-for example by calling `TaskSystem::Submit([result](TaskContext&) { /* parse result->Bytes */ })` on success. Decode work
-then runs on a compute worker; the I/O thread never waits for it. The caller must keep TaskSystem and callback captures
-alive until I/O shutdown has drained completions. No TaskSystem/Engine lifetime is implicitly owned by this service.
-Completion exceptions are contained and exposed separately by `GetCompletionFailure()`; they do not revoke read results.
-
-`Cancel()` requests cooperative cancellation and is harmless on an empty or completed handle. A queued cancellation skips
-the reader entirely. Active reads stop at the backend's next safe point and discard partial bytes; a cancellation racing
-terminal publication may lose to completion. Result and request handles remain valid after the service is destroyed.
-
-`Shutdown()` rejects further admissions, requests cancellation, drains all accepted requests/callbacks and joins threads.
-It is idempotent and supports concurrent owner-side calls. Destruction performs the same shutdown. Call it from the owner
-thread, never a compute worker, I/O callback or cancellation handler; shutdown waits for active OS calls and completions.
-Self-join from an I/O thread is rejected. Destroying the service from its own callback is forbidden. Lifecycle ordering is
-stop resource producers -> ResourceIo shutdown -> drain decode work -> TaskSystem shutdown. Read/observation/cancellation
-are thread-safe while the service is alive; service destruction requires external lifetime coordination.
-
-Tests use controlled delayed readers to verify compute-worker progress, TaskSystem handoff, cancellation, queue/concurrency
-limits, failure isolation, retained results and shutdown with pending work. Full async ResourceManager pipeline integration
-remains IMPROVE-0025; GPU staging is FEATURE-0069.
+Тесты с управляемыми медленными источниками проверяют продвижение вычислительных задач, передачу в `TaskSystem`, отмену, ограничения очереди и параллелизма, изоляцию ошибок, удержание результатов и остановку с незавершёнными запросами. Полное асинхронное подключение `ResourceManager` относится к `IMPROVE-0025`, а промежуточная память устройства — к `FEATURE-0069`.

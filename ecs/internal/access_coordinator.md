@@ -1,85 +1,29 @@
-# Internal scoped access scheduling
+# Внутреннее планирование доступа к областям данных
 
-FEATURE-0080 introduces an isolated owner-side coordinator. It does not modify
-World, legacy Read<T>/Write<T>, TaskSystem, user callbacks or GPU barriers.
-IMPROVE-0041 will provide the ECS adapter and scoped views. Declaring a footprint
-here does not make arbitrary references to mutable World safe.
+`FEATURE-0080` вводит изолированный координатор на стороне владельца. Он не изменяет `World`, существующие `Read<T>/Write<T>`, `TaskSystem`, пользовательские обратные вызовы и барьеры графического устройства. `IMPROVE-0041` добавит адаптер ECS и представления областей данных. Одно лишь объявление доступа здесь не делает произвольные ссылки на изменяемый `World` безопасными.
 
-## Owner and scope contract
+## Контракт владельца и области доступа
 
-Use one coordinator per bounded execution epoch/batch. A storage owner registers
-DataDomainKey{OwnerId, TypeId, Generation} with a strong lifetime token. All access
-to that mutable domain must pass through the same coordinator. The owner ensures
-that the token actually pins the described storage, stable index mapping and
-entity/resource identities: this scheduler cannot inspect arbitrary objects for
-liveness. Structural mutations, ID recycling and chunk remapping require
-quiescence and a strictly newer generation; stale/unregistered keys are rejected.
-Different owners/types are independent. Generation is a lifetime discriminator,
-not a way to declare two versions of the same live mutable memory independent.
+Для каждого ограниченного периода выполнения или набора задач используется один координатор. Владелец хранилища регистрирует `DataDomainKey{OwnerId, TypeId, Generation}` вместе с токеном строгого удержания времени жизни. Все обращения к изменяемой области должны проходить через один координатор. Владелец гарантирует, что токен действительно удерживает нужное хранилище, устойчивую индексацию и идентификаторы сущностей или ресурсов: планировщик не может самостоятельно проверить жизнь произвольных объектов. Структурные изменения, повторное использование идентификаторов и перераспределение порций требуют отсутствия активных обращений и строго более нового поколения; устаревшие и незарегистрированные ключи отклоняются. Разные владельцы и типы независимы. Поколение разграничивает время жизни, но не позволяет объявить независимыми две версии одной и той же живой изменяемой памяти.
 
-CHUNK is a resolved half-open interval in the same index space as ENTITY and
-ENTITY_SET, not an opaque chunk number. Sets are sorted/deduplicated and repeated
-identical footprints removed before admission. Empty sets and overflowing or
-empty ranges are errors. RESOURCE addresses a logical resource ID; distinct
-resource IDs are independent. Cross-space overlaps and UNKNOWN use conservative
-whole-domain overlap. WHOLE_STORAGE overlaps everything in that domain.
-Subtree expansion belongs to a future resolver using stable topology; it can use
-resolved sets/ranges or the UNKNOWN fallback without adding unsafe assumptions.
+`CHUNK` обозначает разрешённый полуоткрытый диапазон в том же пространстве индексов, что и `ENTITY` и `ENTITY_SET`, а не непрозрачный номер порции. Множества сортируются, очищаются от повторов, а одинаковые области доступа объединяются до допуска. Пустые множества, пустые диапазоны и переполнения — ошибки. `RESOURCE` обозначает логический идентификатор ресурса: разные ресурсы независимы. Пересечение разных пространств и `UNKNOWN` консервативно трактуются как пересечение всей области. `WHOLE_STORAGE` пересекается со всем в своей области. Развёртывание поддерева относится к будущему разрешителю с устойчивой топологией; он может использовать вычисленные множества и диапазоны либо безопасный запасной `UNKNOWN`.
 
-Only READ/READ is compatible for overlapping scopes. WRITE and EXCLUSIVE exclude
-all overlapping access. Compatibility describes memory access only; semantic
-producer/consumer ordering must be supplied as explicit operation dependencies.
+Для пересекающихся областей совместимы только `READ/READ`. `WRITE` и `EXCLUSIVE` исключают все пересекающиеся обращения. Совместимость описывает только доступ к памяти; смысловой порядок производитель–потребитель должен задаваться явными зависимостями операций.
 
-## Ordering and execution
+## Порядок и исполнение
 
-Schedule serializes admission and assigns an owner-qualified monotonic
-OperationKey. For each operation, all conflicting nonterminal predecessors and
-explicit prior keys become immutable edges. Conflicts include waiting operations:
-a whole-storage writer waiting for readers cannot be overtaken by later readers.
-Edges always point backward, so forward references, foreign keys and cycles are
-rejected structurally. Parallel producers linearize at admission; callers requiring
-a replay-stable producer order must submit in that order or declare dependencies.
-Completion timing never reverses the order of admitted conflicts.
+`Schedule` сериализует допуск и присваивает монотонный `OperationKey` с идентификатором владельца. Для каждой операции все конфликтующие незавершённые предшественники и явно указанные предыдущие ключи становятся неизменяемыми рёбрами. Учитываются и ожидающие операции: писатель всего хранилища, ожидающий читателей, не может быть обогнан новыми читателями. Все рёбра направлены к ранее допущенным операциям, поэтому ссылки на будущие операции, чужие ключи и циклы структурно отклоняются. Одновременные производители упорядочиваются при допуске; для воспроизводимого порядка публикации вызывающий код должен публиковать операции в нужной последовательности либо объявить зависимости. Время завершения не меняет порядок уже допущенных конфликтов.
 
-WAITING operations have no TaskSystem task. Progress marks ready work QUEUED under
-a short metadata lock, then calls TaskSystem::Submit outside it. User callbacks
-run outside all coordinator locks. No dependency wait, polling task, per-entity
-mutex or executor cancellation cascade is used. With one worker, a callback can
-schedule a conflicting successor and return; completion admits that successor.
-An operation must finish every declared access before returning. Detached work
-does not inherit its footprint. Dynamic child fan-in remains TaskGroup/adapter
-work; this coordinator never assumes a spawned child completed with its parent.
+Для операций `WAITING` задачи в `TaskSystem` ещё нет. При продвижении готовая работа отмечается `QUEUED` под краткой блокировкой метаданных, после чего `TaskSystem::Submit` вызывается вне этой блокировки. Пользовательские обратные вызовы работают без блокировок координатора. Не используются ожидание зависимостей внутри задач, задачи опроса, отдельные мьютексы на сущность или каскад отмен исполнителя. При одном рабочем потоке обработчик может опубликовать конфликтующего последователя и вернуться; завершение исходной задачи откроет допуск следующей.
 
-## Failure, cancellation and lifetime
+Операция обязана закончить все объявленные обращения до возврата. Отделённая работа не наследует её область доступа. Объединение динамических дочерних задач остаётся ответственностью `TaskGroup` или адаптера: координатор не предполагает, что дочерняя задача завершилась вместе с родительской.
 
-Pending cancellation is atomic with the QUEUED-to-RUNNING transition. Cancel on a
-running or terminal operation returns false: running access cannot be revoked.
-Logical CANCELLED does not release the access reservation: both stored and currently
-retiring captures keep it live until their destructors finish. Domain replacement
-and conflicting admission check that quiescence separately from status. Work
-admitted concurrently with cancellation still observes the cancelled predecessor
-and is cancelled conservatively; a later admission after retirement can proceed.
-A cancelled queued wrapper may still run as a no-op; it retains only weak state
-and never user work. Failure is captured as exception_ptr. Failed/cancelled
-predecessors cancel downstream rather than exposing partial results. Failure also
-closes new admission; recover owner data and start a new coordinator/epoch.
-Already admitted disjoint work can finish. There is no rollback of in-place writes.
-Submission failure is recorded as FAILED and follows the same downstream rules.
+## Ошибки, отмена и время жизни
 
-Stop is host-only: close admission, cancel pending operations, drain running
-callbacks and capture retirement, then release domain tokens on the host outside
-metadata locks. It never stops or WaitIdle()s the shared executor. The executor
-outlives the coordinator. The host must join concurrent producers before destroying
-the coordinator, and neither callback nor capture destructor may Stop/destroy its
-own coordinator (self-drain). Capture destructors may otherwise query/schedule/cancel
-while admission permits. No user capture or domain token is destroyed under the
-metadata lock, including rejected admissions and domain replacement.
+Отмена ожидающей задачи атомарна относительно перехода `QUEUED` → `RUNNING`. `Cancel` для уже выполняющейся или конечной операции возвращает `false`: начатый доступ нельзя отозвать. Логическое состояние `CANCELLED` не освобождает резерв доступа: и сохранённые, и уничтожаемые в данный момент захваты удерживают его до окончания своих деструкторов. Замена области и допуск конфликтующих операций отдельно проверяют отсутствие активных обращений, а не только статус. Работа, допущенная одновременно с отменой, ещё видит отменённого предшественника и консервативно отменяется; новый допуск возможен после окончательного освобождения. Оболочка отменённой задачи может выполниться без действий, удерживая только слабое состояние, но не выполняя пользовательский код.
 
-Operation status/dependency/conflict history remains available until coordinator
-destruction. This baseline retains epoch history and scans it at admission and
-progress; costs are quadratic in a large densely conflicting batch. It is not a
-permanent unbounded World registry. End the bounded epoch after quiescence and
-construct another coordinator for subsequent work; old keys are foreign. Indexed
-hazard frontiers/retirement optimizations need measured workloads and are outside
-this foundational card. Diagnostics expose exact domain/scopes causing each edge;
-explicit dependencies are separately visible in GetDependencies.
+Ошибка сохраняется как `exception_ptr`. Ошибочные или отменённые предшественники отменяют зависимые операции, не открывая частично готовые данные. Ошибка также закрывает новый допуск; владелец обязан восстановить данные и создать новый координатор или период исполнения. Уже допущенные независимые задачи могут завершиться. Отката изменений памяти на месте нет. Ошибка публикации записывается как `FAILED` и обрабатывается по тем же правилам.
+
+`Stop` вызывается только управляющим потоком: закрывает допуск, отменяет ожидающие операции, дожидается работающих обработчиков и уничтожения их захватов, после чего освобождает токены областей в управляющем потоке вне блокировок метаданных. Он не останавливает общий исполнитель и не вызывает его `WaitIdle()`; исполнитель должен пережить координатор. До уничтожения координатора управляющий код обязан присоединить конкурентных производителей. Ни обработчик, ни деструктор его захватов не может останавливать или уничтожать собственный координатор во избежание ожидания самого себя. В остальных случаях деструкторы захватов могут проверять состояние, планировать и отменять работу, пока допуск разрешён. Никакие пользовательские захваты или токены областей не уничтожаются под блокировкой метаданных, включая отклонённый допуск и замену области.
+
+История состояний, зависимостей и конфликтов сохраняется до уничтожения координатора. Текущая реализация удерживает историю всего периода и просматривает её при допуске и продвижении; в плотном наборе конфликтов затраты квадратичны. Это не постоянный неограниченный реестр `World`. Завершайте ограниченный период после освобождения всех обращений и создавайте координатор для следующего; старые ключи считаются чужими. Оптимизации индексированных границ опасностей и освобождения требуют измерений и не входят в исходный контракт. Диагностика указывает точную область и диапазон, вызвавшие каждое ребро; явные зависимости отдельно доступны через `GetDependencies`.

@@ -1,8 +1,6 @@
-# UserTask and Spawn
+# Пользовательские корутины `UserTask` и `Spawn`
 
-`NCommon::UserTask<T>` is a lazy, move-only C++23 coroutine. Creating it allocates/constructs its frame and
-moves/copies value parameters, but does not execute its body. `Application::Spawn(UserTask<T>&&)` is a protected
-facade returning `Job<T>` and immediately submitting the initial resume to the existing TaskSystem.
+`NCommon::UserTask<T>` — ленивая корутина C++23 с единственным владельцем, которую можно перемещать, но нельзя копировать. При создании выделяется и конструируется кадр корутины, а её параметры, передаваемые по значению, перемещаются или копируются. Тело при этом не исполняется. Защищённый метод `Application::Spawn(UserTask<T>&&)` возвращает `Job<T>` и немедленно ставит первое возобновление корутины в существующий `TaskSystem`.
 
 ```cpp
 NCommon::UserTask<std::unique_ptr<int>> MakeValue(std::unique_ptr<int> input) {
@@ -18,32 +16,12 @@ m_valueJob = Spawn(MakeValue(std::make_unique<int>(42)));
 // Consume through the same IsReady/TryTake contract as RunAsync.
 ```
 
-`T`, `void`, move-only results and value parameters are supported. Reference result types are rejected.
-`unhandled_exception` retains the original exception until the runtime translates it to the usual Job error.
-Creation/allocation failures occur synchronously; invalid, moved-from or already spawned tasks throw
-`INVALID_STATE`. A valid task is consumed by an attempted Spawn even if allocation/admission subsequently fails.
-Destroying or replacing an unspawned task destroys its initial-suspended frame without executing its body.
+Поддерживаются типы результата `T`, `void`, значения с единственным владельцем и параметры по значению. Тип результата-ссылка запрещён. `unhandled_exception` сохраняет исходное исключение до его преобразования средой исполнения в обычную ошибку `Job`. Ошибки создания и выделения памяти выбрасываются синхронно. Попытки запустить недействительную, перемещённую или уже запущенную корутину выбрасывают `INVALID_STATE`. **Допустимая корутина считается потреблённой уже при попытке `Spawn`**, даже если последующее выделение памяти или допуск завершается неудачей. Уничтожение или замена ещё не запущенной корутины освобождает её кадр, приостановленный в начальной точке, без исполнения тела.
 
-After Spawn, the existing runtime-owned UserJobScope entry owns the coroutine frame through its private execution
-payload. There is no second compute executor or detached coroutine lifetime. The frame remains owned while running,
-then is destroyed at final suspension before the Job result becomes visible. The typed Job retains its value/error
-independently of the frame and Engine. Dropping Job does not cancel work; unobserved failures use the existing diagnostic.
+После `Spawn` существующая принадлежащая среде исполнения запись `UserJobScope` владеет кадром корутины через собственные данные исполняемой работы. Отдельного вычислительного исполнителя или самостоятельного времени жизни корутины нет. Кадр удерживается во время исполнения и уничтожается после конечной приостановки, **до** того, как результат становится видимым через `Job`. Типизированный `Job` хранит значение или ошибку независимо от кадра корутины и `Engine`. Уничтожение `Job` не отменяет работу; ошибки, результат которых никто не получил, сопровождаются существующим диагностическим сообщением.
 
-Queued cancellation destroys the initial-suspended frame without resuming it. A running coroutine receives the Job's
-cooperative stop token through the ready-only `co_await UserTaskStopToken{}` query. Running C++ code is never forcibly
-interrupted or destroyed. Cancellation before finalization replaces successful results with CANCELLED; a real failure
-remains observable. Stop closes admission, cancels queued work and drains running work before destroying runtime owners.
-Each Run uses its own scope; old handles cannot start work in a new Run.
+Отмена работы, ещё находящейся в очереди, уничтожает её кадр на начальной приостановке без возобновления. Исполняющаяся корутина получает токен совместной остановки своего `Job` через запрос `co_await NCommon::UserTaskStopToken{}`, который всегда готов и не приостанавливает исполнение. Выполняющийся код C++ нельзя принудительно прервать или уничтожить. Отмена до окончательного завершения заменяет успешный результат на `CANCELLED`, а произошедшая ошибка сохраняется и остаётся доступной. `Stop()` прекращает допуск, отменяет ожидающие работы и дожидается выполняющихся до уничтожения владельцев среды исполнения. У каждого `Run()` собственная область задач; старые дескрипторы не могут запускать работу в новом `Run()`.
 
-This foundation supports coroutines that run through to final suspension. Job awaiting and suspended continuation
-scheduling are FEATURE-0077: other explicit awaiters are rejected at compile time until their ownership/resume handshake
-is implemented. The stop-token query is always ready and never blocks or suspends a worker. No worker wait/poll loop is
-introduced by Spawn. Long user computations still consume worker CPU; jobs/coroutines have no frame dependencies,
-slots or arenas even when spawned in OnUpdate. Publication to World/main-thread state still requires the appropriate
-owner's access/command protocol; Spawn grants neither ECS access nor main-thread affinity.
+**Реализован только путь корутины до её конечной приостановки.** Ожидание других `Job` из корутины и планирование приостановленных продолжений относятся к `FEATURE-0077`. Пока не реализован протокол владения и возобновления, другие явные объекты ожидания отклоняются на этапе компиляции. Получение токена остановки всегда готово, не блокирует рабочий поток и не приостанавливает его. `Spawn` не добавляет циклов ожидания или опроса на рабочих потоках. Длительные пользовательские вычисления продолжают занимать вычислительные потоки. Задачи и корутины не имеют зависимостей от кадров, слотов либо арен, даже когда запускаются из `OnUpdate()`. Для записи в `World` или изменения состояния основного потока по-прежнему требуется протокол доступа или команд соответствующего владельца: `Spawn` не предоставляет ни доступа к ECS, ни привязки к основному потоку.
 
-Pass owned data as value parameters. References, member `this` and coroutine-lambda capture closures remain borrowed:
-they must outlive completion. In particular, invoking a temporary capturing coroutine lambda does not transfer its
-closure into the coroutine frame. Prefer free/static functions with owned value parameters or a member function whose
-owner remains alive until Run/Stop has drained. The implementation follows the C++ coroutine initial/final-suspension
-and parameter-lifetime rules: https://eel.is/c++draft/dcl.fct.def.coroutine.
+Передавайте данные, которыми должна владеть корутина, **как параметры по значению**. Ссылки, указатель `this` у метода и объекты замыканий захватывающих корутин-лямбд остаются заимствованными и должны пережить выполнение. В частности, вызов временной захватывающей лямбды-корутины не переносит объект её замыкания в кадр корутины. Предпочтительны свободные или статические функции с параметрами по значению; метод объекта допустим, если сам владелец переживает завершение всех работ при `Run()`/`Stop()`. Реализация следует правилам C++ для начальной и конечной приостановок и времени жизни параметров: https://eel.is/c++draft/dcl.fct.def.coroutine.

@@ -1,22 +1,13 @@
-# Synchronous main-thread actions
+# Синхронное выполнение действий в основном потоке
 
-`Application::RunOnMainThread(F&&)` is a protected, void-returning operation for short application-thread actions.
-Only invocable, move-constructible callables returning exactly void are accepted, including move-only captures.
-On the application thread during Run, execution is immediate; nested calls do not enqueue or wait.
-On another thread, execution is queued and the caller waits on the command completion, without TaskSystem::Wait
-or executing other CPU tasks. A normal return confirms completion unless shutdown skipped the action.
+Защищённый метод `Application::RunOnMainThread(F&&)` предназначен для коротких операций в потоке приложения и возвращает `void`. Он принимает вызываемые объекты, которые можно перемещать и которые возвращают строго `void`; допускаются захваты с уникальным владением.
 
-Before the first Run, calls throw INVALID_STATE. During/after shutdown, unstarted actions silently skip and
-all callers wake. Running actions finish normally and cannot be preempted. Queued exceptions propagate to the
-waiting caller without failing the main loop; direct exceptions propagate normally. Each Run opens a fresh
-generation so old admitted work cannot execute during a restart.
+Во время `Run()` вызов из потока приложения выполняется немедленно; вложенные вызовы не ставятся в очередь и не ожидают завершения. Из другого потока действие помещается в очередь, а вызывающий поток ожидает его окончания без `TaskSystem::Wait()` и без выполнения других задач процессора. Обычный возврат означает завершение действия, кроме случая, когда оно было пропущено при остановке.
 
-The template borrows the caller's callable until synchronous completion; the queued trampoline never outlives
-that wait. Keep the Application and anything referenced by the callable alive through the call. Producers must
-finish before Application destruction; a subclass must join producers before destroying captured subclass state.
-Do not hold runtime, ECS or user locks needed by the main action across the wait. Affinity grants no additional
-permission to access World. Commands continue to dispatch under frame backpressure, including WorkerCount=1.
-Stop closes admission and skips pending commands before joining workers, preventing an engine-owned circular wait.
+До первого `Run()` вызов приводит к исключению `INVALID_STATE`. Во время остановки и после неё ещё не начатые действия пропускаются без исключения, а все ожидающие вызовы разблокируются. Уже выполняющиеся действия завершаются штатно; принудительно прервать их нельзя. Исключения из поставленного в очередь действия передаются ожидающему вызывающему коду, не прерывая основной цикл; исключение при непосредственном вызове распространяется обычным образом. Каждый `Run()` создаёт новое поколение исполнения, поэтому старые действия не могут выполниться после повторного запуска.
 
-Window events run before each bounded command batch. FIFO follows accepted queue insertion order; frame-origin
-priorities/fairness belong to IMPROVE-0037. The application thread remains outside the compute worker pool.
+Шаблон заимствует вызываемый объект до синхронного завершения; оболочка действия в очереди не переживает соответствующее ожидание. `Application` и все объекты, на которые ссылается действие, должны оставаться живыми до завершения вызова. Потоки, публикующие действия, должны завершиться до уничтожения `Application`; наследник обязан присоединить их до уничтожения собственного состояния, захваченного действиями.
+
+Во время ожидания нельзя удерживать блокировки среды исполнения, ECS или пользователя, необходимые действию в основном потоке. Выполнение в нужном потоке само по себе не даёт дополнительных прав на доступ к `World`. Действия продолжают обрабатываться при ограничении допуска кадров, включая конфигурацию `WorkerCount=1`. `Stop()` закрывает приём действий и пропускает ожидающие перед присоединением рабочих потоков, предотвращая циклическое ожидание внутри движка.
+
+События окна обрабатываются перед каждой ограниченной порцией действий. Порядок FIFO определяется принятым порядком добавления в очередь; приоритеты и справедливость относительно происхождения кадра относятся к `IMPROVE-0037`. Основной поток приложения не входит в пул вычислительных рабочих потоков.
