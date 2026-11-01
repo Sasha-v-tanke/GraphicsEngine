@@ -43,3 +43,15 @@ set_tests_properties(
     PROPERTIES
     LABELS "heavy;cpp;thread;task;stress;dir:lib/thread/test/task;test:TaskSystemStress"
 )
+
+add_test(
+    NAME GraphicsEngineThreadTaskRetirementTests
+    COMMAND ${GRAPHICS_ENGINE_CURRENT_TARGET} "--gtest_filter=TaskRetirement.*"
+)
+
+set_tests_properties(
+    GraphicsEngineThreadTaskRetirementTests
+    PROPERTIES
+    TIMEOUT 45
+    LABELS "small;cpp;thread;task;dir:lib/thread/test/task;test:TaskRetirement"
+)
