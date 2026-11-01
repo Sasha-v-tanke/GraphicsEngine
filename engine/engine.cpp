@@ -13,6 +13,7 @@
 #include <utility>
 
 #include <engine/controller/frame_scheduler.h>
+#include <engine/runtime/engine_state_manager.h>
 #include <engine/runtime/frame_runtime.h>
 #include <engine/runtime/user_job_scope.h>
 #include <lib/common/error/exception.h>
@@ -114,26 +115,21 @@ public:
     void Start() {
         std::lock_guard lock{m_mutex};
 
-        if (m_state != EEngineState::CREATED && m_state != EEngineState::STOPPED) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Engine cannot start from state {}", ToInt(m_state));
-        }
+        m_stateManager.ValidateStart();
 
         m_lastError.reset();
 
         try {
-            if (m_lifecycleGeneration == std::numeric_limits<std::uint64_t>::max()) {
-                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Engine run generation space exhausted");
-            }
+            m_stateManager.ValidateNextGeneration();
             m_taskSystem = std::make_unique<NCommon::TaskSystem>(m_config.WorkerCount);
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
             m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
             m_nextDrawFrameIndex = 0;
             m_gpuRecycledFrameCount = 0;
             m_updateAdmissionOpen = true;
-            ++m_lifecycleGeneration;
-            m_lifecycleGenerationSnapshot.store(m_lifecycleGeneration, std::memory_order_release);
+            m_stateManager.AdvanceGeneration();
             m_userJobs = std::make_unique<NRuntime::UserJobScope>();
-            m_state = EEngineState::RUNNING;
+            m_stateManager.MarkRunning();
             NotifyProgressLocked();
         } catch (...) {
             RollbackStartLocked();
@@ -143,7 +139,7 @@ public:
 
     void SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) {
         std::lock_guard lock{m_mutex};
-        if (m_state != EEngineState::RUNNING || !m_taskSystem) {
+        if (m_stateManager.GetState() != EEngineState::RUNNING || !m_taskSystem) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "User jobs require a running Engine");
         }
         m_userJobs->Add(job);
@@ -159,32 +155,16 @@ public:
     }
 
     void Stop() noexcept {
-        const std::uint64_t observedGeneration = m_lifecycleGenerationSnapshot.load(std::memory_order_acquire);
+        const std::uint64_t observedGeneration = m_stateManager.ObserveGeneration();
         std::unique_ptr<NCommon::TaskSystem> taskSystem;
         std::unique_ptr<NRuntime::UserJobScope> userJobs;
 
         {
             std::unique_lock lock{m_mutex};
 
-            if (m_state == EEngineState::CREATED || m_state == EEngineState::STOPPED) {
-                m_state = EEngineState::STOPPED;
-                m_stopCondition.notify_all();
+            if (!m_stateManager.BeginStop(lock, observedGeneration)) {
                 return;
             }
-
-            if (m_stopInProgress) {
-                m_stopCondition.wait(lock, [this, observedGeneration] {
-                    return !m_stopInProgress || m_completedStopGeneration >= observedGeneration;
-                });
-                return;
-            }
-
-            if (m_lifecycleGeneration != observedGeneration) {
-                return;
-            }
-
-            m_stopInProgress = true;
-            m_activeStopGeneration = observedGeneration;
             EnterStoppingLocked();
             NotifyProgressLocked();
             taskSystem = std::move(m_taskSystem);
@@ -232,11 +212,8 @@ public:
             m_frameScheduler.reset();
             m_frameRecords.reset();
             taskSystem.reset();
-            m_state = EEngineState::STOPPED;
             m_updateAdmissionOpen = true;
-            m_stopInProgress = false;
-            m_completedStopGeneration = m_activeStopGeneration;
-            m_stopCondition.notify_all();
+            m_stateManager.CompleteStop();
             NotifyProgressLocked();
         }
     }
@@ -276,13 +253,13 @@ public:
         }
         std::unique_lock lock{m_mutex};
         m_progressCondition.wait_for(lock, timeout, [this, version] {
-            return m_progressVersion != version || m_state != EEngineState::RUNNING;
+            return m_progressVersion != version || m_stateManager.GetState() != EEngineState::RUNNING;
         });
     }
 
     bool Update() {
         std::lock_guard lock{m_mutex};
-        RequireRunningLocked("update");
+        m_stateManager.RequireRunning("update");
         const FrameRuntimeRecord& pending =
                 m_frameRecords[static_cast<std::size_t>(m_nextDrawFrameIndex % m_frameScheduler->GetMaxActiveFrames())];
         if (pending.HasReservation && !pending.HasDrawTask && pending.HasUpdateTask) {
@@ -294,7 +271,7 @@ public:
 
     bool Draw() {
         std::lock_guard lock{m_mutex};
-        RequireRunningLocked("draw");
+        m_stateManager.RequireRunning("draw");
 
         FrameRuntimeRecord& record =
                 m_frameRecords[static_cast<std::size_t>(m_nextDrawFrameIndex % m_frameScheduler->GetMaxActiveFrames())];
@@ -335,9 +312,9 @@ public:
 
     [[nodiscard]] bool CanAcceptUpdate() {
         std::lock_guard lock{m_mutex};
-        RequireRunningLocked("accept update");
+        m_stateManager.RequireRunning("accept update");
         ReapTerminalFrameRecordsLocked(*m_taskSystem);
-        RequireRunningLocked("accept update");
+        m_stateManager.RequireRunning("accept update");
 
         return m_updateAdmissionOpen;
     }
@@ -350,7 +327,7 @@ public:
     [[nodiscard]] EEngineState GetState() const noexcept {
         std::lock_guard lock{m_mutex};
 
-        return m_state;
+        return m_stateManager.GetState();
     }
 
     [[nodiscard]] std::optional<NCommon::ErrorInfo> GetLastError() const {
@@ -370,7 +347,7 @@ private:
         if (m_userJobs) {
             m_userJobs->CloseAdmission();
         }
-        m_state = EEngineState::STOPPING;
+        m_stateManager.EnterStopping();
     }
 
     struct FrameRuntimeRecord {
@@ -390,8 +367,8 @@ private:
     }
 
     [[nodiscard]] FrameRuntimeRecord* ResolveReservationLocked(FrameKey key) {
-        if (m_state != EEngineState::RUNNING || !key.IsValid() || key.m_owner != m_ownerIdentity ||
-            key.m_runGeneration != m_lifecycleGeneration || key.m_slotIndex >= m_config.MaxActiveFrames) {
+        if (m_stateManager.GetState() != EEngineState::RUNNING || !key.IsValid() || key.m_owner != m_ownerIdentity ||
+            key.m_runGeneration != m_stateManager.GetGeneration() || key.m_slotIndex >= m_config.MaxActiveFrames) {
             return nullptr;
         }
         FrameRuntimeRecord& record = m_frameRecords[key.m_slotIndex];
@@ -399,9 +376,9 @@ private:
     }
 
     [[nodiscard]] std::optional<FrameKey> TryBeginFrameLocked() {
-        RequireRunningLocked("begin frame");
+        m_stateManager.RequireRunning("begin frame");
         ReapTerminalFrameRecordsLocked(*m_taskSystem);
-        RequireRunningLocked("begin frame");
+        m_stateManager.RequireRunning("begin frame");
         if (!m_updateAdmissionOpen) {
             return std::nullopt;
         }
@@ -411,7 +388,7 @@ private:
         }
         FrameKey key;
         key.m_owner = m_ownerIdentity;
-        key.m_runGeneration = m_lifecycleGeneration;
+        key.m_runGeneration = m_stateManager.GetGeneration();
         key.m_frameSequence = frame->GetFrameIndex();
         key.m_slotIndex = frame->GetSlotIndex();
         key.m_generation = frame->GetGeneration();
@@ -445,19 +422,6 @@ private:
         return true;
     }
 
-    static int ToInt(EEngineState state) noexcept {
-        return static_cast<int>(state);
-    }
-
-    void RequireRunningLocked(const char* action) const {
-        if (m_state != EEngineState::RUNNING) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                                  "Engine cannot {} from state {}",
-                                  action,
-                                  ToInt(m_state));
-        }
-    }
-
     void RollbackStartLocked() noexcept {
         try {
             ClearFrameRecordsLocked();
@@ -467,12 +431,8 @@ private:
         } catch (...) {
         }
 
-        m_state = EEngineState::STOPPED;
         m_updateAdmissionOpen = true;
-        m_stopInProgress = false;
-        m_activeStopGeneration = m_lifecycleGeneration;
-        m_completedStopGeneration = m_lifecycleGeneration;
-        m_stopCondition.notify_all();
+        m_stateManager.RollbackStart();
     }
 
     void RunUpdate(NController::FrameHandle frame) {
@@ -483,7 +443,8 @@ private:
             {
                 std::lock_guard lock{m_mutex};
 
-                if (m_state != EEngineState::RUNNING && m_state != EEngineState::STOPPING) {
+                if (m_stateManager.GetState() != EEngineState::RUNNING &&
+                    m_stateManager.GetState() != EEngineState::STOPPING) {
                     return;
                 }
 
@@ -511,7 +472,8 @@ private:
             {
                 std::lock_guard lock{m_mutex};
 
-                if (m_state != EEngineState::RUNNING && m_state != EEngineState::STOPPING) {
+                if (m_stateManager.GetState() != EEngineState::RUNNING &&
+                    m_stateManager.GetState() != EEngineState::STOPPING) {
                     return;
                 }
 
@@ -730,15 +692,9 @@ private:
 
     std::unique_ptr<NRuntime::UserJobScope> m_userJobs;
     mutable std::mutex m_mutex;
-    std::condition_variable m_stopCondition;
     mutable std::condition_variable m_progressCondition;
     std::uint64_t m_progressVersion = 0;
-    EEngineState m_state = EEngineState::CREATED;
-    bool m_stopInProgress = false;
-    std::uint64_t m_lifecycleGeneration = 0;
-    std::atomic<std::uint64_t> m_lifecycleGenerationSnapshot = 0;
-    std::uint64_t m_activeStopGeneration = 0;
-    std::uint64_t m_completedStopGeneration = 0;
+    NRuntime::EngineStateManager m_stateManager;
     std::optional<NCommon::ErrorInfo> m_lastError;
 
     std::unique_ptr<NCommon::TaskSystem> m_taskSystem;

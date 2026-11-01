@@ -4,6 +4,7 @@ TEST(Engine)
 
 SOURCES(
     engine_test.cpp
+    engine_state_manager.cpp
     user_jobs.cpp
     frame_scheduler_test.cpp
 )
