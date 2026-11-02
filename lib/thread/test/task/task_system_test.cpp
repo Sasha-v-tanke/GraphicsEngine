@@ -884,6 +884,7 @@ TEST(TaskSystem, CancelsMultipleDependentsWhenDependencyFails) {
     const NCommon::TaskHandle second = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
     const NCommon::TaskHandle third = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
 
+    taskSystem.Wait(first);
     taskSystem.Wait(second);
     taskSystem.Wait(third);
 
