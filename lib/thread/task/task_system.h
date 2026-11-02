@@ -128,7 +128,8 @@ public:
     }
 
     void Cancel(const TaskHandle& task);
-    // Terminal observation includes callable capture destruction, but not dynamically spawned children.
+    // Terminal observation includes this callable's destruction, but does not join other invocations,
+    // including prerequisites of a cancelled task and dynamically spawned children.
     void Wait(const TaskHandle& task);
     void WaitIdle();
     [[nodiscard]] static bool IsCurrentThreadWorker() noexcept;

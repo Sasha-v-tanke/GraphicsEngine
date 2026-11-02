@@ -930,6 +930,11 @@ TEST(TaskSystem, CancelsFailedDependencyTree) {
     const std::vector<NCommon::TaskHandle> childDependencies{left, right};
     const NCommon::TaskHandle leaf = taskSystem.Submit([](NCommon::TaskContext&) {}, childDependencies);
 
+    // A failed FINALIZING prerequisite can already cancel a newly submitted descendant.
+    // Join each invocation before asserting that the whole tree has retired.
+    taskSystem.Wait(root);
+    taskSystem.Wait(left);
+    taskSystem.Wait(right);
     taskSystem.Wait(leaf);
 
     EXPECT_EQ(taskSystem.GetStatus(root), NCommon::ETaskStatus::FAILED);
@@ -1350,6 +1355,50 @@ TEST(TaskRetirement, ImmediateCancellationIsCountedUntilCaptureDestruction) {
     finishDestructor.Open();
     submitter.join();
     idleWaiter.join();
+}
+
+TEST(TaskRetirement, FailedFinalizingParentDoesNotReleaseItsCapturesWithCancelledChild) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        Gate invocationEntered;
+        Gate failInvocation;
+        Gate destructorEntered;
+        Gate finishDestructor;
+        Gate waiterEntered;
+        Gate waiterFinished;
+        auto probe = std::make_shared<RetirementProbe>();
+        probe->OnDestroy = [&] {
+            destructorEntered.Open();
+            finishDestructor.Wait();
+        };
+        const NCommon::TaskHandle root =
+                pool.Submit([probe = std::move(probe), &invocationEntered, &failInvocation](NCommon::TaskContext&) {
+                    invocationEntered.Open();
+                    failInvocation.Wait();
+                    throw std::runtime_error{"expected failure"};
+                });
+        EXPECT_TRUE(invocationEntered.WaitForOpen());
+        failInvocation.Open();
+        EXPECT_TRUE(destructorEntered.WaitForOpen());
+        const NCommon::TaskHandle child =
+                pool.Submit([](NCommon::TaskContext&) { ADD_FAILURE(); }, std::span{&root, 1});
+        pool.Wait(child);
+        EXPECT_EQ(pool.GetStatus(child), NCommon::ETaskStatus::CANCELLED);
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::RUNNING);
+        EXPECT_FALSE(pool.GetError(root).has_value());
+        std::thread waiter{[&] {
+            waiterEntered.Open();
+            pool.Wait(root);
+            waiterFinished.Open();
+        }};
+        EXPECT_TRUE(waiterEntered.WaitForOpen());
+        EXPECT_FALSE(waiterFinished.IsOpen());
+        finishDestructor.Open();
+        waiter.join();
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::FAILED);
+        EXPECT_TRUE(pool.GetError(root).has_value());
+        pool.WaitIdle();
+    }
 }
 
 } // namespace

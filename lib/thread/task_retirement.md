@@ -10,6 +10,10 @@ immediate-cancelled Submit и отклонённую подготовку/rollba
 после уничтожения captures успешного prerequisite. Handle не удерживает callable после terminal.
 Внешние копии callable/captures остаются ответственностью пользователя.
 
+Отмена нового dependent допускается уже при FINALIZING неуспешного prerequisite. Поэтому
+Wait отменённого потомка не означает, что captures предков уже уничтожены. Чтобы дождаться
+всего дерева, следует явно ожидать нужные handles или WaitIdle при закрытом admission.
+
 Destructor capture может вызвать Submit, GetStatus или Cancel другой задачи. При shutdown
 Submit отклоняется: destructor обязан перехватить исключение. Cancel финализируемой задачи
 идемпотентен; завершение чужой текущей финализации он не ждёт. Destructors должны быть noexcept
