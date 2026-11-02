@@ -118,7 +118,7 @@ public:
     TaskSystem& operator=(TaskSystem&&) noexcept = delete;
 
     TaskHandle Submit(TaskFunction function, std::span<const TaskHandle> dependencies = {}) {
-        return SubmitImpl(std::move(function), dependencies);
+        return SubmitImpl(function, dependencies);
     }
 
     [[nodiscard]] ETaskStatus GetStatus(const TaskHandle& task) const;
@@ -128,6 +128,8 @@ public:
     }
 
     void Cancel(const TaskHandle& task);
+    // Terminal observation includes this callable's destruction, but does not join other invocations,
+    // including prerequisites of a cancelled task and dynamically spawned children.
     void Wait(const TaskHandle& task);
     void WaitIdle();
     [[nodiscard]] static bool IsCurrentThreadWorker() noexcept;
@@ -135,28 +137,34 @@ public:
 private:
     struct OwnerToken;
     friend struct TaskHandle::State;
+    friend class TaskContext;
 
     struct Task {
         Task() = default;
         Task(Task&& other) noexcept
-            : Function(std::move(other.Function))
+            : Function()
             , Status(other.Status)
             , Dependencies(std::move(other.Dependencies))
             , Dependents(std::move(other.Dependents))
             , RemainingDependencies(other.RemainingDependencies.load(std::memory_order_relaxed))
+            , Finalizing(other.Finalizing)
+            , PendingStatus(other.PendingStatus)
             , Error(std::move(other.Error)) {
+            Function.swap(other.Function);
         }
         Task& operator=(Task&& other) noexcept {
             if (this == &other) {
                 return *this;
             }
 
-            Function = std::move(other.Function);
+            Function.swap(other.Function);
             Status = other.Status;
             Dependencies = std::move(other.Dependencies);
             Dependents = std::move(other.Dependents);
             RemainingDependencies.store(other.RemainingDependencies.load(std::memory_order_relaxed),
                                         std::memory_order_relaxed);
+            Finalizing = other.Finalizing;
+            PendingStatus = other.PendingStatus;
             Error = std::move(other.Error);
             return *this;
         }
@@ -169,6 +177,8 @@ private:
         std::vector<std::uint64_t> Dependencies;
         std::vector<std::uint64_t> Dependents;
         std::atomic_size_t RemainingDependencies = 0;
+        bool Finalizing = false;
+        ETaskStatus PendingStatus = ETaskStatus::CREATED;
         std::optional<ErrorInfo> Error;
     };
 
@@ -204,10 +214,7 @@ private:
         [[nodiscard]] LinkedDependencies
         LinkDependencyEdgesLocked(std::uint64_t taskId, Task& task, std::span<const TaskHandle> dependencies);
         void RollbackDependencyEdgesLocked(std::uint64_t taskId, std::span<const std::uint64_t> dependencyIds);
-        void UnlinkDependencyEdgesLocked(std::uint64_t taskId,
-                                         const Task& task,
-                                         std::uint64_t lockedDependencyId = 0,
-                                         Task* lockedDependencyTask = nullptr);
+        void UnlinkDependencyEdgesLocked(std::uint64_t taskId, const Task& task);
         void CommitActiveTaskLocked(std::uint64_t taskId, std::shared_ptr<TaskHandle::State> state);
         void RollbackAllocationLocked(std::uint64_t taskId);
     };
@@ -239,24 +246,39 @@ private:
         [[nodiscard]] static bool IsSuccessfulLocked(const Task& task) noexcept;
         [[nodiscard]] static bool
         TryClaimReadyTask(const std::shared_ptr<TaskHandle::State>& state, TaskHandle& task, TaskFunction& function);
-        static void ReleaseExecutionPayloadLocked(Task& task);
+        static void ReleaseDependencyPayloadLocked(Task& task);
         void RetireTask(TaskHandle::State& state) noexcept;
         void DrainRetiredTasksLocked(TaskRegistry& registry);
         void ReleaseOutstandingTask() noexcept;
+    };
+
+    // The batch owns an acyclic State chain and drains it outside all executor locks.
+    class FinalizationBatch final {
+    public:
+        explicit FinalizationBatch(TaskSystem& owner) noexcept;
+        ~FinalizationBatch();
+        FinalizationBatch(const FinalizationBatch&) = delete;
+        FinalizationBatch& operator=(const FinalizationBatch&) = delete;
+        void Add(const std::shared_ptr<TaskHandle::State>& state) noexcept;
+
+        std::shared_ptr<TaskHandle::State> First;
+        TaskHandle::State* Last = nullptr;
+
+    private:
+        TaskSystem& m_owner;
     };
 
     void ValidateTaskHandleOwner(const TaskHandle& task) const;
 
     void CompleteState(const std::shared_ptr<TaskHandle::State>& state,
                        ETaskStatus status,
-                       std::optional<ErrorInfo> error = std::nullopt);
-    void CancelTaskLocked(std::uint64_t taskId,
-                          const std::shared_ptr<TaskHandle::State>& state,
-                          Task& task,
-                          std::uint64_t lockedDependencyId = 0,
-                          Task* lockedDependencyTask = nullptr);
-    void PropagateCancellationLocked(std::uint64_t taskId, Task& task);
-    void CancelPendingTasksLocked() noexcept;
+                       std::optional<ErrorInfo> error,
+                       TaskFunction& function);
+    static void CancelTaskLocked(const std::shared_ptr<TaskHandle::State>& state, FinalizationBatch& batch);
+    void PropagateCancellationLocked(Task& task, FinalizationBatch& batch);
+    void PrepareCancellationsLocked(FinalizationBatch& batch);
+    void CancelPendingTasksLocked(FinalizationBatch& batch) noexcept;
+    void DrainFinalizations(FinalizationBatch& batch) noexcept;
     [[noreturn]] static void FailDagInvariantLocked(const char* message) noexcept;
 #ifndef NDEBUG
     void ValidateDagLocked() const;
@@ -264,7 +286,7 @@ private:
     void StopWorkers() noexcept;
     void WorkerLoop(WorkerIndex workerIndex) noexcept;
 
-    TaskHandle SubmitImpl(TaskFunction function, std::span<const TaskHandle> dependencies);
+    TaskHandle SubmitImpl(TaskFunction& function, std::span<const TaskHandle> dependencies);
 
 private:
     mutable std::mutex m_mutex;

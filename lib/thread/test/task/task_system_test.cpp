@@ -2,11 +2,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
@@ -882,6 +884,7 @@ TEST(TaskSystem, CancelsMultipleDependentsWhenDependencyFails) {
     const NCommon::TaskHandle second = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
     const NCommon::TaskHandle third = taskSystem.Submit([](NCommon::TaskContext&) {}, dependencies);
 
+    taskSystem.Wait(first);
     taskSystem.Wait(second);
     taskSystem.Wait(third);
 
@@ -928,6 +931,11 @@ TEST(TaskSystem, CancelsFailedDependencyTree) {
     const std::vector<NCommon::TaskHandle> childDependencies{left, right};
     const NCommon::TaskHandle leaf = taskSystem.Submit([](NCommon::TaskContext&) {}, childDependencies);
 
+    // A failed FINALIZING prerequisite can already cancel a newly submitted descendant.
+    // Join each invocation before asserting that the whole tree has retired.
+    taskSystem.Wait(root);
+    taskSystem.Wait(left);
+    taskSystem.Wait(right);
     taskSystem.Wait(leaf);
 
     EXPECT_EQ(taskSystem.GetStatus(root), NCommon::ETaskStatus::FAILED);
@@ -1072,6 +1080,326 @@ TEST(TaskSystem, RejectsWaitIdleFromWorkerThread) {
     taskSystem.Wait(task);
 
     EXPECT_TRUE(waitRejected);
+}
+
+// A separate CTest invocation bounds these regressions if a capture deadlocks the executor.
+struct RetirementProbe {
+    std::function<void()> OnDestroy;
+
+    ~RetirementProbe() {
+        OnDestroy();
+    }
+};
+
+class BlockedWorkers final {
+public:
+    explicit BlockedWorkers(NCommon::TaskSystem& pool) {
+        for (std::size_t index = 0; index < pool.GetWorkerCount(); ++index) {
+            pool.Submit([state = m_state](NCommon::TaskContext&) {
+                state->Entered.Arrive();
+                state->Finish.Wait();
+            });
+        }
+        EXPECT_TRUE(m_state->Entered.WaitForCount(pool.GetWorkerCount()));
+    }
+
+    ~BlockedWorkers() {
+        m_state->Finish.Open();
+    }
+
+    void Release() {
+        m_state->Finish.Open();
+    }
+
+private:
+    struct State {
+        CountedGate Entered;
+        Gate Finish;
+    };
+    std::shared_ptr<State> m_state = std::make_shared<State>();
+};
+
+TEST(TaskRetirement, PendingCapturesCanSubmitObserveAndCancel) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        BlockedWorkers blocked{pool};
+        std::atomic_size_t destroyed = 0;
+        NCommon::TaskHandle current;
+        const NCommon::TaskHandle other = pool.Submit([](NCommon::TaskContext&) {});
+        auto probe = std::make_shared<RetirementProbe>();
+        probe->OnDestroy = [&] {
+            EXPECT_EQ(pool.GetStatus(current), NCommon::ETaskStatus::READY);
+            pool.Cancel(current); // FINALIZING is idempotent, including reentrant cancellation.
+            pool.Cancel(other);
+            pool.Submit([](NCommon::TaskContext&) {});
+            destroyed.fetch_add(1);
+        };
+        current = pool.Submit([probe](NCommon::TaskContext&) { ADD_FAILURE(); });
+        probe.reset();
+        pool.Cancel(current);
+        EXPECT_EQ(destroyed.load(), 1U);
+        EXPECT_EQ(pool.GetStatus(current), NCommon::ETaskStatus::CANCELLED);
+        EXPECT_EQ(pool.GetStatus(other), NCommon::ETaskStatus::CANCELLED);
+        blocked.Release();
+        pool.WaitIdle();
+    }
+}
+
+TEST(TaskRetirement, RunningCapturesRetireBeforeTerminalAndIdle) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        Gate invocationEntered;
+        Gate finishInvocation;
+        Gate destructorEntered;
+        Gate finishDestructor;
+        Gate waitEntered;
+        Gate idleEntered;
+        Gate waitFinished;
+        Gate idleFinished;
+        NCommon::TaskHandle current;
+        std::atomic_size_t destroyed = 0;
+        auto probe = std::make_shared<RetirementProbe>();
+        probe->OnDestroy = [&] {
+            EXPECT_EQ(pool.GetStatus(current), NCommon::ETaskStatus::RUNNING);
+            pool.Cancel(current);
+            pool.Submit([](NCommon::TaskContext&) {});
+            destructorEntered.Open();
+            finishDestructor.Wait();
+            destroyed.fetch_add(1);
+        };
+        current = pool.Submit([probe, &invocationEntered, &finishInvocation](NCommon::TaskContext&) {
+            invocationEntered.Open();
+            finishInvocation.Wait();
+        });
+        EXPECT_TRUE(invocationEntered.WaitForOpen());
+        probe.reset();
+        finishInvocation.Open();
+        EXPECT_TRUE(destructorEntered.WaitForOpen());
+        const NCommon::TaskHandle dependent = pool.Submit(
+                [&](NCommon::TaskContext&) { EXPECT_EQ(pool.GetStatus(current), NCommon::ETaskStatus::COMPLETED); },
+                std::span{&current, 1});
+        EXPECT_EQ(pool.GetStatus(dependent), NCommon::ETaskStatus::WAITING);
+        std::thread waiter{[&] {
+            waitEntered.Open();
+            pool.Wait(current);
+            waitFinished.Open();
+        }};
+        std::thread idleWaiter{[&] {
+            idleEntered.Open();
+            pool.WaitIdle();
+            idleFinished.Open();
+        }};
+        EXPECT_TRUE(waitEntered.WaitForOpen());
+        EXPECT_TRUE(idleEntered.WaitForOpen());
+        EXPECT_EQ(pool.GetStatus(current), NCommon::ETaskStatus::RUNNING);
+        EXPECT_FALSE(waitFinished.IsOpen());
+        EXPECT_FALSE(idleFinished.IsOpen());
+        finishDestructor.Open();
+        waiter.join();
+        idleWaiter.join();
+        EXPECT_EQ(destroyed.load(), 1U);
+        pool.Wait(dependent);
+        EXPECT_EQ(pool.GetStatus(current), NCommon::ETaskStatus::COMPLETED);
+    }
+}
+
+TEST(TaskRetirement, CancellationRetainsAccountingAndRejectsNewDependentsDuringCleanup) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        BlockedWorkers blocked{pool};
+        Gate destructorEntered;
+        Gate finishDestructor;
+        Gate idleEntered;
+        Gate idleFinished;
+        std::atomic_size_t destroyed = 0;
+        auto probe = std::make_shared<RetirementProbe>();
+        probe->OnDestroy = [&] {
+            destructorEntered.Open();
+            finishDestructor.Wait();
+            destroyed.fetch_add(1);
+        };
+        const NCommon::TaskHandle current = pool.Submit([probe](NCommon::TaskContext&) { ADD_FAILURE(); });
+        probe.reset();
+        std::thread canceller{[&] { pool.Cancel(current); }};
+        EXPECT_TRUE(destructorEntered.WaitForOpen());
+        blocked.Release();
+        const NCommon::TaskHandle tail = pool.Submit([](NCommon::TaskContext&) {});
+        pool.Wait(tail);
+        const NCommon::TaskHandle dependent =
+                pool.Submit([](NCommon::TaskContext&) { ADD_FAILURE(); }, std::span{&current, 1});
+        EXPECT_EQ(pool.GetStatus(dependent), NCommon::ETaskStatus::CANCELLED);
+        std::thread idleWaiter{[&] {
+            idleEntered.Open();
+            pool.WaitIdle();
+            idleFinished.Open();
+        }};
+        EXPECT_TRUE(idleEntered.WaitForOpen());
+        EXPECT_EQ(pool.GetStatus(current), NCommon::ETaskStatus::READY);
+        EXPECT_FALSE(idleFinished.IsOpen());
+        EXPECT_EQ(destroyed.load(), 0U);
+        finishDestructor.Open();
+        canceller.join();
+        idleWaiter.join();
+        EXPECT_EQ(destroyed.load(), 1U);
+    }
+}
+
+TEST(TaskRetirement, FailedPrerequisiteRetiresWaitingCapturesOutsideLocks) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        Gate fail;
+        const NCommon::TaskHandle root = pool.Submit([&](NCommon::TaskContext&) {
+            fail.Wait();
+            throw std::runtime_error{"expected failure"};
+        });
+        NCommon::TaskHandle dependent;
+        std::atomic_size_t destroyed = 0;
+        auto probe = std::make_shared<RetirementProbe>();
+        probe->OnDestroy = [&] {
+            EXPECT_EQ(pool.GetStatus(dependent), NCommon::ETaskStatus::WAITING);
+            pool.Cancel(dependent);
+            pool.Submit([](NCommon::TaskContext&) {});
+            destroyed.fetch_add(1);
+        };
+        dependent = pool.Submit([probe](NCommon::TaskContext&) { ADD_FAILURE(); }, std::span{&root, 1});
+        probe.reset();
+        fail.Open();
+        pool.Wait(dependent);
+        pool.WaitIdle();
+        EXPECT_EQ(destroyed.load(), 1U);
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::FAILED);
+        EXPECT_EQ(pool.GetStatus(dependent), NCommon::ETaskStatus::CANCELLED);
+    }
+}
+
+TEST(TaskRetirement, ImmediateCancellationAndRejectedSubmitDestroyOutsideLocks) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        const NCommon::TaskHandle failed = pool.Submit([](NCommon::TaskContext&) { throw 7; });
+        pool.Wait(failed);
+        std::atomic_size_t destroyed = 0;
+        for (const bool reject: {false, true}) {
+            auto probe = std::make_shared<RetirementProbe>();
+            probe->OnDestroy = [&] {
+                EXPECT_EQ(pool.GetStatus(failed), NCommon::ETaskStatus::FAILED);
+                pool.Submit([](NCommon::TaskContext&) {});
+                destroyed.fetch_add(1);
+            };
+            if (reject) {
+                const NCommon::TaskHandle invalid;
+                EXPECT_THROW(pool.Submit([probe = std::move(probe)](NCommon::TaskContext&) { ADD_FAILURE(); },
+                                         std::span{&invalid, 1}),
+                             NCommon::Exception);
+            } else {
+                const NCommon::TaskHandle cancelled =
+                        pool.Submit([probe = std::move(probe)](NCommon::TaskContext&) { ADD_FAILURE(); },
+                                    std::span{&failed, 1});
+                EXPECT_EQ(pool.GetStatus(cancelled), NCommon::ETaskStatus::CANCELLED);
+            }
+        }
+        pool.WaitIdle();
+        EXPECT_EQ(destroyed.load(), 2U);
+    }
+}
+
+TEST(TaskRetirement, StopDestroysPendingCapturesOutsideLocks) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        auto pool = std::make_unique<NCommon::TaskSystem>(workers);
+        NCommon::TaskSystem* rawPool = pool.get();
+        BlockedWorkers blocked{*pool};
+        Gate destructorFinished;
+        NCommon::TaskHandle pending;
+        auto probe = std::make_shared<RetirementProbe>();
+        probe->OnDestroy = [&] {
+            EXPECT_EQ(rawPool->GetStatus(pending), NCommon::ETaskStatus::READY);
+            rawPool->Cancel(pending);
+            EXPECT_THROW(rawPool->Submit([](NCommon::TaskContext&) {}), NCommon::Exception);
+            destructorFinished.Open();
+        };
+        pending = pool->Submit([probe](NCommon::TaskContext&) { ADD_FAILURE(); });
+        probe.reset();
+        std::thread stopper{[&] { pool.reset(); }};
+        EXPECT_TRUE(destructorFinished.WaitForOpen());
+        blocked.Release();
+        stopper.join();
+    }
+}
+
+TEST(TaskRetirement, ImmediateCancellationIsCountedUntilCaptureDestruction) {
+    NCommon::TaskSystem pool{1};
+    const NCommon::TaskHandle failed = pool.Submit([](NCommon::TaskContext&) { throw 7; });
+    pool.Wait(failed);
+    Gate destructorEntered;
+    Gate finishDestructor;
+    Gate idleEntered;
+    Gate idleFinished;
+    auto probe = std::make_shared<RetirementProbe>();
+    probe->OnDestroy = [&] {
+        EXPECT_TRUE(pool.GetError(failed).has_value());
+        destructorEntered.Open();
+        finishDestructor.Wait();
+    };
+    std::thread submitter{[&, probe = std::move(probe)]() mutable {
+        const NCommon::TaskHandle cancelled =
+                pool.Submit([probe = std::move(probe)](NCommon::TaskContext&) { ADD_FAILURE(); },
+                            std::span{&failed, 1});
+        EXPECT_EQ(pool.GetStatus(cancelled), NCommon::ETaskStatus::CANCELLED);
+    }};
+    EXPECT_TRUE(destructorEntered.WaitForOpen());
+    std::thread idleWaiter{[&] {
+        idleEntered.Open();
+        pool.WaitIdle();
+        idleFinished.Open();
+    }};
+    EXPECT_TRUE(idleEntered.WaitForOpen());
+    EXPECT_FALSE(idleFinished.IsOpen());
+    finishDestructor.Open();
+    submitter.join();
+    idleWaiter.join();
+}
+
+TEST(TaskRetirement, FailedFinalizingParentDoesNotReleaseItsCapturesWithCancelledChild) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        Gate invocationEntered;
+        Gate failInvocation;
+        Gate destructorEntered;
+        Gate finishDestructor;
+        Gate waiterEntered;
+        Gate waiterFinished;
+        auto probe = std::make_shared<RetirementProbe>();
+        probe->OnDestroy = [&] {
+            destructorEntered.Open();
+            finishDestructor.Wait();
+        };
+        const NCommon::TaskHandle root =
+                pool.Submit([probe = std::move(probe), &invocationEntered, &failInvocation](NCommon::TaskContext&) {
+                    invocationEntered.Open();
+                    failInvocation.Wait();
+                    throw std::runtime_error{"expected failure"};
+                });
+        EXPECT_TRUE(invocationEntered.WaitForOpen());
+        failInvocation.Open();
+        EXPECT_TRUE(destructorEntered.WaitForOpen());
+        const NCommon::TaskHandle child =
+                pool.Submit([](NCommon::TaskContext&) { ADD_FAILURE(); }, std::span{&root, 1});
+        pool.Wait(child);
+        EXPECT_EQ(pool.GetStatus(child), NCommon::ETaskStatus::CANCELLED);
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::RUNNING);
+        EXPECT_FALSE(pool.GetError(root).has_value());
+        std::thread waiter{[&] {
+            waiterEntered.Open();
+            pool.Wait(root);
+            waiterFinished.Open();
+        }};
+        EXPECT_TRUE(waiterEntered.WaitForOpen());
+        EXPECT_FALSE(waiterFinished.IsOpen());
+        finishDestructor.Open();
+        waiter.join();
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::FAILED);
+        EXPECT_TRUE(pool.GetError(root).has_value());
+        pool.WaitIdle();
+    }
 }
 
 } // namespace
