@@ -48,12 +48,12 @@ public:
         return RunAsync([value = std::make_unique<int>(1)](std::stop_token) mutable { return std::move(value); });
     }
     NCommon::Job<int> StartCoroutine() {
-        return Spawn(MakeTask());
+        return Spawn(MakeTask(RunAsync([] { return 3; })));
     }
 
 private:
-    static NCommon::UserTask<int> MakeTask() {
-        co_return 3;
+    static NCommon::UserTask<int> MakeTask(NCommon::Job<int> input) {
+        co_return co_await std::move(input);
     }
 };
 

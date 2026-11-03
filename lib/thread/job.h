@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <concepts>
+#include <coroutine>
 #include <cstdio>
 #include <exception>
 #include <expected>
@@ -51,12 +52,18 @@ public:
     std::optional<std::expected<T, ErrorInfo>> Result;
     ErrorInfo AllocationFailure{.Code = EError::OUT_OF_MEMORY, .Message = "User job allocation failed"};
     ErrorInfo Cancellation{.Code = EError::CANCELLED, .Message = "User job cancelled"};
-    std::function<void()> Body;
+    std::function<bool()> Body;
 
 private:
-    void ExecuteBody() noexcept override {
-        std::function<void()> body = std::move(Body);
-        body(); // Factory body catches all user exceptions, including result construction.
+    bool ExecuteBody() noexcept override {
+        const bool completed = Body(); // Factory catches user exceptions, including result construction.
+        if (completed) {
+            ReleaseBody(); // Coroutine frame/captures retire before result publication.
+        }
+        return completed;
+    }
+    void SchedulingFailure() noexcept override {
+        Result.emplace(std::unexpect, std::move(AllocationFailure));
     }
     void ReleaseBody() noexcept override {
         Body = {};
@@ -129,6 +136,58 @@ public:
         return std::optional<std::expected<T, ErrorInfo>>{std::in_place, std::move(*state->Result)};
     }
 
+    class Awaiter final: private NonCopyable {
+    public:
+        explicit Awaiter(std::shared_ptr<NJobInternal::JobState<T>> state)
+            : m_state(std::move(state)) {
+        }
+        ~Awaiter() {
+            if (m_state) {
+                m_state->Abandon();
+            }
+        }
+        [[nodiscard]] bool await_ready() const noexcept {
+            return m_state->IsReady();
+        }
+        template<typename Promise>
+            requires std::derived_from<Promise, NUserTaskInternal::PromiseBase>
+        bool await_suspend(std::coroutine_handle<Promise> handle) {
+            const std::shared_ptr<NJobInternal::JobControl> owner = handle.promise().Owner.lock();
+            if (!owner) {
+                GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Job await requires a spawned UserTask");
+            }
+            m_continuation = std::make_shared<NJobInternal::JobContinuation>();
+            m_continuation->Owner = owner;
+            owner->SetWaiting(m_continuation);
+            // No raw coroutine address escapes. Resume is allowed only after the current step returns.
+            return m_state->Subscribe(m_continuation);
+        }
+        T await_resume() {
+            m_state->Observed.store(true);
+            const std::shared_ptr<NJobInternal::JobState<T>> state = std::move(m_state);
+            std::expected<T, ErrorInfo>& result = *state->Result;
+            if (!result) {
+                GRAPHICS_ENGINE_THROW(result.error().Code, "{}", result.error().Message);
+            }
+            if constexpr (!std::is_void_v<T>) {
+                return std::move(*result);
+            }
+        }
+
+    private:
+        std::shared_ptr<NJobInternal::JobState<T>> m_state;
+        std::shared_ptr<NJobInternal::JobContinuation> m_continuation;
+    };
+
+    // Single-consumer ownership transfers at the await expression, even when already ready.
+    [[nodiscard]] Awaiter operator co_await() && {
+        if (!m_state) {
+            GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Cannot await an invalid or consumed Job");
+        }
+        return Awaiter{std::move(m_state)};
+    }
+    Awaiter operator co_await() & = delete;
+
 private:
     void Abandon() noexcept {
         if (m_state) {
@@ -163,9 +222,38 @@ struct JobFactory {
         if (!task.IsValid()) {
             GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Cannot spawn an invalid or already spawned UserTask");
         }
-        return Run(std::forward<Submit>(submit), [owned = std::move(task)](std::stop_token token) mutable -> T {
-            return NUserTaskInternal::TaskAccess::Run(owned, std::move(token));
-        });
+        // Consume the lazy frame before any admission/allocation failure, as for the original Spawn contract.
+        UserTask<T> owned = std::move(task);
+        const std::shared_ptr<JobState<T>> state = std::make_shared<JobState<T>>();
+        std::shared_ptr<UserTask<T>> frame = std::make_shared<UserTask<T>>(std::move(owned));
+        state->Body = [completion = state.get(),
+                       owner = std::weak_ptr<JobControl>{state},
+                       frame = std::move(frame)]() mutable {
+            try {
+                if (!NUserTaskInternal::TaskAccess::Resume(*frame, completion->StopSource.get_token(), owner)) {
+                    return false;
+                }
+                if constexpr (std::is_void_v<T>) {
+                    NUserTaskInternal::TaskAccess::Take(*frame);
+                    completion->Result.emplace();
+                } else {
+                    completion->Result.emplace(std::in_place, NUserTaskInternal::TaskAccess::Take(*frame));
+                }
+            } catch (const Exception& exception) {
+                SetFailure(*completion, exception.code(), exception.GetMessage());
+            } catch (const std::bad_alloc&) {
+                completion->Result.emplace(std::unexpect, std::move(completion->AllocationFailure));
+            } catch (const std::exception& exception) {
+                SetFailure(*completion, make_error_code(EError::UNKNOWN), exception.what());
+            } catch (...) {
+                SetFailure(*completion,
+                           make_error_code(EError::UNKNOWN),
+                           "User coroutine threw a non-standard exception");
+            }
+            return true;
+        };
+        std::invoke(std::forward<Submit>(submit), state);
+        return Job<T>{state};
     }
 
     template<typename Submit, UserJobFunction Function>
@@ -202,6 +290,7 @@ struct JobFactory {
                 SetFailure(*ownedState, make_error_code(EError::UNKNOWN), "User job threw a non-standard exception");
             }
             ownedFunction.reset();
+            return true;
         };
         std::invoke(std::forward<Submit>(submit), state);
         return Job<Value>{std::move(state)};

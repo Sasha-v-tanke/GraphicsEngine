@@ -4,8 +4,9 @@
 
 namespace NEngine::NRuntime {
 
-UserJobScope::UserJobScope()
-    : m_signal(std::make_shared<NCommon::NJobInternal::JobSignal>())
+UserJobScope::UserJobScope(NCommon::TaskSystem& tasks)
+    : m_tasks(tasks)
+    , m_signal(std::make_shared<NCommon::NJobInternal::JobSignal>())
     , m_dispatcher([this] { Dispatch(); }) {
 }
 
@@ -65,6 +66,10 @@ void UserJobScope::Dispatch() noexcept {
                     selected = *it;
                     break;
                 }
+                if ((*it)->ClaimResume()) {
+                    selected = *it;
+                    break;
+                }
             }
             if (!selected && m_jobs.empty() && m_exit.load()) {
                 return;
@@ -72,7 +77,16 @@ void UserJobScope::Dispatch() noexcept {
         }
         if (selected) {
             if (!retired) {
-                selected->DispatchCancel();
+                if (selected->Phase.load() == EJobPhase::RESUME_QUEUED) {
+                    try {
+                        static_cast<void>(
+                                m_tasks.Submit([execution = selected](NCommon::TaskContext&) { execution->Run(); }));
+                    } catch (...) {
+                        selected->FailResume();
+                    }
+                } else {
+                    selected->DispatchCancel();
+                }
             }
             continue; // Last owners and user values are destroyed outside the scope lock.
         }
