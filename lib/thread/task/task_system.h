@@ -123,7 +123,8 @@ public:
     }
 
     // Inherits this invocation's group; descendants may spawn after SealGroup.
-    TaskHandle SpawnInGroup(TaskFunction function, std::span<const TaskHandle> dependencies = {});
+    TaskHandle SpawnInGroup(TaskFunction function,
+                            std::span<const TaskHandle> dependencies = std::span<const TaskHandle>());
     [[nodiscard]] bool IsGroupCancellationRequested() const;
 
     TaskHandle Spawn(TaskFunction function);
@@ -347,7 +348,7 @@ private:
 
     TaskHandle SubmitImpl(TaskFunction& function,
                           std::span<const TaskHandle> dependencies,
-                          const std::shared_ptr<TaskGroupHandle::State>& group = {},
+                          const std::shared_ptr<TaskGroupHandle::State>& group = nullptr,
                           bool descendant = false);
     void ValidateGroup(const TaskGroupHandle& group) const;
     static void QueueGroupCompletionLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept;
