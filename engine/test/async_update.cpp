@@ -159,3 +159,68 @@ TEST(EngineAsyncUpdate, SystemFailurePreventsDrawAndPropagatesRuntimeError) {
     EXPECT_EQ(observed.Draws.load(), 0);
 }
 } // namespace
+
+namespace {
+TEST(EngineAsyncUpdate, StopWaitsForProducerTicketEvenWhenExecutorIsIdle) {
+    class ProducerRuntime final: public NEngine::NRuntime::IFrameRuntime {
+    public:
+        std::shared_ptr<NEcs::World> World = std::make_shared<NEcs::World>();
+        std::promise<NEcs::World::DeferredStructuralCommandBuffer> Produced;
+        std::atomic<int> RetiredFrameObjects{0};
+        struct FrameProbe {
+            explicit FrameProbe(std::atomic<int>& retired)
+                : Retired(retired) {
+            }
+            ~FrameProbe() {
+                ++Retired;
+            }
+            std::atomic<int>& Retired;
+        };
+        ProducerRuntime() {
+            World->BeginDeferredStructuralPhase({{.Order = 0, .SystemOrder = 10}});
+            World->RegisterSystem(
+                    {},
+                    [this](NEcs::World& world) { Produced.set_value(world.CreateDeferredStructuralCommandBuffer(0)); },
+                    NEcs::SystemSchedule{.Id = 1},
+                    10);
+        }
+        void Update(const NEngine::NRuntime::FrameContext&) override {
+            ADD_FAILURE();
+        }
+        void ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
+                            NCommon::TaskSystem& tasks,
+                            std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) override {
+            static_cast<void>(frame.GetStorage().Emplace<FrameProbe>(RetiredFrameObjects));
+            NEngine::NRuntime::ScheduleWorldUpdate(World, tasks, completion);
+        }
+        void Draw(const NEngine::NRuntime::FrameContext&) override {
+            ADD_FAILURE();
+        }
+    };
+    auto runtime = std::make_unique<ProducerRuntime>();
+    auto& observed = *runtime;
+    auto produced = observed.Produced.get_future();
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 1}, std::move(runtime));
+    engine->Start();
+    const auto key = engine->TryBeginFrame();
+    ASSERT_TRUE(key);
+    EXPECT_TRUE(engine->CompleteUserUpdate(*key));
+    ASSERT_EQ(produced.wait_for(2s), std::future_status::ready);
+    auto buffer = std::make_optional(produced.get());
+    EXPECT_FALSE(engine->IsUpdateComplete(*key));
+    std::promise<void> stopped;
+    auto future = stopped.get_future();
+    std::jthread stopper{[&] {
+        engine->Stop();
+        stopped.set_value();
+    }};
+    EXPECT_EQ(future.wait_for(10ms), std::future_status::timeout);
+    EXPECT_EQ(observed.RetiredFrameObjects.load(), 0);
+    buffer.reset();
+    EXPECT_EQ(future.wait_for(2s), std::future_status::ready);
+    stopper.join();
+    EXPECT_EQ(observed.RetiredFrameObjects.load(), 1);
+    EXPECT_FALSE(engine->GetLastError());
+}
+} // namespace

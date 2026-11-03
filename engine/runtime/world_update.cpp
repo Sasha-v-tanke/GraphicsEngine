@@ -11,7 +11,7 @@ void ScheduleWorldUpdate(std::shared_ptr<NEcs::World> world,
     auto prepared = NEcs::NInternal::PrepareSystems(
             std::move(world),
             tasks,
-            [completion](NEcs::NInternal::SystemRunOutcome result) {
+            [completion](const NEcs::NInternal::SystemRunOutcome& result) {
                 EUpdateStatus status = EUpdateStatus::COMPLETED;
                 if (result.Status == NEcs::NInternal::ESystemRunStatus::FAILED) {
                     status = EUpdateStatus::FAILED;

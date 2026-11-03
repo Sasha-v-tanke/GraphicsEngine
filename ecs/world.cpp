@@ -220,36 +220,37 @@ NInternal::PreparedSystemRun
 NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
                                          NCommon::TaskSystem& tasks,
                                          std::function<void(NInternal::SystemRunOutcome)> onFinished) {
-    if (!world) {
+    const std::shared_ptr<World> owner = std::move(world);
+    if (!owner) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Async ECS requires a World owner");
     }
-    if (world->IsRunningSystems_.exchange(true)) {
+    if (owner->IsRunningSystems_.exchange(true)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
     }
     try {
-        if (world->ExecutionPoisoned_) {
+        if (owner->ExecutionPoisoned_) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS execution requires recovery after cleanup failure");
         }
         auto state = std::make_shared<World::SystemRunState>();
-        state->Lease = world;
+        state->Lease = owner;
         state->Tasks = &tasks;
         state->OnFinished = std::move(onFinished);
-        state->Graph = world->BuildSystemExecutionGraph(true);
-        state->Invocations.resize(world->Systems_.size());
-        state->Handles.resize(world->Systems_.size());
-        state->Dependencies.resize(world->Systems_.size());
+        state->Graph = owner->BuildSystemExecutionGraph(true);
+        state->Invocations.resize(owner->Systems_.size());
+        state->Handles.resize(owner->Systems_.size());
+        state->Dependencies.resize(owner->Systems_.size());
         for (const std::size_t index: state->Graph.Order) {
             state->Dependencies[index].resize(state->Graph.Dependencies[index].size());
             auto& invocation = state->Invocations[index];
-            invocation.Owner = world.get();
-            invocation.StructuralOrder = world->Systems_[index].StructuralOrder;
-            invocation.Id = ++world->NextSystemInvocationId_;
+            invocation.Owner = owner.get();
+            invocation.StructuralOrder = owner->Systems_[index].StructuralOrder;
+            invocation.Id = ++owner->NextSystemInvocationId_;
         }
-        world->ActiveSystemRun_ = state;
+        owner->ActiveSystemRun_ = state;
         return NInternal::PreparedSystemRun{std::move(state)};
     } catch (...) {
-        world->IsRunningSystems_.store(false);
+        owner->IsRunningSystems_.store(false);
         throw;
     }
 }
@@ -886,7 +887,7 @@ void World::RunSystems(NCommon::TaskSystem& taskSystem) {
     // Borrowed admission is confined to this host wrapper, which cannot return before cleanup.
     auto prepared = NInternal::PrepareSystems(std::shared_ptr<World>{this, [](World*) {}},
                                               taskSystem,
-                                              [completion](NInternal::SystemRunOutcome result) {
+                                              [completion](const NInternal::SystemRunOutcome& result) {
                                                   {
                                                       std::lock_guard lock{completion->Mutex};
                                                       completion->Outcome = result;

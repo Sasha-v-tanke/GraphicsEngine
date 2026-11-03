@@ -34,7 +34,7 @@ struct SystemRunOutcome {
 class SystemRunControl {
 public:
     virtual ~SystemRunControl() = default;
-    virtual std::optional<SystemRunOutcome> TryGetOutcome() const = 0;
+    [[nodiscard]] virtual std::optional<SystemRunOutcome> TryGetOutcome() const = 0;
     virtual void RequestCancel() noexcept = 0;
     virtual void Start() = 0;
     virtual void Abandon() noexcept = 0;

@@ -15,7 +15,7 @@ bool UpdateCompletion::IsStopRequested() const noexcept {
     return m_stopping;
 }
 void UpdateCompletion::BindCancellation(std::function<void()> cancel) {
-    bool invoke = false;
+    std::function<void()> immediate;
     {
         std::lock_guard lock{m_mutex};
         if (m_bound || m_finishing) {
@@ -23,13 +23,13 @@ void UpdateCompletion::BindCancellation(std::function<void()> cancel) {
         }
         m_bound = true;
         if (m_stopping) {
-            invoke = true;
+            immediate = std::move(cancel);
         } else {
             m_cancel = std::move(cancel);
         }
     }
-    if (invoke && cancel) {
-        cancel();
+    if (immediate) {
+        immediate();
     }
 }
 void UpdateCompletion::RequestStop() noexcept {
@@ -61,7 +61,7 @@ void UpdateCompletion::Finish(UpdateOutcome outcome) noexcept {
     cancel = {};
     if (callback) {
         try {
-            callback(outcome);
+            callback(std::move(outcome));
         } catch (...) {
         }
     }

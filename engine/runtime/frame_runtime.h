@@ -49,11 +49,12 @@ public:
     // May return before simulation completes. Bind cancellation before publication and Finish after all consumers.
     virtual void
     ScheduleUpdate(const FrameContext& frame, NCommon::TaskSystem&, std::shared_ptr<UpdateCompletion> completion) {
+        const auto ownedCompletion = std::move(completion);
         try {
             Update(frame);
-            completion->Finish();
+            ownedCompletion->Finish();
         } catch (...) {
-            completion->Finish({.Status = EUpdateStatus::FAILED, .Error = std::current_exception()});
+            ownedCompletion->Finish({.Status = EUpdateStatus::FAILED, .Error = std::current_exception()});
         }
     }
 

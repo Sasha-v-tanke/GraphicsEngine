@@ -452,7 +452,8 @@ private:
         try {
             record->Executor = m_taskSystem.get();
             record->Completion = std::make_shared<NRuntime::UpdateCompletion>(
-                    [this, frame, key, lifetime = std::weak_ptr<bool>{m_runLifetime}](NRuntime::UpdateOutcome outcome) {
+                    [this, frame, key, lifetime = std::weak_ptr<bool>{m_runLifetime}](
+                            const NRuntime::UpdateOutcome& outcome) {
                         const auto pin = lifetime.lock();
                         if (pin) {
                             FinishUpdate(frame, key, outcome);
@@ -518,7 +519,7 @@ private:
         }
     }
 
-    void FinishUpdate(NController::FrameHandle frame, FrameKey key, NRuntime::UpdateOutcome outcome) noexcept {
+    void FinishUpdate(NController::FrameHandle frame, FrameKey key, const NRuntime::UpdateOutcome& outcome) noexcept {
         try {
             {
                 std::lock_guard lock{m_mutex};
