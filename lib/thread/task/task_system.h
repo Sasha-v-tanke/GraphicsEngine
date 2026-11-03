@@ -161,8 +161,9 @@ public:
 
     // Open groups count as outstanding work. Seal or cancel every created group before WaitIdle.
     TaskGroupHandle CreateTaskGroup();
-    TaskHandle
-    SubmitToGroup(const TaskGroupHandle& group, TaskFunction function, std::span<const TaskHandle> dependencies = {});
+    TaskHandle SubmitToGroup(const TaskGroupHandle& group,
+                             TaskFunction function,
+                             std::span<const TaskHandle> dependencies = std::span<const TaskHandle>());
     TaskHandle SubmitAfterGroup(const TaskGroupHandle& group, TaskFunction function);
     void SealGroup(const TaskGroupHandle& group);
     void CancelGroup(const TaskGroupHandle& group);
