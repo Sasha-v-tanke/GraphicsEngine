@@ -13,10 +13,12 @@
 #include <graphics/backend/completion_access.h>
 #include <graphics/pipeline_key.h>
 #include <graphics/vulkan/clear_present_path.h>
+#include <graphics/vulkan/descriptor_manager.h>
 #include <graphics/vulkan/glfw_surface.h>
 #include <graphics/vulkan/memory.h>
 #include <graphics/vulkan/pipeline_manager.h>
 #include <graphics/vulkan/rendering_scope.h>
+#include <graphics/vulkan/upload_manager.h>
 #include <lib/common/error/exception.h>
 #include <math/transform.h>
 #include <renderer/execution_validation.h>
@@ -31,16 +33,16 @@ namespace {
 NVulkan::VulkanInstanceConfig InstanceConfig(const NGraphics::PresentationConfig& config) {
     if (config.MaxActiveFrames == 0 || config.MaxActiveFrames > std::numeric_limits<std::uint32_t>::max())
         Invalid("Invalid active frame count");
-    return {.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions(),
-            .ValidationMode = config.RequireValidation ? NVulkan::EValidationMode::Required
-                                                       : NVulkan::EValidationMode::EnabledIfAvailable,
-            .EnableDebugUtils = true,
-            .DebugMessageHandler = [handler =
-                                            config.ValidationErrorHandler](const NVulkan::VulkanDebugMessage& message) {
-                if (handler && (message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
-                    handler(message.Message);
-                }
-            }};
+    NVulkan::VulkanInstanceConfig result{};
+    result.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
+    result.ValidationMode = config.RequireValidation ? NVulkan::EValidationMode::Required
+                                                     : NVulkan::EValidationMode::EnabledIfAvailable;
+    result.EnableDebugUtils = true;
+    result.DebugMessageHandler = [handler = config.ValidationErrorHandler](const NVulkan::VulkanDebugMessage& message) {
+        if (handler && (message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0)
+            handler(message.Message);
+    };
+    return result;
 }
 
 NGraphics::EPixelFormat ColorFormat(VkFormat format) {
@@ -96,6 +98,7 @@ public:
         , Device(Physical)
         , Memory(Instance.GetHandle(), Physical.Handle, Device, States)
         , Pipelines(Device, Physical)
+        , Descriptors(Device.GetHandle(), Device.GetDescriptorLimits())
         , Swapchain(Device, Physical, Surface.GetHandle(), window.GetFramebufferSize())
         , Path(Device, Swapchain, config.MaxActiveFrames)
         , MaxFrames(config.MaxActiveFrames) {
@@ -110,6 +113,27 @@ public:
         NResources::ResourceLease<NGraphics::Material> Lease;
         NGraphics::PipelineKey Key;
         const NVulkan::VulkanGraphicsPipeline* Pipeline;
+        NVulkan::VulkanDescriptorSetLease Descriptors;
+    };
+
+    struct Image {
+        VkDevice Device = VK_NULL_HANDLE;
+        NResources::ResourceIdentity Identity;
+        NResources::ResourceLease<NResources::ImageData> Lease;
+        NVulkan::VulkanImageAllocation Allocation;
+        VkImageView View = VK_NULL_HANDLE;
+        ~Image() {
+            vkDestroyImageView(Device, View, nullptr);
+        }
+    };
+    struct Sampler {
+        VkDevice Device = VK_NULL_HANDLE;
+        NResources::ResourceIdentity Identity;
+        NResources::ResourceLease<NGraphics::SamplerDescriptor> Lease;
+        VkSampler Handle = VK_NULL_HANDLE;
+        ~Sampler() {
+            vkDestroySampler(Device, Handle, nullptr);
+        }
     };
 
     // Path is destroyed first and drains GPU/WSI before prepared resources disappear.
@@ -120,6 +144,10 @@ public:
     NVulkan::VulkanResourceStateTracker States;
     NVulkan::VulkanMemoryAllocator Memory;
     NVulkan::VulkanPipelineManager Pipelines;
+    std::vector<std::unique_ptr<Image>> Images;
+    std::vector<std::unique_ptr<Sampler>> Samplers;
+    // All sets and their resources stay immutable and alive until Path drains.
+    NVulkan::VulkanDescriptorManager Descriptors;
     std::vector<Mesh> Meshes;
     std::vector<Material> Materials;
     NVulkan::VulkanSwapchain Swapchain;
@@ -179,7 +207,9 @@ public:
                     return FindMaterial(draw).Key.GetDescriptor();
                 });
         const VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+                                             .pNext = nullptr,
+                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                             .pInheritanceInfo = nullptr};
         Check(vkBeginCommandBuffer(command, &begin));
         NVulkan::VulkanResourceStateTracker tracker;
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -193,20 +223,33 @@ public:
             VkClearColorValue clear{};
             std::copy(color.ClearColor.begin(), color.ClearColor.end(), clear.float32);
             const NVulkan::VulkanColorAttachment attachment{view, Load(color.Load), Store(color.Store), clear};
-            const NVulkan::VulkanRenderingScope rendering{command, {.extent = plan.Extent}, std::span{&attachment, 1}};
+            const NVulkan::VulkanRenderingScope rendering{command,
+                                                          {.offset = {}, .extent = plan.Extent},
+                                                          std::span{&attachment, 1}};
             const VkViewport viewport{0,
                                       0,
                                       static_cast<float>(plan.Extent.width),
                                       static_cast<float>(plan.Extent.height),
                                       0,
                                       1};
-            const VkRect2D scissor{.extent = plan.Extent};
+            const VkRect2D scissor{.offset = {}, .extent = plan.Extent};
             vkCmdSetViewport(command, 0, 1, &viewport);
             vkCmdSetScissor(command, 0, 1, &scissor);
             for (const auto& draw: pass.Description.DrawCommands) {
                 const auto& mesh = FindMesh(draw);
                 const auto& material = FindMaterial(draw);
                 vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, material.Pipeline->GetHandle());
+                if (material.Descriptors.IsValid()) {
+                    VkDescriptorSet set = material.Descriptors.GetSet();
+                    vkCmdBindDescriptorSets(command,
+                                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            material.Pipeline->GetLayout(),
+                                            0,
+                                            1,
+                                            &set,
+                                            0,
+                                            nullptr);
+                }
                 VkBuffer vertex = mesh.Vertices.GetBuffer();
                 const VkDeviceSize offset = 0;
                 vkCmdBindVertexBuffers(command, 0, 1, &vertex, &offset);
@@ -276,16 +319,19 @@ void GraphPresentation::PrepareMesh(NResources::ResourceLease<NResources::MeshDa
 void GraphPresentation::PrepareMaterial(NResources::ResourceLease<NGraphics::Material> material,
                                         NGraphics::GraphicsPipelineDescriptor pipeline) {
     m_impl->CheckThread();
-    if (!material.IsValid() || !material->GetLayout().empty() || !material->GetBindings().empty() ||
-        (pipeline.VertexPushConstantBytes != 0 && pipeline.VertexPushConstantBytes != 64) ||
+    if (!material.IsValid() || (pipeline.VertexPushConstantBytes != 0 && pipeline.VertexPushConstantBytes != 64) ||
         pipeline.Samples != NGraphics::ESampleCount::X1 ||
         pipeline.DepthAttachmentFormat != NGraphics::EPixelFormat::UNDEFINED ||
         pipeline.Topology != NGraphics::EPrimitiveTopology::TRIANGLE_LIST ||
         pipeline.VertexLayout.Bindings !=
                 std::vector<NGraphics::VertexBindingDescriptor>{
                         {0, sizeof(NResources::MeshVertex), NGraphics::EVertexInputRate::VERTEX}}) {
-        Invalid("Unsupported R3 material/pipeline layout");
+        Invalid("Unsupported material/pipeline layout");
     }
+    const std::vector layout(material->GetLayout().begin(), material->GetLayout().end());
+    if (!pipeline.MaterialBindings.empty() && pipeline.MaterialBindings != layout)
+        Invalid("Pipeline bindings differ from the material layout");
+    pipeline.MaterialBindings = layout;
     NGraphics::PipelineKey key{std::move(pipeline)};
     for (const auto& entry: m_impl->Materials) {
         if (entry.Lease.GetResource() == material.GetResource() && entry.Lease.GetVersion() == material.GetVersion()) {
@@ -295,7 +341,100 @@ void GraphPresentation::PrepareMaterial(NResources::ResourceLease<NGraphics::Mat
         }
     }
     const auto& prepared = m_impl->Pipelines.Prepare(key);
-    m_impl->Materials.push_back({std::move(material), std::move(key), &prepared});
+    std::vector<NVulkan::VulkanResolvedMaterialBinding> bindings;
+    for (const auto& binding: material->GetBindings()) {
+        NVulkan::VulkanResolvedMaterialBinding resolved{};
+        resolved.Material = binding;
+        if (binding.Type == NGraphics::EMaterialBindingType::UniformBuffer ||
+            binding.Type == NGraphics::EMaterialBindingType::StorageBuffer)
+            Invalid("Graph presentation does not prepare material buffers yet");
+        if (binding.Type != NGraphics::EMaterialBindingType::Sampler) {
+            const auto& identity = binding.Type == NGraphics::EMaterialBindingType::CombinedImageSampler
+                                         ? binding.CombinedImageSampler.Image
+                                         : binding.Image.Resource;
+            const auto found = std::find_if(m_impl->Images.rbegin(), m_impl->Images.rend(), [&](const auto& image) {
+                return image->Identity == identity;
+            });
+            if (found == m_impl->Images.rend())
+                Invalid("Material image was not prepared");
+            resolved.Image = {(*found)->View, (*found)->Lease.GetVersion()};
+        }
+        if (binding.Type != NGraphics::EMaterialBindingType::SampledImage) {
+            const auto& identity = binding.Type == NGraphics::EMaterialBindingType::CombinedImageSampler
+                                         ? binding.CombinedImageSampler.Sampler
+                                         : binding.Sampler.Resource;
+            const auto found = std::find_if(m_impl->Samplers.rbegin(),
+                                            m_impl->Samplers.rend(),
+                                            [&](const auto& sampler) { return sampler->Identity == identity; });
+            if (found == m_impl->Samplers.rend())
+                Invalid("Material sampler was not prepared");
+            resolved.Sampler = {(*found)->Handle, (*found)->Lease.GetVersion()};
+        }
+        bindings.push_back(resolved);
+    }
+    NVulkan::VulkanDescriptorSetLease descriptors;
+    if (!layout.empty())
+        descriptors = m_impl->Descriptors.Acquire({layout, bindings});
+    m_impl->Materials.push_back({std::move(material), std::move(key), &prepared, descriptors});
+}
+
+void GraphPresentation::PrepareImage(NResources::ResourceManager& resources,
+                                     NResources::ResourceHandle<NResources::ImageData> handle) {
+    m_impl->CheckThread();
+    auto lease = resources.TryAcquire(handle);
+    if (!lease || resources.GetIdentity(handle).GetResourceClass() != "image")
+        Invalid("Image is not ready or has the wrong resource class");
+    const auto width = (*lease)->GetWidth();
+    const auto height = (*lease)->GetHeight();
+    if (width == 0 || height == 0 || (*lease)->GetFormat() != NResources::EImagePixelFormat::RGBA8 ||
+        static_cast<std::uint64_t>(width) * height > std::numeric_limits<std::size_t>::max() / 4 ||
+        (*lease)->GetPixels().size() != static_cast<std::size_t>(width) * height * 4)
+        Invalid("Invalid prepared RGBA8 image");
+    for (const auto& image: m_impl->Images) {
+        if (image->Lease.GetResource() == handle && image->Lease.GetVersion() == lease->GetVersion())
+            return;
+    }
+    auto image = std::make_unique<Impl::Image>();
+    image->Device = m_impl->Device.GetHandle();
+    image->Identity = resources.GetIdentity(handle);
+    image->Lease = std::move(*lease);
+    image->Allocation = NVulkan::CreateVulkanImage(
+            m_impl->Memory,
+            {.Extent = {width, height, 1},
+             .Format = NGraphics::EImageFormat::RGBA8_UNORM,
+             .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+             .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead)});
+    // This startup upload owns a separate timeline. Frame completion remains Path-owned.
+    NVulkan::VulkanSubmissionManager submissions{m_impl->Device};
+    NVulkan::VulkanUploadManager uploads{m_impl->Device, m_impl->Memory, submissions, m_impl->States};
+    const auto completion = uploads.UploadImage(image->Allocation, std::as_bytes(std::span{image->Lease->GetPixels()}));
+    submissions.Wait(completion, std::numeric_limits<std::uint64_t>::max());
+    uploads.ReleaseCompleted();
+    NGraphics::ImageViewDescriptor view{};
+    view.Aspects = NGraphics::ImageAspect(NGraphics::EImageAspect::Color);
+    image->View = m_impl->Device.CreateImageView(image->Allocation.GetImage(), view);
+    m_impl->Images.push_back(std::move(image));
+}
+
+void GraphPresentation::PrepareSampler(NResources::ResourceManager& resources,
+                                       NResources::ResourceHandle<NGraphics::SamplerDescriptor> handle) {
+    m_impl->CheckThread();
+    auto lease = resources.TryAcquire(handle);
+    if (!lease || resources.GetIdentity(handle).GetResourceClass() != "sampler")
+        Invalid("Sampler is not ready or has the wrong resource class");
+    const auto& desc = **lease;
+    if (!std::isfinite(desc.MinLod) || !std::isfinite(desc.MaxLod) || desc.MinLod < 0 || desc.MaxLod < desc.MinLod)
+        Invalid("Invalid sampler LOD range");
+    for (const auto& sampler: m_impl->Samplers) {
+        if (sampler->Lease.GetResource() == handle && sampler->Lease.GetVersion() == lease->GetVersion())
+            return;
+    }
+    auto sampler = std::make_unique<Impl::Sampler>();
+    sampler->Device = m_impl->Device.GetHandle();
+    sampler->Identity = resources.GetIdentity(handle);
+    sampler->Lease = std::move(*lease);
+    sampler->Handle = m_impl->Device.CreateSampler(desc);
+    m_impl->Samplers.push_back(std::move(sampler));
 }
 
 NGraphics::EPixelFormat GraphPresentation::GetColorFormat() const {

@@ -8,6 +8,7 @@
 #include <vector>
 #include <vulkan.h>
 
+#include <GraphicsEngine/graphics/vulkan/descriptor_manager.h>
 #include <GraphicsEngine/graphics/vulkan/instance.h>
 
 namespace NVulkan {
@@ -41,6 +42,7 @@ struct VulkanPhysicalDeviceCapabilities {
     std::array<std::uint8_t, VK_UUID_SIZE> DeviceUuid{};
     EVulkanPhysicalDeviceType Type = EVulkanPhysicalDeviceType::OTHER;
     std::uint32_t MaxImageDimension2D = 0;
+    VulkanDescriptorLimits DescriptorLimits;
     std::vector<std::string> Extensions;
     VulkanPhysicalDeviceFeatures Features;
     std::vector<VulkanQueueFamilyCapabilities> QueueFamilies;

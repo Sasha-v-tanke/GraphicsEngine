@@ -67,13 +67,19 @@ struct Scene {
         desc.ColorBlendAttachments.resize(1);
         return desc;
     }
+    void Prepare(NRenderer::GraphPresentation& presentation) {
+        presentation.PrepareMesh(std::move(*Resources.TryAcquire(Mesh)));
+        presentation.PrepareMaterial(std::move(*Resources.TryAcquire(Material)),
+                                     Pipeline(presentation.GetColorFormat()));
+    }
 };
 
 // One Engine owns admission, frame storage and CPU execution. The application
 // thread pumps WSI; workers publish only immutable plans and completion promises.
+template<typename SceneType>
 class Runtime final: public NEngine::NRuntime::IFrameRuntime {
 public:
-    Runtime(Scene& scene, NRenderer::GraphPresentation& presentation)
+    Runtime(SceneType& scene, NRenderer::GraphPresentation& presentation)
         : m_scene(scene)
         , m_presentation(presentation) {
     }
@@ -162,7 +168,7 @@ private:
         NGraphics::CompletionPoint Completion;
         std::promise<void> Done;
     };
-    Scene& m_scene;
+    SceneType& m_scene;
     NRenderer::GraphPresentation& m_presentation;
     std::mutex m_mutex;
     std::map<std::uint64_t, std::unique_ptr<Pending>> m_queued;
@@ -173,6 +179,7 @@ private:
 struct Result {
     std::uint64_t Submitted, Completed, Recycled;
 };
+template<typename SceneType = Scene>
 inline Result Run(std::size_t activeFrames,
                   std::size_t workers,
                   std::uint64_t frames,
@@ -183,14 +190,12 @@ inline Result Run(std::size_t activeFrames,
     config.Title = "World → Renderer → RenderGraph → Vulkan";
     config.Size = {480, 360};
     NWindow::Window window{config};
-    Scene scene;
+    SceneType scene;
     auto presentationConfig = validation;
     presentationConfig.MaxActiveFrames = activeFrames;
     NRenderer::GraphPresentation presentation{window, presentationConfig};
-    presentation.PrepareMesh(std::move(*scene.Resources.TryAcquire(scene.Mesh)));
-    presentation.PrepareMaterial(std::move(*scene.Resources.TryAcquire(scene.Material)),
-                                 scene.Pipeline(presentation.GetColorFormat()));
-    auto runtime = std::make_unique<Runtime>(scene, presentation);
+    scene.Prepare(presentation);
+    auto runtime = std::make_unique<Runtime<SceneType>>(scene, presentation);
     auto* observer = runtime.get();
     auto engine = NEngine::NRuntime::EngineFactory::Create({activeFrames, workers}, std::move(runtime));
     engine->Start();

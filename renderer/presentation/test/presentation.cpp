@@ -4,9 +4,80 @@
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
 #include <samples/sample_5_triangle/scenario.h>
+#include <samples/sample_6_textured/scenario.h>
 #include <tests/common/test_error.h>
 
 namespace {
+struct UnloadedTextureScene: NTextured::Scene {
+    void Prepare(NRenderer::GraphPresentation& presentation) {
+        NTextured::Scene::Prepare(presentation);
+        Resources.RequestUnload(Image);
+        Resources.CompleteUnload(Image);
+        Resources.Forget(Image);
+        Resources.RequestUnload(Sampler);
+        Resources.CompleteUnload(Sampler);
+        Resources.Forget(Sampler);
+    }
+};
+
+TEST(GraphPresentation, TexturedWorldGraphRetainsResourcesAcrossWorkerAndSlotMatrix) {
+    std::atomic<int> errors{0};
+    const NGraphics::PresentationConfig config{.RequireValidation = true,
+                                               .ValidationErrorHandler = [&](std::string_view message) {
+                                                   ++errors;
+                                                   std::cerr << message << '\n';
+                                               }};
+    try {
+        for (std::size_t workers: {1U, 3U}) {
+            for (std::size_t slots: {1U, 3U}) {
+                const auto result = NTriangle::Run<UnloadedTextureScene>(slots, workers, 24, true, config);
+                EXPECT_EQ(result.Submitted, 24U);
+                EXPECT_EQ(result.Submitted, result.Completed);
+                EXPECT_EQ(result.Completed, result.Recycled);
+            }
+        }
+    } catch (const NCommon::Exception& error) {
+        if (error.code() == NCommon::EError::UNSUPPORTED) {
+            EXPECT_EQ(errors.load(), 0);
+            GTEST_SKIP() << error.GetMessage();
+        }
+        throw;
+    }
+    EXPECT_EQ(errors.load(), 0);
+}
+
+TEST(GraphPresentation, RejectsMissingSampledResourcesBeforeRecording) {
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{NWindow::WindowConfig{NWindow::EWindowType::GLFW}};
+        NRenderer::GraphPresentation presentation{window, {.RequireValidation = true}};
+        NTextured::Scene scene;
+        const auto pipeline = scene.Pipeline(presentation.GetColorFormat());
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+            presentation.PrepareMaterial(std::move(*scene.Resources.TryAcquire(scene.Material)), pipeline);
+        });
+        presentation.PrepareImage(scene.Resources, scene.Image);
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+            presentation.PrepareMaterial(std::move(*scene.Resources.TryAcquire(scene.Material)), pipeline);
+        });
+        presentation.PrepareSampler(scene.Resources, scene.Sampler);
+        presentation.PrepareMaterial(std::move(*scene.Resources.TryAcquire(scene.Material)), pipeline);
+        // A duplicate prepare preserves the frozen version and its compatible pipeline.
+        presentation.PrepareMaterial(std::move(*scene.Resources.TryAcquire(scene.Material)), pipeline);
+        auto incompatible = pipeline;
+        incompatible.MaterialBindings = {{1,
+                                          NGraphics::EMaterialBindingType::SampledImage,
+                                          NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Fragment)}};
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+            presentation.PrepareMaterial(std::move(*scene.Resources.TryAcquire(scene.Material)), incompatible);
+        });
+    } catch (const NCommon::Exception& error) {
+        if (error.code() == NCommon::EError::UNSUPPORTED)
+            GTEST_SKIP() << error.GetMessage();
+        throw;
+    }
+}
+
 TEST(GraphPresentation, IndexedTriangleThroughWorldGraphAndEngineWithResizeAndMultipleSlots) {
     std::atomic<int> errors{0};
     const NGraphics::PresentationConfig config{.RequireValidation = true,
