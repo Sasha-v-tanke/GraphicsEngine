@@ -76,6 +76,38 @@ private:
     std::shared_ptr<State> m_state;
 
     friend class TaskSystem;
+    friend class TaskContext;
+};
+
+enum class ETaskGroupStatus {
+    OPEN,
+    SEALED,
+    COMPLETED,
+    FAILED,
+    CANCELLED,
+};
+
+class TaskGroupHandle final {
+public:
+    TaskGroupHandle() = default;
+    [[nodiscard]] bool IsValid() const noexcept {
+        return m_id != 0 && m_state != nullptr;
+    }
+    [[nodiscard]] std::uint64_t GetId() const noexcept {
+        return m_id;
+    }
+    [[nodiscard]] friend bool operator==(const TaskGroupHandle&, const TaskGroupHandle&) noexcept = default;
+
+private:
+    struct State;
+    TaskGroupHandle(std::uint64_t id, std::shared_ptr<State> state) noexcept
+        : m_id(id)
+        , m_state(std::move(state)) {
+    }
+    std::uint64_t m_id = 0;
+    std::shared_ptr<State> m_state;
+    friend class TaskSystem;
+    friend class TaskContext;
 };
 
 class TaskContext final {
@@ -89,6 +121,10 @@ public:
     [[nodiscard]] TaskHandle GetTask() const noexcept {
         return m_task;
     }
+
+    // Inherits this invocation's group; descendants may spawn after SealGroup.
+    TaskHandle SpawnInGroup(TaskFunction function, std::span<const TaskHandle> dependencies = {});
+    [[nodiscard]] bool IsGroupCancellationRequested() const;
 
     TaskHandle Spawn(TaskFunction function);
     TaskHandle Spawn(TaskFunction function, std::span<const TaskHandle> dependencies);
@@ -105,6 +141,7 @@ private:
     WorkerIndex m_workerIndex{0};
 
     friend class TaskSystem;
+    friend class TaskContext;
 };
 
 class TaskSystem final: private NonCopyable {
@@ -120,6 +157,18 @@ public:
     TaskHandle Submit(TaskFunction function, std::span<const TaskHandle> dependencies = {}) {
         return SubmitImpl(function, dependencies);
     }
+
+    // Open groups count as outstanding work. Seal or cancel every created group before WaitIdle.
+    TaskGroupHandle CreateTaskGroup();
+    TaskHandle
+    SubmitToGroup(const TaskGroupHandle& group, TaskFunction function, std::span<const TaskHandle> dependencies = {});
+    TaskHandle SubmitAfterGroup(const TaskGroupHandle& group, TaskFunction function);
+    void SealGroup(const TaskGroupHandle& group);
+    void CancelGroup(const TaskGroupHandle& group);
+    // Host-only; terminal observation includes retirement of every member's execution captures.
+    void WaitGroup(const TaskGroupHandle& group);
+    [[nodiscard]] ETaskGroupStatus GetGroupStatus(const TaskGroupHandle& group) const;
+    [[nodiscard]] std::optional<ErrorInfo> GetGroupError(const TaskGroupHandle& group) const;
 
     [[nodiscard]] ETaskStatus GetStatus(const TaskHandle& task) const;
     [[nodiscard]] std::optional<ErrorInfo> GetError(const TaskHandle& task) const;
@@ -149,7 +198,9 @@ private:
             , RemainingDependencies(other.RemainingDependencies.load(std::memory_order_relaxed))
             , Finalizing(other.Finalizing)
             , PendingStatus(other.PendingStatus)
-            , Error(std::move(other.Error)) {
+            , Error(std::move(other.Error))
+            , Group(std::move(other.Group))
+            , GroupGateId(other.GroupGateId) {
             Function.swap(other.Function);
         }
         Task& operator=(Task&& other) noexcept {
@@ -166,6 +217,8 @@ private:
             Finalizing = other.Finalizing;
             PendingStatus = other.PendingStatus;
             Error = std::move(other.Error);
+            Group = std::move(other.Group);
+            GroupGateId = other.GroupGateId;
             return *this;
         }
 
@@ -180,6 +233,8 @@ private:
         bool Finalizing = false;
         ETaskStatus PendingStatus = ETaskStatus::CREATED;
         std::optional<ErrorInfo> Error;
+        std::shared_ptr<TaskGroupHandle::State> Group;
+        std::uint64_t GroupGateId = 0;
     };
 
     struct ReadyQueue {
@@ -222,10 +277,14 @@ private:
     struct ReadyScheduler {
         std::vector<std::unique_ptr<ReadyQueue>> WorkerQueues;
         ReadyQueue InjectedQueue;
+        std::mutex GroupReadyMutex;
+        std::shared_ptr<TaskHandle::State> GroupReadyFirst;
+        TaskHandle::State* GroupReadyLast = nullptr;
         std::counting_semaphore<> Wakeups{0};
         std::atomic_size_t ReadyTaskCount = 0;
 
         void Initialize(std::size_t workerCount);
+        void PublishGroupReadyTask(const std::shared_ptr<TaskHandle::State>& state) noexcept;
         void PublishReadyTask(TaskSystem& owner, std::shared_ptr<TaskHandle::State> state);
         [[nodiscard]] std::shared_ptr<TaskHandle::State> TryPopReadyTask(WorkerIndex workerIndex);
         [[nodiscard]] bool HasReadyTasks() const noexcept;
@@ -286,12 +345,21 @@ private:
     void StopWorkers() noexcept;
     void WorkerLoop(WorkerIndex workerIndex) noexcept;
 
-    TaskHandle SubmitImpl(TaskFunction& function, std::span<const TaskHandle> dependencies);
+    TaskHandle SubmitImpl(TaskFunction& function,
+                          std::span<const TaskHandle> dependencies,
+                          const std::shared_ptr<TaskGroupHandle::State>& group = {},
+                          bool descendant = false);
+    void ValidateGroup(const TaskGroupHandle& group) const;
+    void QueueGroupCompletionLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept;
+    void RetireGroupMemberLocked(const std::shared_ptr<TaskHandle::State>& state, FinalizationBatch& batch) noexcept;
+    void CloseGroupLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept;
+    void PublishGroupGateLocked(TaskHandle::State& state, FinalizationBatch& batch) noexcept;
 
 private:
     mutable std::mutex m_mutex;
     const std::size_t m_workerCount;
     TaskRegistry m_registry;
+    std::unordered_map<std::uint64_t, std::shared_ptr<TaskGroupHandle::State>> m_groups;
     ReadyScheduler m_readyScheduler;
     TaskLifetime m_lifetime;
     std::vector<std::thread> m_workers;
