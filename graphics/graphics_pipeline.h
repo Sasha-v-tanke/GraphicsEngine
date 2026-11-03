@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 
+#include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/graphics/shader.h>
 
 namespace NGraphics {
@@ -185,6 +186,8 @@ enum class ESampleCount : std::uint32_t {
 struct GraphicsPipelineDescriptor {
     // Optional vertex-stage push constants at offset zero, in bytes (multiple of four, <=128).
     std::uint32_t VertexPushConstantBytes = 0;
+    // Material bindings occupy set zero; native layouts remain backend-owned.
+    std::vector<MaterialBindingLayoutEntry> MaterialBindings;
     std::vector<Shader> Shaders;
     VertexLayoutDescriptor VertexLayout;
     EPrimitiveTopology Topology = EPrimitiveTopology::TRIANGLE_LIST;

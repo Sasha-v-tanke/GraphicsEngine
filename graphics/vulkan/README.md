@@ -72,46 +72,24 @@
 
 ## Descriptor Manager
 
-`VulkanDescriptorManager` is backend-only descriptor infrastructure. It owns the
-descriptor pool, layout-specific set allocation and an immutable cache for
-material bindings resolved by the Vulkan backend. Public `Material` continues to
-store only backend-independent `ResourceIdentity` values and ranges; it never
-stores `VkDescriptorSet`, `VkDescriptorSetLayout` or native resource handles.
+`VulkanDescriptorManager` владеет pool, раскладками и immutable cache наборов привязок.
+Ключ включает layout, logical identity, версию ресурса, native representation, диапазон
+буфера и layout изображения. Повторный запрос переиспользует set; новая версия получает
+новый set. Публичный `Material` хранит только нейтральные identities и диапазоны.
 
-Descriptor cache keys are built from the material binding layout, logical
-resource identities, resolved resource versions, descriptor-relevant concrete
-Vulkan handles, buffer ranges and image layout. A repeated compatible request
-returns the cached set instead of updating or freeing an in-flight descriptor
-set. A hot-reloaded resource version or recreated Vulkan representation receives
-a new descriptor set while old sets remain valid for already submitted work.
+Запросы проверяются до записи: соответствие layout/type, дубликаты, выравнивание и пределы
+буферов. Arrays пока отклоняются. Ошибка allocation/cache insertion освобождает частичные
+объекты. Доступ к pool/cache и snapshot telemetry allocation/hit/miss сериализован.
 
-Buffer bindings are checked against alignment and range limits captured from the
-selected `VkPhysicalDeviceProperties::limits` before `vkUpdateDescriptorSets()`.
-Descriptor requests are validated as a backend boundary: every write must match a
-declared layout binding, descriptor types must agree, duplicate slots are
-rejected and binding arrays remain unsupported until the public material contract
-adds them.
+Кэш живёт до уничтожения manager, без перезаписи in-flight sets. Внешний владелец обязан
+удерживать device и связанные ресурсы до фактического completion. `RetainUntil` принимает
+только собственные leases и completion одного timeline; `ReleaseCompleted` получает только
+наблюдённые значения GPU. Альтернатива — доказанный drain всех использований до уничтожения
+manager, как в `GraphPresentation`. Frame×worker arenas и эвикция могут развиваться внутри
+backend без изменения `Material`.
 
-`VulkanDescriptorManager` serializes access to its cache, descriptor pool,
-descriptor writes, telemetry and in-flight retention state. The current policy is
-a single backend-owned manager with internal host synchronization; future
-frame/worker arenas can replace this without changing public `Material`. The
-manager can retain descriptor use until a submission completion value is reported
-and refuses destruction while retained sets are still in flight. Retention accepts
-only leases issued by that manager. Completion values must come from one queue
-timeline; callers report observed GPU completion, not frame numbers. The manager
-does not own bound resources: the device and buffer/image/view/sampler allocations
-must outlive all submitted uses and the cached sets. Failed cache insertion or
-set allocation rolls back newly created native objects.
-
-This is descriptor infrastructure only. The current main pipeline layout is
-empty; Vulkan execution of Renderer DrawCommandData and descriptor binding are
-not integrated here. FEATURE-0067's textured-draw acceptance criterion and the
-WorkerCount/MaxActiveFrames matrix remain open until that execution path exists.
-
-Telemetry reports descriptor allocations, cache hits and misses. It is intended
-for backend diagnostics and future frame-resource tuning, not for public
-renderer API decisions.
+Textured draw, совместимые pipeline layouts, startup upload и lifetime подготовленных
+ресурсов описаны в [исполнении графа R3–R4](../../renderer/graph_execution.md).
 
 ## Dispatch
 
@@ -202,7 +180,7 @@ renderer API decisions.
 
 Ключи удерживают снимки шейдеров и после проверки хеша сравнивают полные дескрипторы. Порядок объявления стадий шейдеров, привязок вершин и атрибутов не влияет на идентичность. Форматы, порядок целевых изображений для смешивания, растеризация/глубина, топология, число образцов, точки входа и содержимое артефактов влияют.
 
-Текущий конвейер использует одну фиксированную пустую раскладку и динамические область просмотра и отсечение, как и `VulkanGraphicsPipeline`. Новые раскладки дескрипторов, передаваемые непосредственно константы или другая политика динамических состояний должны добавляться одновременно в дескриптор и ключ, без раскрытия физических идентификаторов в `Renderer`. Семантика существующего реестра `Graphics` для создания и уничтожения не меняется. `FEATURE-0031` подключает кэш к выполнению графа, не добавляя операции ресурсов в профиль отображения только с очисткой.
+Конвейер использует `MaterialBindings` для set zero, `VertexPushConstantBytes` для вершинных констант и динамические область просмотра и отсечение. Эти контракты входят в дескриптор и ключ без раскрытия физических идентификаторов в `Renderer`. Семантика существующего реестра `Graphics` для создания и уничтожения не меняется. `FEATURE-0031` подключает кэш к выполнению графа, не добавляя операции ресурсов в профиль отображения только с очисткой.
 
 Менеджер владеет одним `VkPipelineCache` и всеми физическими конвейерами и раскладками без вытеснения. Конкурентные `Prepare` сериализуют поиск, создание, публикацию и доступ драйвера к кэшу. Ошибочное создание не публикует запись, следующая подготовка может повторить попытку. `Prepare` может выполняться во внешнем исполнителе загрузки для предварительной подготовки; `FindReady` сейчас использует тот же мьютекс кэша, поэтому в исходной реализации лучше подготовить конвейеры до кадров. В горячем пути можно хранить устойчивые указатели, не хешируя повторно дескрипторы и не конкурируя с подготовкой.
 

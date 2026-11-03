@@ -4,10 +4,13 @@
 #include <memory>
 
 #include <GraphicsEngine/graphics/frame_submission.h>
+#include <GraphicsEngine/graphics/image.h>
 #include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/graphics/presentation.h>
 #include <GraphicsEngine/renderer/render_graph.h>
+#include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/mesh_data.h>
+#include <GraphicsEngine/resources/resource_manager.h>
 
 namespace NRenderer {
 
@@ -22,7 +25,15 @@ public:
     GraphPresentation& operator=(const GraphPresentation&) = delete;
 
     void PrepareMesh(NResources::ResourceLease<NResources::MeshData> mesh);
-    // Descriptor-free R3 baseline; bindings are resolved by the later R4 descriptor path.
+    // Startup-only preparation: immutable RGBA8 images and samplers stay pinned until
+    // shutdown. Image upload completes before publication; no waits occur in Render.
+    // Prepare referenced images/samplers before their material. Existing materials
+    // retain their original versions when a new resource version is prepared.
+    void PrepareImage(NResources::ResourceManager& resources, NResources::ResourceHandle<NResources::ImageData> handle);
+    void PrepareSampler(NResources::ResourceManager& resources,
+                        NResources::ResourceHandle<NGraphics::SamplerDescriptor> handle);
+    // SampledImage/Sampler/CombinedImageSampler bindings use immutable set zero.
+    // Buffer bindings remain available in DescriptorManager, outside this executor.
     // VertexPushConstantBytes=64 passes the column-major WorldTransform at offset zero;
     // zero means the shader does not consume a transform. Other ranges are rejected.
     void PrepareMaterial(NResources::ResourceLease<NGraphics::Material> material,

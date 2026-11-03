@@ -565,10 +565,10 @@ bool operator==(const GraphicsPipelineDescriptor& left, const GraphicsPipelineDe
                                               EqualOptionalShader(leftStages.Fragment, rightStages.Fragment)
                                     : EqualShaderSequence(left.Shaders, right.Shaders);
 
-    return shadersEqual && left.VertexPushConstantBytes == right.VertexPushConstantBytes &&
-           left.VertexLayout == right.VertexLayout && left.Topology == right.Topology &&
-           left.RasterState == right.RasterState && left.DepthState == right.DepthState &&
-           left.ColorAttachmentFormats == right.ColorAttachmentFormats &&
+    return shadersEqual && left.MaterialBindings == right.MaterialBindings &&
+           left.VertexPushConstantBytes == right.VertexPushConstantBytes && left.VertexLayout == right.VertexLayout &&
+           left.Topology == right.Topology && left.RasterState == right.RasterState &&
+           left.DepthState == right.DepthState && left.ColorAttachmentFormats == right.ColorAttachmentFormats &&
            left.ColorBlendAttachments == right.ColorBlendAttachments &&
            left.DepthAttachmentFormat == right.DepthAttachmentFormat && left.Samples == right.Samples;
 }
@@ -576,6 +576,12 @@ bool operator==(const GraphicsPipelineDescriptor& left, const GraphicsPipelineDe
 void ValidateGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& descriptor) {
     if (descriptor.VertexPushConstantBytes > 128 || descriptor.VertexPushConstantBytes % 4 != 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid vertex push constant range");
+    }
+    ValidateMaterialBindingLayout(descriptor.MaterialBindings);
+    for (const auto& binding: descriptor.MaterialBindings) {
+        if ((binding.Visibility & ShaderVisibility(EShaderVisibility::Compute)) != 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Graphics bindings cannot use compute visibility");
+        }
     }
     bool hasVertexShader = false;
     bool hasFragmentShader = false;
@@ -631,6 +637,13 @@ std::uint64_t HashGraphicsPipelineDescriptor(const GraphicsPipelineDescriptor& d
     const CanonicalShaderStages stages = GetCanonicalShaderStages(descriptor.Shaders);
 
     HashIntegral(hash, descriptor.VertexPushConstantBytes);
+    HashIntegral(hash, descriptor.MaterialBindings.size());
+    for (const auto& binding: descriptor.MaterialBindings) {
+        HashIntegral(hash, binding.Binding);
+        HashEnum(hash, binding.Type);
+        HashIntegral(hash, binding.Visibility);
+        HashIntegral(hash, binding.Count);
+    }
     HashIntegral(hash, stages.IsCanonical);
     HashIntegral(hash, descriptor.Shaders.size());
 

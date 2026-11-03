@@ -13,6 +13,10 @@
 
 namespace NVulkan {
 
+// Caller owns the returned layout, compatible with manager-created sets.
+[[nodiscard]] VkDescriptorSetLayout
+CreateVulkanDescriptorLayout(VkDevice device, std::span<const NGraphics::MaterialBindingLayoutEntry> layout);
+
 struct VulkanDescriptorTelemetry {
     std::uint64_t Allocations = 0;
     std::uint64_t CacheHits = 0;
@@ -104,7 +108,8 @@ public:
         return !m_inFlightCompletions.empty();
     }
 
-    [[nodiscard]] const VulkanDescriptorTelemetry& GetTelemetry() const noexcept {
+    [[nodiscard]] VulkanDescriptorTelemetry GetTelemetry() const noexcept {
+        const std::scoped_lock lock{m_mutex};
         return m_telemetry;
     }
 

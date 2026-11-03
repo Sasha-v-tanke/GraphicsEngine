@@ -121,10 +121,9 @@ VulkanDescriptorManager::DescriptorKey VulkanDescriptorManager::MakeKey(const Vu
     }
 
     for (const VulkanResolvedMaterialBinding& binding: request.Bindings) {
-        VulkanDescriptorManager::DescriptorKey::BindingEntry entry{
-                .Binding = binding.Material.Binding,
-                .Type = binding.Material.Type,
-        };
+        VulkanDescriptorManager::DescriptorKey::BindingEntry entry{};
+        entry.Binding = binding.Material.Binding;
+        entry.Type = binding.Material.Type;
 
         switch (binding.Material.Type) {
         case NGraphics::EMaterialBindingType::UniformBuffer:
@@ -234,7 +233,7 @@ VulkanDescriptorSetLease VulkanDescriptorManager::Acquire(const VulkanDescriptor
     }
 
     ++m_telemetry.CacheMisses;
-    const VkDescriptorSetLayout layout = GetOrCreateLayout(request.Layout);
+    VkDescriptorSetLayout layout = GetOrCreateLayout(request.Layout);
     VkDescriptorSet set = VK_NULL_HANDLE;
     try {
         set = AllocateSet(layout, request.Layout);
@@ -278,6 +277,12 @@ void VulkanDescriptorManager::ReleaseCompleted(std::uint64_t completedValue) noe
 
 VkDescriptorSetLayout
 VulkanDescriptorManager::GetOrCreateLayout(std::span<const NGraphics::MaterialBindingLayoutEntry> layout) {
+    return CreateVulkanDescriptorLayout(m_device, layout);
+}
+
+VkDescriptorSetLayout CreateVulkanDescriptorLayout(VkDevice device,
+                                                   std::span<const NGraphics::MaterialBindingLayoutEntry> layout) {
+    NGraphics::ValidateMaterialBindingLayout(layout);
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     bindings.reserve(layout.size());
 
@@ -300,7 +305,7 @@ VulkanDescriptorManager::GetOrCreateLayout(std::span<const NGraphics::MaterialBi
     };
 
     VkDescriptorSetLayout descriptorLayout = VK_NULL_HANDLE;
-    if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &descriptorLayout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorLayout) != VK_SUCCESS) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::OUT_OF_MEMORY, "Failed to create Vulkan descriptor set layout");
     }
 

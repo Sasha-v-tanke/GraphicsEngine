@@ -51,7 +51,7 @@ constexpr std::string_view SAMPLER_RESOURCE_CLASS = "sampler";
     return &*it;
 }
 
-void ValidateLayout(std::span<const MaterialBindingLayoutEntry> layout) {
+void ValidateLayoutImpl(std::span<const MaterialBindingLayoutEntry> layout) {
     for (std::size_t index = 0; index < layout.size(); ++index) {
         const MaterialBindingLayoutEntry& entry = layout[index];
 
@@ -143,6 +143,10 @@ void ValidateBindings(std::span<const MaterialBindingLayoutEntry> layout, std::s
 
 } // namespace
 
+void ValidateMaterialBindingLayout(std::span<const MaterialBindingLayoutEntry> layout) {
+    ValidateLayoutImpl(layout);
+}
+
 Material::Material(NResources::ResourceIdentity pipeline,
                    std::vector<MaterialBindingLayoutEntry> layout,
                    std::vector<MaterialBinding> bindings)
@@ -153,7 +157,7 @@ Material::Material(NResources::ResourceIdentity pipeline,
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Material pipeline identity is invalid");
     }
 
-    ValidateLayout(m_layout);
+    ValidateMaterialBindingLayout(m_layout);
     ValidateBindings(m_layout, m_bindings);
 }
 

@@ -41,7 +41,11 @@ struct MaterialBindingLayoutEntry {
     EMaterialBindingType Type = EMaterialBindingType::UniformBuffer;
     ShaderVisibilityFlags Visibility = 0;
     std::uint32_t Count = 1;
+
+    friend bool operator==(const MaterialBindingLayoutEntry&, const MaterialBindingLayoutEntry&) noexcept = default;
 };
+
+void ValidateMaterialBindingLayout(std::span<const MaterialBindingLayoutEntry> layout);
 
 struct MaterialBufferBinding {
     NResources::ResourceIdentity Resource;

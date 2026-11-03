@@ -1391,6 +1391,44 @@ TEST_F(GraphicsTest, RejectsForeignCompletionForDeferredGraphicsPipelineDestruct
     EXPECT_EQ(m_state.DestroyedGraphicsPipelines.size(), 0U);
 }
 
+TEST_F(GraphicsTest, MaterialLayoutParticipatesInPipelineKeyAndIsValidated) {
+    auto descriptor = MakeGraphicsPipelineDescriptor(m_resources);
+    const NGraphics::PipelineKey empty{descriptor};
+    descriptor.MaterialBindings = {{0,
+                                    NGraphics::EMaterialBindingType::CombinedImageSampler,
+                                    NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Fragment)}};
+    const NGraphics::PipelineKey textured{descriptor};
+    EXPECT_NE(empty, textured);
+    EXPECT_NE(empty.GetHash(), textured.GetHash());
+    const auto original = descriptor;
+    const auto changed = [&](auto change) {
+        auto variant = original;
+        change(variant.MaterialBindings.front());
+        const NGraphics::PipelineKey key{variant};
+        EXPECT_NE(textured, key);
+        EXPECT_NE(textured.GetHash(), key.GetHash());
+    };
+    changed([](auto& binding) { binding.Binding = 1; });
+    changed([](auto& binding) { binding.Type = NGraphics::EMaterialBindingType::SampledImage; });
+    changed([](auto& binding) {
+        binding.Visibility = NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Vertex);
+    });
+    descriptor.MaterialBindings.push_back(descriptor.MaterialBindings.front());
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { const NGraphics::PipelineKey key{descriptor}; });
+    for (auto invalid:
+         {NGraphics::MaterialBindingLayoutEntry{0, NGraphics::EMaterialBindingType::Sampler, 0},
+          NGraphics::MaterialBindingLayoutEntry{0,
+                                                NGraphics::EMaterialBindingType::Sampler,
+                                                NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Compute)},
+          NGraphics::MaterialBindingLayoutEntry{0,
+                                                NGraphics::EMaterialBindingType::Sampler,
+                                                NGraphics::ShaderVisibility(NGraphics::EShaderVisibility::Fragment),
+                                                2}}) {
+        descriptor.MaterialBindings = {invalid};
+        ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { const NGraphics::PipelineKey key{descriptor}; });
+    }
+}
+
 TEST_F(GraphicsTest, VertexPushConstantRangeParticipatesInPipelineKey) {
     auto descriptor = MakeGraphicsPipelineDescriptor(m_resources);
     const NGraphics::PipelineKey original{descriptor};
