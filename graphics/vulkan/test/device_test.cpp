@@ -937,6 +937,7 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
                                 .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
                         }));
             }
+            bufferUploads.reserve(destinations.size());
             for (auto& destination: destinations) {
                 bufferUploads.push_back({&destination, bytes});
             }
@@ -994,6 +995,13 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
             const auto recovered = batched.UploadBatch(bufferUploads);
             submissions.Wait(recovered, 5'000'000'000);
             batched.ReleaseCompleted();
+            for (std::size_t iteration = 0; iteration < 64; ++iteration) {
+                const auto streamed = batched.UploadBatch(bufferUploads, imageUploads);
+                submissions.Wait(streamed, 5'000'000'000);
+                batched.ReleaseCompleted();
+            }
+            EXPECT_EQ(batched.GetStatistics().ArenaAllocations, 2U);
+            EXPECT_EQ(batched.GetStatistics().PendingBytes, 0U);
             std::vector<std::byte> largeBytes(300, std::byte{0x57});
             auto largeDestination = NVulkan::CreateVulkanBuffer(
                     memory,

@@ -57,6 +57,7 @@ void BM_UploadBatches(benchmark::State& state) {
                     }));
         }
         std::vector<NVulkan::VulkanBufferUpload> requests;
+        requests.reserve(uploadCount);
         for (auto& destination: destinations) {
             requests.push_back({&destination, bytes});
         }
@@ -71,13 +72,16 @@ void BM_UploadBatches(benchmark::State& state) {
             uploads.ReleaseCompleted();
         }
         const auto statistics = uploads.GetStatistics();
-        state.counters["uploads/batch"] = static_cast<double>(batchSize);
-        state.counters["submissions/iteration"] = static_cast<double>(uploadCount / batchSize);
+        state.counters["uploads/batch"] =
+                static_cast<double>(statistics.SubmittedUploads) / static_cast<double>(statistics.Submissions);
+        state.counters["submissions/iteration"] = static_cast<double>(uploadCount) /
+                                                  static_cast<double>(statistics.SubmittedUploads) /
+                                                  static_cast<double>(statistics.Submissions);
         state.counters["arena_allocations"] = static_cast<double>(statistics.ArenaAllocations);
         state.counters["staging_high_water"] = static_cast<double>(statistics.StagingHighWaterBytes);
         state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(uploadCount * bytes.size()));
     } catch (const NCommon::Exception& exception) {
-        state.SkipWithError(exception.GetMessage().c_str());
+        state.SkipWithError(exception.GetMessage());
     }
 }
 
