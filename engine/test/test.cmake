@@ -22,3 +22,5 @@ TEST_LABELS(
     cpp
     engine
 )
+
+RECURSE(admission_fault)

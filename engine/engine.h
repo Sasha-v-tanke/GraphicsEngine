@@ -94,6 +94,7 @@ public:
     // Completion is exactly once. Stale/duplicate/stopped signals return false.
     [[nodiscard]] bool CompleteUserUpdate(FrameKey frame);
     // Application-owned frame callback; caller remains alive through Stop. Never runs on the host.
+    // Rejection/Submit rollback retires captures outside metadata locks; accepted captures retire before simulation.
     [[nodiscard]] bool ScheduleUserUpdate(FrameKey frame, std::function<void()> callback);
     [[nodiscard]] bool IsUpdateComplete(FrameKey frame) const;
     // Platform progress signal; invoked outside runtime metadata locks, cleared only after Stop.

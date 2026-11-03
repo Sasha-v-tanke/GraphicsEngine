@@ -452,7 +452,8 @@ TEST(EcsAsyncRun, WorkerOrchestratorReturnsWithSingleWorkerAndPreservesResults) 
         std::promise<NEcs::NInternal::SystemRunOutcome> done;
         auto future = done.get_future();
         tasks.Submit([&](NCommon::TaskContext&) {
-            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto result) { done.set_value(result); });
+            auto prepared =
+                    NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& result) { done.set_value(result); });
             prepared.Start();
         });
         ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
@@ -471,7 +472,7 @@ TEST(EcsAsyncRun, PreparedCancellationAndAbandonmentCloseExactlyOnceAndReleaseWo
         world->RegisterSystem({}, [&](NEcs::World&) { ADD_FAILURE(); }, NEcs::SystemSchedule{.Id = 1});
         NEcs::NInternal::SystemRun handle;
         {
-            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& outcome) {
                 ++calls;
                 EXPECT_EQ(outcome.Status, NEcs::NInternal::ESystemRunStatus::CANCELLED);
                 EXPECT_TRUE(weak.expired());
@@ -518,7 +519,7 @@ TEST(EcsAsyncRun, ProducerTicketPinsWorldUntilDelayedDiscardAndPayloadRetirement
             10);
     std::promise<NEcs::NInternal::SystemRunOutcome> done;
     auto result = done.get_future();
-    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& outcome) {
         EXPECT_EQ(retired.load(), 1);
         done.set_value(outcome);
     });
@@ -560,7 +561,8 @@ TEST(EcsAsyncRun, DelayedDeclaredProducerCanSubmitAfterSystemReturns) {
             10);
     std::promise<NEcs::NInternal::SystemRunOutcome> done;
     auto result = done.get_future();
-    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) { done.set_value(outcome); });
+    auto prepared =
+            NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& outcome) { done.set_value(outcome); });
     prepared.Start();
     ASSERT_EQ(bufferFuture.wait_for(2s), std::future_status::ready);
     auto buffer = bufferFuture.get();
@@ -585,7 +587,8 @@ TEST(EcsAsyncRun, FailureSkipsDependentWorkAndHostGuardRemains) {
     world->RegisterSystem({}, [&](NEcs::World&) { ++descendants; }, NEcs::SystemSchedule{.Id = 20, .After = {10}});
     std::promise<NEcs::NInternal::SystemRunOutcome> done;
     auto result = done.get_future();
-    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) { done.set_value(outcome); });
+    auto prepared =
+            NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& outcome) { done.set_value(outcome); });
     prepared.Start();
     ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
     const auto outcome = result.get();
@@ -604,7 +607,7 @@ TEST(EcsAsyncRun, EmptyGraphCompletesInlineAndCommitFailureRetiresPendingPayload
     {
         auto world = std::make_shared<NEcs::World>();
         int calls = 0;
-        auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+        auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& outcome) {
             ++calls;
             EXPECT_EQ(outcome.Status, NEcs::NInternal::ESystemRunStatus::COMPLETED);
         });
@@ -641,7 +644,7 @@ TEST(EcsAsyncRun, EmptyGraphCompletesInlineAndCommitFailureRetiresPendingPayload
             10);
     std::promise<NEcs::NInternal::SystemRunOutcome> done;
     auto result = done.get_future();
-    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& outcome) {
         EXPECT_EQ(retired.load(), 1);
         done.set_value(outcome);
     });

@@ -363,7 +363,7 @@ TEST(SceneAsyncSystems, UnloadRetainsAliasingWorldLeaseUntilSystemQuiescence) {
     auto prepared =
             NEcs::NInternal::PrepareSystems(std::shared_ptr<NEcs::World>{scene, &scene->GetWorld()},
                                             tasks,
-                                            [&](auto outcome) {
+                                            [&](const auto& outcome) {
                                                 EXPECT_EQ(outcome.Status, NEcs::NInternal::ESystemRunStatus::COMPLETED);
                                                 EXPECT_EQ(destroyed.load(), 1);
                                                 done.set_value();

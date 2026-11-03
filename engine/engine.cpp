@@ -247,9 +247,13 @@ public:
         return CompleteUserUpdateLocked(key);
     }
 
-    [[nodiscard]] bool ScheduleUserUpdate(FrameKey key, std::function<void()> callback) {
+    [[nodiscard]] bool ScheduleUserUpdate(FrameKey key, std::function<void()>&& callback) {
+        // Keep the final payload owner on this stack until the metadata lock is released, including Submit rollback.
+        const auto work = std::make_shared<UserUpdateWork>(std::move(callback));
+        // A moved-from std::function may retain a small closure on libc++; retire that copy before publication.
+        callback = {};
         std::lock_guard lock{m_mutex};
-        return CompleteUserUpdateLocked(key, std::move(callback));
+        return CompleteUserUpdateLocked(key, work);
     }
     [[nodiscard]] bool IsUpdateComplete(FrameKey key) const {
         std::lock_guard lock{m_mutex};
@@ -373,6 +377,10 @@ private:
         m_stateManager.EnterStopping();
     }
 
+    struct UserUpdateWork {
+        std::function<void()> Callback;
+    };
+
     struct FrameRuntimeRecord {
         NController::FrameHandle Frame;
         FrameKey Key;
@@ -443,7 +451,7 @@ private:
         }
     }
 
-    [[nodiscard]] bool CompleteUserUpdateLocked(FrameKey key, std::function<void()> callback = {}) {
+    [[nodiscard]] bool CompleteUserUpdateLocked(FrameKey key, const std::shared_ptr<UserUpdateWork>& work = {}) {
         FrameRuntimeRecord* record = ResolveReservationLocked(key);
         if (record == nullptr || record->HasUpdateTask) {
             return false;
@@ -460,27 +468,31 @@ private:
                         }
                     });
             m_frameScheduler->ArmFrame(frame);
-            record->UpdateTask = m_taskSystem->Submit([this,
-                                                       frame,
-                                                       executor = record->Executor,
-                                                       completion = record->Completion,
-                                                       callback = std::move(callback)](NCommon::TaskContext&) mutable {
-                try {
-                    if (callback) {
-                        if (completion->IsStopRequested()) {
-                            callback = {};
-                            completion->Finish({.Status = NRuntime::EUpdateStatus::CANCELLED});
-                            return;
+            record->UpdateTask = m_taskSystem->Submit(
+                    [this, frame, executor = record->Executor, completion = record->Completion, work](
+                            NCommon::TaskContext&) {
+                        std::function<void()> callback;
+                        if (work) {
+                            callback = std::move(work->Callback);
+                            work->Callback = {};
                         }
-                        callback();
-                        callback = {};
-                    }
-                    RunUpdate(frame, *executor, completion);
-                } catch (...) {
-                    callback = {};
-                    completion->Finish({.Status = NRuntime::EUpdateStatus::FAILED, .Error = std::current_exception()});
-                }
-            });
+                        try {
+                            if (callback) {
+                                if (completion->IsStopRequested()) {
+                                    callback = {};
+                                    completion->Finish({.Status = NRuntime::EUpdateStatus::CANCELLED});
+                                    return;
+                                }
+                                callback();
+                                callback = {};
+                            }
+                            RunUpdate(frame, *executor, completion);
+                        } catch (...) {
+                            callback = {};
+                            completion->Finish(
+                                    {.Status = NRuntime::EUpdateStatus::FAILED, .Error = std::current_exception()});
+                        }
+                    });
             record->HasUpdateTask = true;
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));

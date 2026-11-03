@@ -79,7 +79,7 @@ TEST(EcsRunFault, EveryPrepareAllocationFailureReleasesWorldGuard) {
         world->RegisterSystem({}, [](NEcs::World&) {}, NEcs::SystemSchedule{.Id = 1});
         AllocationBudget = budget;
         try {
-            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [](auto) {});
+            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [](const auto&) {});
             AllocationBudget = -1;
             ++successes;
         } catch (const std::bad_alloc&) {
@@ -115,7 +115,7 @@ TEST(EcsRunFault, EveryPublicationAllocationFailureDrainsAcceptedPrefixExactlyOn
         }
         std::atomic<int> calls{0};
         std::optional<NEcs::NInternal::SystemRunOutcome> outcome;
-        auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto result) {
+        auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& result) {
             ++calls;
             outcome = result;
         });
