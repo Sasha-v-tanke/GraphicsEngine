@@ -7,6 +7,7 @@ SOURCES(
     engine_state_manager.cpp
     user_jobs.cpp
     user_tasks.cpp
+    job_await.cpp
     frame_scheduler_test.cpp
 )
 

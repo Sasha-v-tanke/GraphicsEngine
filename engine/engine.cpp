@@ -128,7 +128,7 @@ public:
             m_gpuRecycledFrameCount = 0;
             m_updateAdmissionOpen = true;
             m_stateManager.AdvanceGeneration();
-            m_userJobs = std::make_unique<NRuntime::UserJobScope>();
+            m_userJobs = std::make_unique<NRuntime::UserJobScope>(*m_taskSystem);
             m_stateManager.MarkRunning();
             NotifyProgressLocked();
         } catch (...) {
@@ -173,6 +173,8 @@ public:
 
         if (userJobs) {
             userJobs->RequestStop();
+            // Suspended coroutines can still publish continuations: quiesce their scope before executor drain.
+            userJobs->Join();
         }
         try {
             if (taskSystem != nullptr) {

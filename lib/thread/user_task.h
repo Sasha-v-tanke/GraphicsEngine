@@ -3,6 +3,7 @@
 #include <concepts>
 #include <coroutine>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <type_traits>
@@ -10,6 +11,7 @@
 
 #include <GraphicsEngine/lib/common/error/exception.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
+#include <GraphicsEngine/lib/thread/job_control.h>
 
 namespace NCommon {
 
@@ -18,6 +20,8 @@ struct UserTaskStopToken {};
 
 template<typename T>
 class UserTask;
+template<typename T>
+class Job;
 
 namespace NUserTaskInternal {
 
@@ -39,6 +43,7 @@ struct TokenAwaiter {
 struct PromiseBase {
     std::exception_ptr Exception;
     std::stop_token StopToken;
+    std::weak_ptr<NJobInternal::JobControl> Owner;
 
     // NOLINTNEXTLINE(readability-convert-member-functions-to-static): compiler promise protocol uses an instance.
     [[nodiscard]] std::suspend_always initial_suspend() const noexcept {
@@ -54,8 +59,11 @@ struct PromiseBase {
     [[nodiscard]] TokenAwaiter await_transform(UserTaskStopToken) const noexcept {
         return {StopToken};
     }
-    // Suspended continuations require the runtime handshake delivered by FEATURE-0077.
-    // Reject foreign awaiters instead of permitting an unowned suspended frame.
+    template<typename T>
+    [[nodiscard]] Job<T>&& await_transform(Job<T>&& job) noexcept {
+        return std::move(job);
+    }
+    // Foreign suspension protocols cannot participate in runtime frame ownership.
     template<typename Awaitable>
         requires(!std::same_as<std::remove_cvref_t<Awaitable>, UserTaskStopToken>)
     void await_transform(Awaitable&&) = delete;
@@ -142,14 +150,17 @@ inline UserTask<void> Promise<void>::get_return_object() noexcept {
 
 struct TaskAccess {
     template<typename T>
-    static T Run(UserTask<T>& task, std::stop_token token) {
+    static bool Resume(UserTask<T>& task, std::stop_token token, const std::weak_ptr<NJobInternal::JobControl>& owner) {
         typename UserTask<T>::promise_type& promise = task.m_handle.promise();
         promise.StopToken = std::move(token);
+        promise.Owner = owner;
         task.m_handle.resume();
-        // Only the ready stop-token query is currently allowed; no worker waits or polls.
-        if (!task.m_handle.done()) {
-            GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Unsupported UserTask suspension");
-        }
+        return task.m_handle.done();
+    }
+
+    template<typename T>
+    static T Take(UserTask<T>& task) {
+        typename UserTask<T>::promise_type& promise = task.m_handle.promise();
         if (promise.Exception) {
             std::rethrow_exception(promise.Exception);
         }

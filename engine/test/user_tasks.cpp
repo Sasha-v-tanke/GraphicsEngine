@@ -275,6 +275,43 @@ private:
     std::size_t m_count = 0;
 };
 
+NCommon::UserTask<int> SuspendedAcrossFrames(NCommon::Job<int> source) {
+    co_return co_await std::move(source);
+}
+
+TEST(UserTasks, SuspendedCoroutineDoesNotGateTwelveFramesWithOneWorker) {
+    auto frames = std::make_unique<CountingFrames>();
+    CountingFrames& counter = *frames;
+    auto engine = NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 1, .WorkerCount = 1}, std::move(frames));
+    engine->Start();
+    std::shared_ptr<NCommon::NJobInternal::JobControl> source;
+    auto pending = NCommon::NJobInternal::JobFactory::Run(
+            [&source](const std::shared_ptr<NCommon::NJobInternal::JobControl>& state) { source = state; },
+            [] { return 42; });
+    auto result = engine->Spawn(SuspendedAcrossFrames(std::move(pending)));
+    const auto eventually = [&engine](bool draw) {
+        const auto deadline = std::chrono::steady_clock::now() + TIMEOUT;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const std::uint64_t version = engine->GetProgressVersion();
+            if (draw ? engine->Draw() : engine->Update()) {
+                return true;
+            }
+            engine->WaitForProgress(version, std::chrono::milliseconds{1});
+        }
+        return false;
+    };
+    for (std::size_t frame = 1; frame <= 12; ++frame) {
+        ASSERT_TRUE(eventually(false));
+        ASSERT_TRUE(eventually(true));
+        ASSERT_TRUE(counter.WaitFor(frame));
+        EXPECT_FALSE(result.IsReady());
+    }
+    source->Run();
+    ASSERT_TRUE(WaitReady(result));
+    engine->Stop();
+    EXPECT_EQ(result.TryTake()->value(), 42);
+}
+
 TEST(UserTasks, CoroutineExecutionDoesNotReserveOrGateFrameSlotsForTwelveFrames) {
     std::atomic_int completed{0};
     std::atomic_int destroyed{0};
@@ -349,7 +386,8 @@ concept AcceptedUserAwaiter = requires(NCommon::NUserTaskInternal::PromiseBase& 
 };
 static_assert(AcceptedUserAwaiter<NCommon::UserTaskStopToken>);
 static_assert(!AcceptedUserAwaiter<std::suspend_always>);
-static_assert(!AcceptedUserAwaiter<NCommon::Job<int>>);
+static_assert(AcceptedUserAwaiter<NCommon::Job<int>>);
+static_assert(!AcceptedUserAwaiter<NCommon::Job<int>&>);
 
 static_assert(!std::is_copy_constructible_v<NCommon::UserTask<int>>);
 static_assert(std::is_nothrow_move_constructible_v<NCommon::UserTask<int>>);
