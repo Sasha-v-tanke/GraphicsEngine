@@ -8,6 +8,8 @@ API(
 )
 
 SOURCES(
+    internal/system_run.h
+    internal/system_run.cpp
     world.cpp
     hierarchy.cpp
     internal/topology.h

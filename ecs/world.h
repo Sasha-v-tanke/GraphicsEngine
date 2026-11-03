@@ -28,6 +28,10 @@ namespace NCommon {
 class TaskSystem;
 }
 
+namespace NEcs::NInternal {
+class WorldExecutionAccess;
+}
+
 namespace NEcs {
 
 class World {
@@ -430,12 +434,17 @@ private:
     };
 
     [[nodiscard]] SystemExecutionGraph BuildSystemExecutionGraph(bool requireSchedules) const;
+    friend class NInternal::WorldExecutionAccess;
+    struct SystemRunState;
+    std::shared_ptr<SystemRunState> ActiveSystemRun_;
+    bool ExecutionPoisoned_ = false;
     struct SystemInvocation;
     [[nodiscard]] SystemInvocation* GetCurrentSystemInvocation() const noexcept;
-    void RunSystemsImpl(NCommon::TaskSystem* taskSystem);
+    void RunSystemsImpl();
     void ExecuteSystem(std::size_t index, SystemInvocation& invocation);
     void DiscardSystemCommands(std::vector<SystemInvocation>& invocations);
     void PublishSystemCommands(std::vector<SystemInvocation>& invocations);
+    void DiscardPublishedCommands();
     static thread_local SystemInvocation* CurrentSystemInvocation_;
     static thread_local World* CommittingWorld_;
     void ValidateStructuralWriteAllowed() const;

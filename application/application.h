@@ -1,8 +1,11 @@
 #pragma once
 
+#include <atomic>
 #include <concepts>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -27,6 +30,12 @@ class ApplicationAccess;
 } // namespace NApplication::NRuntime
 
 namespace NApplication {
+
+struct InputSnapshot {
+    NWindow::WindowSize WindowSize;
+    NWindow::WindowSize FramebufferSize;
+    std::uint64_t Sequence = 0;
+};
 
 // Owns Window and Engine runtime subsystems while the caller owns the outer main loop thread.
 class Application: public NCommon::NonTransferable {
@@ -84,7 +93,13 @@ protected:
                 std::move(task));
     }
 
-    // Called on the application thread, never on TaskSystem workers.
+    // Immutable for the current OnUpdate; copied on main immediately before frame publication.
+    [[nodiscard]] const InputSnapshot& GetInputSnapshot() const noexcept {
+        return m_input;
+    }
+
+    // Frame-bound worker callback. Window access goes through RunOnMainThread.
+    // Event callbacks may run concurrently; publish custom input through your own snapshot/synchronization.
     virtual void OnUpdate();
 
     // Called on the application thread after the engine update checkpoint for the current frame is ready.
@@ -113,7 +128,11 @@ private:
     void RunOnMainThreadImpl(void* context, void (*invoke)(void*));
 
 private:
+    const std::thread::id m_applicationThread = std::this_thread::get_id();
     bool m_hasPresentation = false;
+    std::atomic_bool m_shutdownRequested = false;
+    InputSnapshot m_input;
+    std::unique_ptr<FrameLoopCallbacks> m_callbacks;
     std::unique_ptr<NWindow::WindowRuntime> m_windowRuntime;
     std::unique_ptr<NWindow::Window> m_window;
     std::unique_ptr<NRuntime::FrameLoop> m_frameLoop;

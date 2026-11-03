@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -203,12 +204,18 @@ public:
     }
 
     void OnUpdate() override {
-        m_events.emplace_back("user.update");
+        ++Updates;
     }
 
     void OnDraw() override {
+        EXPECT_EQ(++Draws, Updates.load());
+        m_events.emplace_back("user.update");
         m_events.emplace_back("user.draw");
     }
+
+public:
+    std::atomic<int> Updates{0};
+    int Draws = 0;
 
 private:
     std::vector<std::string>& m_events;
@@ -280,7 +287,7 @@ public:
 
 protected:
     void OnUpdate() override {
-        m_state.Events.emplace_back("user.update");
+        RunOnMainThread([this] { m_state.Events.emplace_back("user.update"); });
 
         if (ThrowFromUpdate) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected update failure");
@@ -322,6 +329,29 @@ public:
     bool ThrowFromDraw = false;
 };
 
+std::vector<std::string> CallbackEvents(const std::vector<std::string>& events) {
+    std::vector<std::string> result;
+    for (const auto& event: events) {
+        if (event != "window.events") {
+            result.push_back(event);
+        }
+    }
+    return result;
+}
+
+template<typename Predicate>
+bool PumpUntil(NApplication::NRuntime::FrameLoop& loop,
+               NApplication::NRuntime::IFrameLoopCallbacks& callbacks,
+               Predicate ready) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!ready() && std::chrono::steady_clock::now() < deadline) {
+        if (!loop.Step(callbacks)) {
+            loop.WaitForProgress();
+        }
+    }
+    return ready();
+}
+
 TEST_F(ApplicationTest, RunProcessesFramesUntilClose) {
     RecordingApplication application{MakeConfig(), m_state};
     application.CloseFromUpdate = true;
@@ -329,18 +359,16 @@ TEST_F(ApplicationTest, RunProcessesFramesUntilClose) {
     application.Run();
 
     EXPECT_EQ(m_state.RequestCloseCount, 1);
-    EXPECT_EQ(m_state.ProcessEventsCount, 1);
-    EXPECT_EQ(m_state.Events,
+    EXPECT_GE(m_state.ProcessEventsCount, 1);
+    EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
-                      "window.events",
                       "user.update",
                       "window.request-close",
                       "user.close",
-                      "user.draw",
               }));
 }
 
-TEST_F(ApplicationTest, RunsCallbacksAndFrameCheckpointsInOrderOnApplicationThread) {
+TEST_F(ApplicationTest, RunsUpdateOnWorkerAndDrawOnApplicationThread) {
     const std::thread::id applicationThread = std::this_thread::get_id();
 
     class ThreadCheckingApplication final: public RecordingApplication {
@@ -354,7 +382,8 @@ TEST_F(ApplicationTest, RunsCallbacksAndFrameCheckpointsInOrderOnApplicationThre
 
     protected:
         void OnUpdate() override {
-            EXPECT_EQ(std::this_thread::get_id(), m_expectedThread);
+            EXPECT_NE(std::this_thread::get_id(), m_expectedThread);
+            EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
             RecordingApplication::OnUpdate();
         }
 
@@ -372,9 +401,8 @@ TEST_F(ApplicationTest, RunsCallbacksAndFrameCheckpointsInOrderOnApplicationThre
 
     application.Run();
 
-    EXPECT_EQ(m_state.Events,
+    EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
-                      "window.events",
                       "user.update",
                       "user.draw",
                       "window.request-close",
@@ -399,9 +427,8 @@ TEST_F(ApplicationTest, AllowsShutdownRequestFromWindowCallback) {
     application.Run();
 
     EXPECT_EQ(m_state.RequestCloseCount, 0);
-    EXPECT_EQ(m_state.Events,
+    EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
-                      "window.events",
                       "user.close",
               }));
 }
@@ -419,7 +446,9 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     frameLoop.Start();
     frameLoop.Step(callbacks);
     FinishFirstDrawGuard finishFirstDrawGuard{*blockingEngineFactory.Runtime};
-    ASSERT_TRUE(blockingEngineFactory.Runtime->WaitDrawCountAtLeast(1, 1s));
+    ASSERT_TRUE(PumpUntil(frameLoop, callbacks, [&] {
+        return blockingEngineFactory.Runtime->WaitDrawCountAtLeast(1, 0ms);
+    }));
     frameLoop.Step(callbacks);
     frameLoop.Step(callbacks);
     bool mainCommandRan = false;
@@ -429,7 +458,7 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     EXPECT_TRUE(mainCommandRan);
     EXPECT_EQ(completion.Wait(), NApplication::NRuntime::EMainCommandState::COMPLETED);
 
-    EXPECT_EQ(m_state.Events,
+    EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
                       "user.draw",
@@ -445,7 +474,7 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
         std::this_thread::yield();
     }
 
-    EXPECT_EQ(m_state.Events,
+    EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
                       "user.draw",
@@ -478,12 +507,13 @@ TEST_F(ApplicationTest, ObservesAsyncExtractionFailureWhileUpdateAdmissionIsClos
     EXPECT_EQ(factoryRef.Engine->GetLastError()->Message, "Async extraction failed");
     EXPECT_EQ(factoryRef.Runtime->Updates.load(), 1);
     EXPECT_EQ(factoryRef.Runtime->Draws.load(), 0);
-    EXPECT_EQ(m_state.Events, (std::vector<std::string>{"user.update", "user.draw"}));
+    EXPECT_EQ(CallbackEvents(m_state.Events), (std::vector<std::string>{"user.update", "user.draw"}));
 }
 
 TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
     NApplication::ApplicationConfig config = MakeConfig();
     config.MaxActiveFrames = 2;
+    config.WorkerCount = 2;
 
     auto engineFactory = std::make_unique<BlockingEngineFactory>();
     BlockingEngineFactory& blockingEngineFactory = *engineFactory;
@@ -494,12 +524,13 @@ TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
     frameLoop.Start();
     frameLoop.Step(callbacks);
     FinishFirstDrawGuard finishFirstDrawGuard{*blockingEngineFactory.Runtime};
-    ASSERT_TRUE(blockingEngineFactory.Runtime->WaitDrawCountAtLeast(1, 1s));
+    ASSERT_TRUE(PumpUntil(frameLoop, callbacks, [&] {
+        return blockingEngineFactory.Runtime->WaitDrawCountAtLeast(1, 0ms);
+    }));
 
-    frameLoop.Step(callbacks);
-    frameLoop.Step(callbacks);
+    ASSERT_TRUE(PumpUntil(frameLoop, callbacks, [&] { return callbacks.Draws == 2; }));
 
-    EXPECT_EQ(m_state.Events,
+    EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
                       "user.draw",
@@ -510,11 +541,13 @@ TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
     blockingEngineFactory.Runtime->FinishFirstDraw();
     finishFirstDrawGuard.Release();
     EXPECT_TRUE(blockingEngineFactory.Runtime->WaitFirstDrawFinished(1s));
-    EXPECT_TRUE(blockingEngineFactory.Runtime->WaitDrawCountAtLeast(2, 1s));
+    EXPECT_TRUE(PumpUntil(frameLoop, callbacks, [&] {
+        return blockingEngineFactory.Runtime->WaitDrawCountAtLeast(2, 0ms);
+    }));
 
-    frameLoop.Step(callbacks);
+    ASSERT_TRUE(PumpUntil(frameLoop, callbacks, [&] { return callbacks.Draws == 3; }));
 
-    EXPECT_EQ(m_state.Events,
+    EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
                       "user.draw",
@@ -576,7 +609,7 @@ TEST_F(ApplicationTest, MainCommandClosePrecedesFrameCallbacksAndSkipsPendingAcr
     ASSERT_TRUE(close.has_value());
     EXPECT_EQ(close->Wait(), EMainCommandState::COMPLETED);
     EXPECT_EQ(pending->Wait(), EMainCommandState::SKIPPED);
-    EXPECT_EQ(m_state.Events, (std::vector<std::string>{"window.events", "window.request-close", "user.close"}));
+    EXPECT_EQ(CallbackEvents(m_state.Events), (std::vector<std::string>{"window.request-close", "user.close"}));
     const auto previous = executor.GetGeneration();
     m_state.ShouldClose = false;
     m_state.EventAction = [&] {
@@ -596,7 +629,7 @@ TEST_F(ApplicationTest, EventWaitIsWokenByProducerWithoutDispatchingOnProducerTh
     const auto start = std::chrono::steady_clock::now();
     window.WaitEvents(2s);
     EXPECT_LT(std::chrono::steady_clock::now() - start, 1s);
-    EXPECT_EQ(m_state.ProcessEventsCount, 1);
+    EXPECT_GE(m_state.ProcessEventsCount, 1);
 }
 
 class MainWaitingRuntime final: public NEngine::NRuntime::IFrameRuntime {
@@ -636,7 +669,7 @@ TEST_F(ApplicationTest, StopSkipsMainCommandsBeforeJoiningSingleWorker) {
     auto queued = reference.Runtime->Queued.get_future();
     RecordingFrameLoopCallbacks callbacks{m_state.Events};
     loop.Start();
-    loop.Step(callbacks);
+    ASSERT_TRUE(PumpUntil(loop, callbacks, [&] { return callbacks.Draws == 1; }));
     EXPECT_EQ(queued.wait_for(2s), std::future_status::ready);
     EXPECT_FALSE(reference.Engine->TryBeginFrame().has_value());
     loop.Stop();
@@ -679,6 +712,52 @@ private:
         Update();
     }
 };
+
+TEST_F(ApplicationTest, WorkerUpdateMainHandoffAndInputSnapshotMatrix) {
+    const auto mainThread = std::this_thread::get_id();
+    for (std::size_t workers: {1U, 2U, 8U}) {
+        for (std::size_t slots: {1U, 2U, 3U}) {
+            m_state.ShouldClose = false;
+            auto config = MakeConfig();
+            config.WorkerCount = workers;
+            config.MaxActiveFrames = slots;
+            class SnapshotApplication final: public NApplication::Application {
+            public:
+                using Application::Application;
+                std::thread::id MainThread;
+                int Updates = 0;
+                int Draws = 0;
+                int Actions = 0;
+
+            private:
+                void OnUpdate() override {
+                    EXPECT_NE(std::this_thread::get_id(), MainThread);
+                    EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
+                    const auto snapshot = GetInputSnapshot();
+                    EXPECT_EQ(snapshot.Sequence, static_cast<std::uint64_t>(++Updates));
+                    RunOnMainThread([this] {
+                        EXPECT_EQ(std::this_thread::get_id(), MainThread);
+                        ++Actions;
+                    });
+                    EXPECT_EQ(GetInputSnapshot().Sequence, snapshot.Sequence);
+                    EXPECT_EQ(GetInputSnapshot().FramebufferSize.Width, snapshot.FramebufferSize.Width);
+                }
+                void OnDraw() override {
+                    EXPECT_EQ(std::this_thread::get_id(), MainThread);
+                    EXPECT_EQ(++Draws, Updates);
+                    if (Draws == 8) {
+                        RequestShutdown();
+                    }
+                }
+            } application{config};
+            application.MainThread = mainThread;
+            application.Run();
+            EXPECT_EQ(application.Updates, 8);
+            EXPECT_EQ(application.Draws, 8);
+            EXPECT_EQ(application.Actions, 8);
+        }
+    }
+}
 
 template<typename Function>
 concept MainDispatchable = requires(DispatchApplication& application, Function&& function) {
@@ -750,42 +829,41 @@ TEST_F(ApplicationTest, SingleWorkerMainDispatchIsSynchronousAndFailureReturnsTo
 }
 
 TEST_F(ApplicationTest, PendingSynchronousDispatchSkipsBeforeSingleWorkerJoinAndDoesNotReplay) {
-    auto config = MakeConfig();
-    config.MaxActiveFrames = 1;
-    DispatchApplication application{config};
+    DispatchApplication application{MakeConfig()};
     auto& executor = NApplication::NRuntime::ApplicationAccess::GetMainExecutor(application);
-    std::optional<NCommon::Job<void>> job;
-    int actions = 0;
-    int returned = 0;
-    application.Update = [&] {
-        job.emplace(application.RunAsync([&] {
+    std::jthread producer;
+    std::atomic<int> actions{0};
+    std::atomic<int> returned{0};
+    m_state.EventAction = [&] {
+        if (producer.joinable()) {
+            return;
+        }
+        producer = std::jthread{[&] {
             application.RunOnMainThread([&] { ++actions; });
             ++returned;
             application.RunOnMainThread([&] { ++actions; });
             ++returned;
-        }));
+        }};
         const auto deadline = std::chrono::steady_clock::now() + 2s;
         while (executor.GetPendingCount() == 0 && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
         }
         EXPECT_EQ(executor.GetPendingCount(), 1U);
-        job->RequestCancel();
         application.RequestShutdown();
     };
+    application.Update = [] { ADD_FAILURE(); };
     application.Run();
-    EXPECT_EQ(actions, 0);
-    EXPECT_EQ(returned, 2);
-    const auto result = job->TryTake();
-    ASSERT_TRUE(result);
-    ASSERT_FALSE(result->has_value());
-    EXPECT_EQ(result->error().Code, NCommon::EError::CANCELLED);
+    producer.join();
+    EXPECT_EQ(actions.load(), 0);
+    EXPECT_EQ(returned.load(), 2);
+    m_state.EventAction = {};
     m_state.ShouldClose = false;
     application.Update = [&] {
         application.RunOnMainThread([&] { ++actions; });
         application.RequestShutdown();
     };
     application.Run();
-    EXPECT_EQ(actions, 1);
+    EXPECT_EQ(actions.load(), 1);
 }
 
 TEST_F(ApplicationTest, ConcurrentSynchronousDispatchAndStopReleaseAllCallers) {

@@ -121,6 +121,7 @@ public:
 
         try {
             m_stateManager.ValidateNextGeneration();
+            m_runLifetime = std::make_shared<bool>(true);
             m_taskSystem = std::make_unique<NCommon::TaskSystem>(m_config.WorkerCount);
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
             m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
@@ -176,6 +177,21 @@ public:
             // Suspended coroutines can still publish continuations: quiesce their scope before executor drain.
             userJobs->Join();
         }
+        if (m_frameRecords) {
+            for (std::size_t index = 0; index < m_config.MaxActiveFrames; ++index) {
+                const auto completion = m_frameRecords[index].Completion;
+                if (completion) {
+                    completion->RequestStop();
+                }
+            }
+            // Producer tickets can outlive an idle pool; join semantic completion first.
+            for (std::size_t index = 0; index < m_config.MaxActiveFrames; ++index) {
+                const auto completion = m_frameRecords[index].Completion;
+                if (completion) {
+                    completion->Wait();
+                }
+            }
+        }
         try {
             if (taskSystem != nullptr) {
                 taskSystem->WaitIdle();
@@ -214,6 +230,7 @@ public:
             m_frameScheduler.reset();
             m_frameRecords.reset();
             taskSystem.reset();
+            m_runLifetime.reset();
             m_updateAdmissionOpen = true;
             m_stateManager.CompleteStop();
             NotifyProgressLocked();
@@ -228,6 +245,27 @@ public:
     [[nodiscard]] bool CompleteUserUpdate(FrameKey key) {
         std::lock_guard lock{m_mutex};
         return CompleteUserUpdateLocked(key);
+    }
+
+    [[nodiscard]] bool ScheduleUserUpdate(FrameKey key, std::function<void()> callback) {
+        std::lock_guard lock{m_mutex};
+        return CompleteUserUpdateLocked(key, std::move(callback));
+    }
+    [[nodiscard]] bool IsUpdateComplete(FrameKey key) const {
+        std::lock_guard lock{m_mutex};
+        if (!m_frameRecords || key.m_runGeneration != m_stateManager.GetGeneration() ||
+            key.m_owner != m_ownerIdentity || key.m_slotIndex >= m_config.MaxActiveFrames) {
+            return false;
+        }
+        const FrameRuntimeRecord& record = m_frameRecords[key.m_slotIndex];
+        return record.Key == key && record.UpdateSucceeded;
+    }
+    void SetProgressWakeup(std::function<void()> wakeup) {
+        std::lock_guard lock{m_mutex};
+        if (m_stateManager.GetState() == EEngineState::RUNNING || m_stateManager.GetState() == EEngineState::STOPPING) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Install progress wakeup before Start");
+        }
+        m_wakeup = std::move(wakeup);
     }
 
     [[nodiscard]] bool AbortFrame(FrameKey key) {
@@ -282,29 +320,12 @@ public:
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application draw checkpoint is out of order");
         }
 
-        const NController::FrameHandle frame = record.Frame;
-        const NCommon::TaskHandle updateTask = record.UpdateTask;
-
-        try {
-            m_updateAdmissionOpen = false;
-            m_frameScheduler->SignalDraw(frame);
-
-            const NCommon::TaskHandle dependencies[] = {updateTask};
-
-            record.DrawTask = m_taskSystem->Submit([this, frame](NCommon::TaskContext& task) { RunDraw(frame, task); },
-                                                   dependencies);
-            record.HasDrawTask = true;
-        } catch (...) {
-            SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
-            EnterStoppingLocked();
-            m_updateAdmissionOpen = true;
-
-            try {
-                m_frameScheduler->AbortFrame(frame);
-            } catch (...) {
-            }
-
-            throw;
+        if (record.DrawRequested) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application draw checkpoint is out of order");
+        }
+        record.DrawRequested = true;
+        if (record.UpdateSucceeded) {
+            ScheduleDrawLocked(record);
         }
 
         ++m_nextDrawFrameIndex;
@@ -361,6 +382,10 @@ private:
         NCommon::TaskHandle DrawTask;
         bool HasUpdateTask = false;
         bool HasDrawTask = false;
+        bool DrawRequested = false;
+        bool UpdateSucceeded = false;
+        std::shared_ptr<NRuntime::UpdateCompletion> Completion;
+        NCommon::TaskSystem* Executor = nullptr;
     };
 
     void NotifyProgressLocked() {
@@ -402,15 +427,59 @@ private:
         return key;
     }
 
-    [[nodiscard]] bool CompleteUserUpdateLocked(FrameKey key) {
+    void ScheduleDrawLocked(FrameRuntimeRecord& record) {
+        const NController::FrameHandle frame = record.Frame;
+        m_frameScheduler->SignalDraw(frame);
+        const NCommon::TaskHandle dependencies[] = {record.UpdateTask};
+        try {
+            record.DrawTask =
+                    record.Executor->Submit([this, frame](NCommon::TaskContext& task) { RunDraw(frame, task); },
+                                            dependencies);
+            record.HasDrawTask = true;
+        } catch (...) {
+            SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
+            EnterStoppingLocked();
+            throw;
+        }
+    }
+
+    [[nodiscard]] bool CompleteUserUpdateLocked(FrameKey key, std::function<void()> callback = {}) {
         FrameRuntimeRecord* record = ResolveReservationLocked(key);
         if (record == nullptr || record->HasUpdateTask) {
             return false;
         }
         const NController::FrameHandle frame = record->Frame;
         try {
+            record->Executor = m_taskSystem.get();
+            record->Completion = std::make_shared<NRuntime::UpdateCompletion>(
+                    [this, frame, key, lifetime = std::weak_ptr<bool>{m_runLifetime}](NRuntime::UpdateOutcome outcome) {
+                        const auto pin = lifetime.lock();
+                        if (pin) {
+                            FinishUpdate(frame, key, outcome);
+                        }
+                    });
             m_frameScheduler->ArmFrame(frame);
-            record->UpdateTask = m_taskSystem->Submit([this, frame](NCommon::TaskContext&) { RunUpdate(frame); });
+            record->UpdateTask = m_taskSystem->Submit([this,
+                                                       frame,
+                                                       executor = record->Executor,
+                                                       completion = record->Completion,
+                                                       callback = std::move(callback)](NCommon::TaskContext&) mutable {
+                try {
+                    if (callback) {
+                        if (completion->IsStopRequested()) {
+                            callback = {};
+                            completion->Finish({.Status = NRuntime::EUpdateStatus::CANCELLED});
+                            return;
+                        }
+                        callback();
+                        callback = {};
+                    }
+                    RunUpdate(frame, *executor, completion);
+                } catch (...) {
+                    callback = {};
+                    completion->Finish({.Status = NRuntime::EUpdateStatus::FAILED, .Error = std::current_exception()});
+                }
+            });
             record->HasUpdateTask = true;
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
@@ -437,32 +506,48 @@ private:
         m_stateManager.RollbackStart();
     }
 
-    void RunUpdate(NController::FrameHandle frame) {
+    void RunUpdate(NController::FrameHandle frame,
+                   NCommon::TaskSystem& tasks,
+                   const std::shared_ptr<NRuntime::UpdateCompletion>& completion) {
         try {
-            NController::FrameScheduler* frameScheduler = nullptr;
-            NRuntime::IFrameRuntime* frameRuntime = nullptr;
+            m_frameScheduler->BeginUpdate(frame);
+            const NRuntime::FrameContext context{frame, m_frameScheduler->GetFrameStorage(frame)};
+            m_frameRuntime->ScheduleUpdate(context, tasks, completion);
+        } catch (...) {
+            completion->Finish({.Status = NRuntime::EUpdateStatus::FAILED, .Error = std::current_exception()});
+        }
+    }
 
+    void FinishUpdate(NController::FrameHandle frame, FrameKey key, NRuntime::UpdateOutcome outcome) noexcept {
+        try {
             {
                 std::lock_guard lock{m_mutex};
-
-                if (m_stateManager.GetState() != EEngineState::RUNNING &&
-                    m_stateManager.GetState() != EEngineState::STOPPING) {
+                FrameRuntimeRecord& record = GetFrameRecordLocked(frame);
+                if (record.Key != key) {
                     return;
                 }
-
-                frameScheduler = m_frameScheduler.get();
-                frameRuntime = m_frameRuntime.get();
+                if (outcome.Status == NRuntime::EUpdateStatus::COMPLETED) {
+                    m_frameScheduler->EndUpdate(frame);
+                    record.UpdateSucceeded = true;
+                    if (record.DrawRequested) {
+                        ScheduleDrawLocked(record);
+                    }
+                } else {
+                    if (outcome.Error) {
+                        SetLastErrorLocked(MakeRuntimeError(outcome.Error));
+                    } else if (m_stateManager.GetState() == EEngineState::RUNNING) {
+                        SetLastErrorLocked({.Code = NCommon::make_error_code(NCommon::EError::CANCELLED),
+                                            .Message = "Frame update cancelled"});
+                    }
+                    EnterStoppingLocked();
+                }
+                NotifyProgressLocked();
             }
-
-            frameScheduler->BeginUpdate(frame);
-
-            const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame)};
-            frameRuntime->Update(context);
-
-            frameScheduler->EndUpdate(frame);
+            if (m_wakeup) {
+                m_wakeup();
+            }
         } catch (...) {
             LatchRuntimeFailure(frame, std::current_exception());
-            throw;
         }
     }
 
@@ -524,6 +609,9 @@ private:
             NotifyProgressLocked();
         }
 
+        if (m_wakeup) {
+            m_wakeup();
+        }
         const auto preparation = frameRuntime.ScheduleDraw(context, task);
         if (preparation.IsValid()) {
             const NCommon::TaskHandle dependencies[] = {preparation};
@@ -549,8 +637,13 @@ private:
         if (!frameScheduler.GetGpuCompletion(frame).valid()) {
             frameScheduler.CompleteFrame(frame);
         }
-        std::lock_guard lock{m_mutex};
-        NotifyProgressLocked();
+        {
+            std::lock_guard lock{m_mutex};
+            NotifyProgressLocked();
+        }
+        if (m_wakeup) {
+            m_wakeup();
+        }
     }
 
     void LatchRuntimeFailure(NController::FrameHandle frame, const std::exception_ptr& error) noexcept {
@@ -559,10 +652,8 @@ private:
 
             SetLastErrorLocked(MakeRuntimeError(error));
             EnterStoppingLocked();
-            if (!m_frameScheduler->GetGpuCompletion(frame).valid()) {
-                ClearFrameRecordLocked(frame);
-                m_frameScheduler->AbortFrame(frame);
-            }
+            (void)frame;
+            NotifyProgressLocked();
         } catch (...) {
             SetLastError(MakeRuntimeError(std::current_exception()));
         }
@@ -690,6 +781,8 @@ private:
 private:
     const std::uint64_t m_ownerIdentity = AcquireEngineIdentity();
     const EngineConfig m_config;
+    std::function<void()> m_wakeup;
+    std::shared_ptr<bool> m_runLifetime;
     std::unique_ptr<NRuntime::IFrameRuntime> m_frameRuntime;
 
     std::unique_ptr<NRuntime::UserJobScope> m_userJobs;
@@ -734,6 +827,15 @@ std::optional<FrameKey> Engine::TryBeginFrame() {
 }
 bool Engine::CompleteUserUpdate(FrameKey frame) {
     return m_impl->CompleteUserUpdate(frame);
+}
+bool Engine::ScheduleUserUpdate(FrameKey frame, std::function<void()> callback) {
+    return m_impl->ScheduleUserUpdate(frame, std::move(callback));
+}
+bool Engine::IsUpdateComplete(FrameKey frame) const {
+    return m_impl->IsUpdateComplete(frame);
+}
+void Engine::SetProgressWakeup(std::function<void()> wakeup) {
+    m_impl->SetProgressWakeup(std::move(wakeup));
 }
 bool Engine::AbortFrame(FrameKey frame) {
     return m_impl->AbortFrame(frame);

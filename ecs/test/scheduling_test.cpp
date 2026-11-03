@@ -1,12 +1,17 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
+#include <ecs/internal/system_run.h>
 #include <gtest/gtest.h>
 #include <tests/common/test_error.h>
 
@@ -413,4 +418,230 @@ TEST(EcsScheduling, ExplicitTopologyDoesNotCreateHazardCycles) {
     EXPECT_EQ(order, (std::vector<int>{2, 3, 1}));
 }
 
+} // namespace
+
+namespace {
+using namespace std::chrono_literals;
+
+TEST(EcsAsyncRun, WorkerOrchestratorReturnsWithSingleWorkerAndPreservesResults) {
+    for (std::size_t workers: {1U, 2U, 8U}) {
+        auto world = std::make_shared<NEcs::World>();
+        const auto entity = world->CreateEntity();
+        world->AddComponent<Position>(entity);
+        world->RegisterSystem(
+                {NEcs::Write<Position>()},
+                [entity](NEcs::World& current) {
+                    EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
+                    current.GetComponent<Position>(entity).Value = 42;
+                },
+                NEcs::SystemSchedule{.Id = 10});
+        world->RegisterSystem(
+                {NEcs::Read<Position>()},
+                [entity](NEcs::World& current) { EXPECT_EQ(current.GetComponent<Position>(entity).Value, 42); },
+                NEcs::SystemSchedule{.Id = 20});
+        NCommon::TaskSystem tasks{workers};
+        std::promise<NEcs::NInternal::SystemRunOutcome> done;
+        auto future = done.get_future();
+        tasks.Submit([&](NCommon::TaskContext&) {
+            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto result) { done.set_value(result); });
+            prepared.Start();
+        });
+        ASSERT_EQ(future.wait_for(2s), std::future_status::ready);
+        EXPECT_EQ(future.get().Status, NEcs::NInternal::ESystemRunStatus::COMPLETED);
+        tasks.WaitIdle();
+        EXPECT_EQ(world->GetComponent<Position>(entity).Value, 42);
+    }
+}
+
+TEST(EcsAsyncRun, PreparedCancellationAndAbandonmentCloseExactlyOnceAndReleaseWorld) {
+    for (bool start: {false, true}) {
+        NCommon::TaskSystem tasks{1};
+        auto world = std::make_shared<NEcs::World>();
+        std::weak_ptr<NEcs::World> weak = world;
+        int calls = 0;
+        world->RegisterSystem({}, [&](NEcs::World&) { ADD_FAILURE(); }, NEcs::SystemSchedule{.Id = 1});
+        NEcs::NInternal::SystemRun handle;
+        {
+            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+                ++calls;
+                EXPECT_EQ(outcome.Status, NEcs::NInternal::ESystemRunStatus::CANCELLED);
+                EXPECT_TRUE(weak.expired());
+            });
+            handle = prepared.GetHandle();
+            world.reset();
+            EXPECT_FALSE(weak.expired());
+            handle.RequestCancel();
+            if (start) {
+                prepared.Start();
+                EXPECT_THROW(prepared.Start(), NCommon::Exception);
+            }
+        }
+        EXPECT_EQ(calls, 1);
+        EXPECT_TRUE(handle.IsTerminal());
+    }
+}
+
+TEST(EcsAsyncRun, ProducerTicketPinsWorldUntilDelayedDiscardAndPayloadRetirement) {
+    NCommon::TaskSystem tasks{1};
+    auto world = std::make_shared<NEcs::World>();
+    const auto entity = world->CreateEntity();
+    world->BeginDeferredStructuralPhase({{.Order = 7, .EntityCreateCount = 1, .SystemOrder = 10}});
+    std::promise<NEcs::World::DeferredStructuralCommandBuffer> produced;
+    auto bufferFuture = produced.get_future();
+    std::atomic<int> retired{0};
+    struct Probe {
+        std::atomic<int>* Retired;
+        ~Probe() {
+            ++*Retired;
+        }
+    };
+    world->RegisterSystem(
+            {},
+            [&](NEcs::World& current) {
+                auto buffer = current.CreateDeferredStructuralCommandBuffer(7);
+                current.DeferCreateEntity(buffer);
+                NEcs::World::DeferAddComponent<std::shared_ptr<Probe>>(buffer,
+                                                                       entity,
+                                                                       std::make_shared<Probe>(&retired));
+                produced.set_value(std::move(buffer));
+            },
+            NEcs::SystemSchedule{.Id = 1},
+            10);
+    std::promise<NEcs::NInternal::SystemRunOutcome> done;
+    auto result = done.get_future();
+    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+        EXPECT_EQ(retired.load(), 1);
+        done.set_value(outcome);
+    });
+    const auto handle = prepared.GetHandle();
+    prepared.Start();
+    ASSERT_EQ(bufferFuture.wait_for(2s), std::future_status::ready);
+    auto buffer = std::make_optional(bufferFuture.get());
+    tasks.WaitIdle();
+    EXPECT_FALSE(handle.IsTerminal());
+    EXPECT_THROW(world->RunSystems(tasks), NCommon::Exception);
+    EXPECT_THROW(world->CreateEntity(), NCommon::Exception);
+    std::weak_ptr<NEcs::World> weak = world;
+    world.reset();
+    handle.RequestCancel();
+    EXPECT_FALSE(weak.expired());
+    EXPECT_FALSE(handle.IsTerminal());
+    buffer.reset();
+    ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(result.get().Status, NEcs::NInternal::ESystemRunStatus::CANCELLED);
+    EXPECT_TRUE(weak.expired());
+}
+
+TEST(EcsAsyncRun, DelayedDeclaredProducerCanSubmitAfterSystemReturns) {
+    NCommon::TaskSystem tasks{1};
+    auto world = std::make_shared<NEcs::World>();
+    world->BeginDeferredStructuralPhase({{.Order = 7, .EntityCreateCount = 1, .SystemOrder = 10}});
+    std::promise<NEcs::World::DeferredStructuralCommandBuffer> produced;
+    auto bufferFuture = produced.get_future();
+    std::optional<NEcs::Entity> created;
+    world->RegisterSystem(
+            {},
+            [&](NEcs::World& current) {
+                auto buffer = current.CreateDeferredStructuralCommandBuffer(7);
+                created = current.DeferCreateEntity(buffer);
+                NEcs::World::DeferAddComponent<Position>(buffer, *created, Position{27});
+                produced.set_value(std::move(buffer));
+            },
+            NEcs::SystemSchedule{.Id = 1},
+            10);
+    std::promise<NEcs::NInternal::SystemRunOutcome> done;
+    auto result = done.get_future();
+    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) { done.set_value(outcome); });
+    prepared.Start();
+    ASSERT_EQ(bufferFuture.wait_for(2s), std::future_status::ready);
+    auto buffer = bufferFuture.get();
+    tasks.WaitIdle();
+    EXPECT_FALSE(prepared.GetHandle().IsTerminal());
+    world->SubmitDeferredStructuralCommands(std::move(buffer));
+    ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(result.get().Status, NEcs::NInternal::ESystemRunStatus::COMPLETED);
+    ASSERT_TRUE(created);
+    EXPECT_TRUE(world->IsAlive(*created));
+    EXPECT_EQ(world->GetComponent<Position>(*created).Value, 27);
+}
+
+TEST(EcsAsyncRun, FailureSkipsDependentWorkAndHostGuardRemains) {
+    NCommon::TaskSystem tasks{1};
+    auto world = std::make_shared<NEcs::World>();
+    std::atomic<int> descendants{0};
+    world->RegisterSystem(
+            {},
+            [](NEcs::World&) { throw std::runtime_error{"system failure"}; },
+            NEcs::SystemSchedule{.Id = 10});
+    world->RegisterSystem({}, [&](NEcs::World&) { ++descendants; }, NEcs::SystemSchedule{.Id = 20, .After = {10}});
+    std::promise<NEcs::NInternal::SystemRunOutcome> done;
+    auto result = done.get_future();
+    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) { done.set_value(outcome); });
+    prepared.Start();
+    ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+    const auto outcome = result.get();
+    EXPECT_EQ(outcome.Status, NEcs::NInternal::ESystemRunStatus::FAILED);
+    EXPECT_EQ(outcome.FailedSystem, 10);
+    EXPECT_TRUE(outcome.Error);
+    EXPECT_EQ(descendants.load(), 0);
+    tasks.Submit([&](NCommon::TaskContext&) { EXPECT_THROW(world->RunSystems(tasks), NCommon::Exception); });
+    tasks.WaitIdle();
+}
+} // namespace
+
+namespace {
+TEST(EcsAsyncRun, EmptyGraphCompletesInlineAndCommitFailureRetiresPendingPayloads) {
+    NCommon::TaskSystem tasks{1};
+    {
+        auto world = std::make_shared<NEcs::World>();
+        int calls = 0;
+        auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+            ++calls;
+            EXPECT_EQ(outcome.Status, NEcs::NInternal::ESystemRunStatus::COMPLETED);
+        });
+        prepared.Start();
+        EXPECT_EQ(calls, 1);
+        EXPECT_TRUE(prepared.GetHandle().IsTerminal());
+    }
+    struct ThrowOnCommit {
+        explicit ThrowOnCommit(int) {
+            throw std::runtime_error{"commit failure"};
+        }
+    };
+    auto world = std::make_shared<NEcs::World>();
+    const auto entity = world->CreateEntity();
+    std::atomic<int> retired{0};
+    NEcs::NInternal::SystemRun run;
+    struct RetirementProbe {
+        std::atomic<int>* Retired;
+        NEcs::NInternal::SystemRun* Run;
+        ~RetirementProbe() {
+            EXPECT_FALSE(Run->IsTerminal());
+            ++*Retired;
+        }
+    };
+    world->RegisterSystem(
+            {},
+            [&](NEcs::World& current) {
+                current.DeferAddComponent<ThrowOnCommit>(entity, 1);
+                current.DeferAddComponent<std::shared_ptr<RetirementProbe>>(
+                        entity,
+                        std::make_shared<RetirementProbe>(&retired, &run));
+            },
+            NEcs::SystemSchedule{.Id = 1},
+            10);
+    std::promise<NEcs::NInternal::SystemRunOutcome> done;
+    auto result = done.get_future();
+    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto outcome) {
+        EXPECT_EQ(retired.load(), 1);
+        done.set_value(outcome);
+    });
+    run = prepared.GetHandle();
+    prepared.Start();
+    ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+    EXPECT_EQ(result.get().Status, NEcs::NInternal::ESystemRunStatus::FAILED);
+    EXPECT_TRUE(run.IsTerminal());
+    EXPECT_THROW(world->RunSystems(tasks), NCommon::Exception);
+    tasks.WaitIdle();
+}
 } // namespace

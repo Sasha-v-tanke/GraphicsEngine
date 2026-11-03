@@ -1,0 +1,11 @@
+# Кадровое обновление в рабочем потоке
+
+`TryBeginFrame` резервирует физический слот и `FrameKey` до публикации `OnUpdate`. Один callback выполняется на worker `TaskSystem`; при backpressure он не вызывается повторно. Пока нет объявлений доступа пользователя, следующее обновление мира допускается только после полного Extract предыдущего кадра. Подготовка immutable render data и GPU могут продолжаться параллельно.
+
+`OnDraw` вызывается на main после семантического завершения Engine Update. Он остаётся rendering-only точкой и не получает произвольных прав изменения World. Worker `OnPostUpdate` и отдельный фазовый DAG не входят в этот контракт.
+
+Оконные API доступны на main. Из `OnUpdate` используйте `RunOnMainThread`; основной цикл продолжает события и ограниченные порции команд, пока worker ожидает. `RequestShutdown` сам передаёт закрытие на main; `IsShutdownRequested` читает опубликованный атомарный флаг. `GetInputSnapshot` в `OnUpdate` предоставляет размеры окна/framebuffer и монотонный номер snapshot, зафиксированные на main перед публикацией текущего callback. Snapshot не меняется до следующего допуска кадра. Пользовательские input-данные из оконных callbacks требуют собственного immutable snapshot либо синхронизации: оконные callbacks могут исполняться одновременно с OnUpdate. Прямой доступ к изменяемому состоянию Window из worker запрещён.
+
+Объект callbacks внутреннего FrameLoop обязан переживать Stop. Application хранит его вместе с runtime, а не на стеке одной итерации событий. Наследник Application обязан закончить Run до разрушения собственных полей. При закрытии сначала останавливается MainExecutor: pending команды получают SKIPPED, ожидающие workers освобождаются. Затем Engine отменяет queued user callbacks, запрашивает отмену ECS и ждёт semantic completion, CPU tails и GPU. Исключение OnUpdate сохраняется в runtime error channel и передаётся вызывающему Run; следующий Run создаёт новое поколение кадров.
+
+Публикация задач и структурные изменения не используют блокирующее ожидание child work на workers. Долгая монолитная OnUpdate всё ещё занимает один worker и не разбивается scheduler автоматически. Приоритеты main-команд по frame origin остаются IMPROVE-0037; очередь пока FIFO.

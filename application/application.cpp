@@ -32,6 +32,7 @@ private:
     }
 
     void OnClose() override {
+        m_application.m_shutdownRequested.store(true);
         m_application.m_frameLoop->GetMainExecutor().Stop();
         m_application.OnClose();
     }
@@ -46,6 +47,13 @@ public:
         : m_application(application) {
     }
 
+    void CaptureInput() override {
+        m_application.m_input = {
+                .WindowSize = m_application.m_window->GetSize(),
+                .FramebufferSize = m_application.m_window->GetFramebufferSize(),
+                .Sequence = m_application.m_input.Sequence + 1,
+        };
+    }
     void OnUpdate() override {
         m_application.OnUpdate();
     }
@@ -64,6 +72,7 @@ private:
 
 Application::Application(const ApplicationConfig& config)
     : m_hasPresentation(config.Presentation.has_value())
+    , m_callbacks(std::make_unique<FrameLoopCallbacks>(*this))
     , m_windowRuntime(std::make_unique<NWindow::WindowRuntime>())
     , m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
     , m_frameLoop([this, &config] {
@@ -101,6 +110,7 @@ Application::~Application() {
 }
 
 void Application::Run() {
+    m_shutdownRequested.store(m_window->ShouldClose());
     m_frameLoop->Start({m_window.get(), [](void* window) noexcept {
                             NWindow::NInternal::GetWindowEngine(*static_cast<NWindow::Window*>(window)).WakeEventLoop();
                         }});
@@ -119,8 +129,16 @@ void Application::Run() {
 }
 
 void Application::RequestShutdown() {
-    m_window->RequestClose();
-    m_frameLoop->GetMainExecutor().Stop();
+    const auto close = [this] {
+        m_window->RequestClose();
+        m_shutdownRequested.store(true);
+        m_frameLoop->GetMainExecutor().Stop();
+    };
+    if (std::this_thread::get_id() == m_applicationThread) {
+        close();
+    } else {
+        RunOnMainThread(close);
+    }
 }
 
 FrameDiagnostics Application::GetFrameDiagnostics() const {
@@ -128,7 +146,7 @@ FrameDiagnostics Application::GetFrameDiagnostics() const {
 }
 
 bool Application::IsShutdownRequested() const {
-    return m_window->ShouldClose();
+    return m_shutdownRequested.load();
 }
 
 void Application::OnUpdate() {
@@ -158,13 +176,13 @@ void Application::RunFrame() {
     m_window->ProcessEvents();
 
     if (m_window->ShouldClose()) {
+        m_shutdownRequested.store(true);
         return;
     }
 
     const auto size = m_window->GetFramebufferSize();
     m_frameLoop->PumpPresentation(size.Width, size.Height);
-    FrameLoopCallbacks callbacks{*this};
-    const bool progressed = m_frameLoop->Step(callbacks);
+    const bool progressed = m_frameLoop->Step(*m_callbacks);
     // Bounded platform/completion maintenance; admission retries never repeat user callbacks.
     if (!m_window->ShouldClose() && (!progressed || m_hasPresentation)) {
         NWindow::NInternal::GetWindowEngine(*m_window).WaitEvents(std::chrono::milliseconds{progressed ? 1 : 8});

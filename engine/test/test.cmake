@@ -3,6 +3,7 @@ TEST_SUITE(Engine)
 TEST(Engine)
 
 SOURCES(
+    async_update.cpp
     engine_test.cpp
     engine_state_manager.cpp
     user_jobs.cpp
@@ -13,6 +14,7 @@ SOURCES(
 
 PRIVATE_DEPENDS(
     Engine
+    Ecs
 )
 
 TEST_LABELS(

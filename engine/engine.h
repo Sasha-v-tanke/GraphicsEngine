@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -92,6 +93,11 @@ public:
     [[nodiscard]] std::optional<FrameKey> TryBeginFrame();
     // Completion is exactly once. Stale/duplicate/stopped signals return false.
     [[nodiscard]] bool CompleteUserUpdate(FrameKey frame);
+    // Application-owned frame callback; caller remains alive through Stop. Never runs on the host.
+    [[nodiscard]] bool ScheduleUserUpdate(FrameKey frame, std::function<void()> callback);
+    [[nodiscard]] bool IsUpdateComplete(FrameKey frame) const;
+    // Platform progress signal; invoked outside runtime metadata locks, cleared only after Stop.
+    void SetProgressWakeup(std::function<void()> wakeup);
     // Only an uncompleted user reservation may be aborted; never cancels live CPU/GPU users.
     [[nodiscard]] bool AbortFrame(FrameKey frame);
 

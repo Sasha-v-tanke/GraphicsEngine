@@ -72,6 +72,11 @@ FrameLoop::~FrameLoop() {
 }
 
 void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
+    m_engine->SetProgressWakeup([wakeup] {
+        if (wakeup.Notify) {
+            wakeup.Notify(wakeup.Context);
+        }
+    });
     m_mainExecutor.Start(wakeup);
     try {
         if (m_presentation) {
@@ -118,7 +123,10 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
         }
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
         try {
-            callbacks.OnUpdate();
+            callbacks.CaptureInput();
+            if (!m_engine->ScheduleUserUpdate(*m_reservedFrame, [&callbacks] { callbacks.OnUpdate(); })) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Frame user update admission failed");
+            }
             progressed = true;
         } catch (...) {
             (void)m_engine->AbortFrame(*m_reservedFrame);
@@ -160,7 +168,7 @@ void FrameLoop::EngineUpdateCheckpoint() {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application update checkpoint is out of order");
     }
 
-    if (m_reservedFrame && m_engine->CompleteUserUpdate(*m_reservedFrame)) {
+    if (m_reservedFrame && m_engine->IsUpdateComplete(*m_reservedFrame)) {
         m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_DRAW;
     }
 }
