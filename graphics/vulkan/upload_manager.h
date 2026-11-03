@@ -71,8 +71,9 @@ public:
     // Copies bytes during this call and retains destinations until the returned exact completion.
     // GPU readiness belongs to the caller and may be published only after that completion.
     // Empty/oversized batches and exhausted staging budget throw without waiting or submitting.
-    [[nodiscard]] VulkanQueueCompletion UploadBatch(std::span<const VulkanBufferUpload> buffers,
-                                                    std::span<const VulkanImageUpload> images = {});
+    [[nodiscard]] VulkanQueueCompletion
+    UploadBatch(std::span<const VulkanBufferUpload> buffers,
+                std::span<const VulkanImageUpload> images = std::span<const VulkanImageUpload>());
 
     void ReleaseCompleted();
 
