@@ -74,9 +74,8 @@ void BM_UploadBatches(benchmark::State& state) {
         const auto statistics = uploads.GetStatistics();
         state.counters["uploads/batch"] =
                 static_cast<double>(statistics.SubmittedUploads) / static_cast<double>(statistics.Submissions);
-        state.counters["submissions/iteration"] = static_cast<double>(uploadCount) /
-                                                  static_cast<double>(statistics.SubmittedUploads) /
-                                                  static_cast<double>(statistics.Submissions);
+        state.counters["submissions/iteration"] =
+                static_cast<double>(statistics.Submissions) / static_cast<double>(state.iterations());
         state.counters["arena_allocations"] = static_cast<double>(statistics.ArenaAllocations);
         state.counters["staging_high_water"] = static_cast<double>(statistics.StagingHighWaterBytes);
         state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(uploadCount * bytes.size()));
