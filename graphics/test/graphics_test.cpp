@@ -158,6 +158,7 @@ PublishShaderArtifact(NResources::ResourceManager& resources,
 [[nodiscard]] NGraphics::GraphicsPipelineDescriptor
 MakeGraphicsPipelineDescriptor(NResources::ResourceManager& resources) {
     return {
+            .MaterialBindings = {},
             .Shaders =
                     {
                             MakeShader(resources, NResources::EShaderStage::VERTEX, "vertex", 1U),

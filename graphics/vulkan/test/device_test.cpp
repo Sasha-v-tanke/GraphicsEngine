@@ -92,6 +92,7 @@ NVulkan::VulkanPhysicalDeviceSelection MakeSelection() {
             .Handle = reinterpret_cast<VkPhysicalDevice>(1),
             .Capabilities =
                     {
+                            .Name = {},
                             .ApiVersion = VK_API_VERSION_1_3,
                             .DescriptorLimits =
                                     {
@@ -107,6 +108,7 @@ NVulkan::VulkanPhysicalDeviceSelection MakeSelection() {
                                             .Synchronization2 = true,
                                             .DynamicRendering = true,
                                     },
+                            .QueueFamilies = {},
                             .SurfaceSupported = true,
                             .SwapchainFormatsSupported = true,
                             .SwapchainPresentModesSupported = true,
@@ -353,6 +355,7 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
                 return NGraphics::Shader{resources, resource};
             };
             NGraphics::GraphicsPipelineDescriptor pipelineDescriptor{
+                    .MaterialBindings = {},
                     .Shaders = {makeShader(NResources::EShaderStage::VERTEX, "vertex", NTest::VertexShaderWords),
                                 makeShader(NResources::EShaderStage::FRAGMENT, "fragment", NTest::FragmentShaderWords)},
                     .VertexLayout = {},
@@ -462,7 +465,7 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
                     .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
                     .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
             };
-            const VkImage image = device.CreateImage(imageDescriptor);
+            VkImage image = device.CreateImage(imageDescriptor);
             ASSERT_NE(image, VK_NULL_HANDLE);
 
             VkMemoryRequirements memoryRequirements{};
@@ -485,7 +488,7 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
             ASSERT_EQ(vkAllocateMemory(device.GetHandle(), &allocationInfo, nullptr, &imageMemory), VK_SUCCESS);
             ASSERT_EQ(vkBindImageMemory(device.GetHandle(), image, imageMemory, 0), VK_SUCCESS);
 
-            const VkImageView imageView =
+            VkImageView imageView =
                     device.CreateImageView(image,
                                            {
                                                    .Image = {},
@@ -494,7 +497,7 @@ TEST(VulkanDeviceChild, DISABLED_CreatesAndDestroysDeviceAndPublishesCapabilitie
                                            });
             EXPECT_NE(imageView, VK_NULL_HANDLE);
 
-            const VkSampler sampler = device.CreateSampler({
+            VkSampler sampler = device.CreateSampler({
                     .MinFilter = NGraphics::ESamplerFilter::Linear,
                     .MagFilter = NGraphics::ESamplerFilter::Linear,
                     .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
@@ -549,7 +552,7 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                     .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
                     .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
             };
-            const VkImage image = device.CreateImage(imageDescriptor);
+            VkImage image = device.CreateImage(imageDescriptor);
             ASSERT_NE(image, VK_NULL_HANDLE);
 
             VkMemoryRequirements memoryRequirements{};
@@ -572,7 +575,7 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
             ASSERT_EQ(vkAllocateMemory(device.GetHandle(), &allocationInfo, nullptr, &imageMemory), VK_SUCCESS);
             ASSERT_EQ(vkBindImageMemory(device.GetHandle(), image, imageMemory, 0), VK_SUCCESS);
 
-            const VkImageView imageView =
+            VkImageView imageView =
                     device.CreateImageView(image,
                                            {
                                                    .Image = {},
@@ -581,7 +584,7 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                                            });
             ASSERT_NE(imageView, VK_NULL_HANDLE);
 
-            const VkSampler sampler = device.CreateSampler({
+            VkSampler sampler = device.CreateSampler({
                     .MinFilter = NGraphics::ESamplerFilter::Linear,
                     .MagFilter = NGraphics::ESamplerFilter::Linear,
                     .AddressModeU = NGraphics::ESamplerAddressMode::ClampToEdge,
@@ -661,6 +664,9 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                                                                 .OffsetBytes = 1,
                                                                 .SizeBytes = 64,
                                                         },
+                                                .Image = {},
+                                                .Sampler = {},
+                                                .CombinedImageSampler = {},
                                         },
                                 .Buffer =
                                         {
@@ -670,6 +676,8 @@ TEST(VulkanDeviceChild, DISABLED_AllocatesAndCachesMaterialDescriptorSets) {
                                                 .OffsetBytes = 1,
                                                 .SizeBytes = 64,
                                         },
+                                .Image = {},
+                                .Sampler = {},
                         },
                 };
                 NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
@@ -774,7 +782,7 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
             EXPECT_EQ(resourceStates.GetBufferState(destination.GetBuffer(), 0, bytes.size())->AccessMask,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT);
         }
-        const VkBuffer destroyedBuffer = destinations.front().GetBuffer();
+        VkBuffer destroyedBuffer = destinations.front().GetBuffer();
         destinations.clear();
         EXPECT_FALSE(resourceStates.GetBufferState(destroyedBuffer, 0, bytes.size()).has_value());
 
@@ -785,7 +793,7 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
                         .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
                         .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::GpuRead),
                 });
-        const VkBuffer retainedBuffer = retainedDestination->GetBuffer();
+        VkBuffer retainedBuffer = retainedDestination->GetBuffer();
         const NVulkan::VulkanQueueCompletion retainedCompletion = uploads.UploadBuffer(*retainedDestination, bytes);
         retainedDestination.reset();
         EXPECT_TRUE(resourceStates.GetBufferState(retainedBuffer, 0, bytes.size()).has_value());
@@ -855,7 +863,7 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         ASSERT_TRUE(resourceStates.GetImageState(image.GetImage(), imageRange).has_value());
         EXPECT_EQ(resourceStates.GetImageState(image.GetImage(), imageRange)->Layout,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        const VkImage destroyedImage = image.GetImage();
+        VkImage destroyedImage = image.GetImage();
         image = {};
         EXPECT_FALSE(resourceStates.GetImageState(destroyedImage, imageRange).has_value());
         EXPECT_TRUE(validationErrors.empty()) << (validationErrors.empty() ? "" : validationErrors.front());
