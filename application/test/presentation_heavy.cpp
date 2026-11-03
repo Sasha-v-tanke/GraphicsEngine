@@ -168,7 +168,7 @@ void RunPresentationLifecycle(std::size_t count) {
             for (int index = 0; index < 100; ++index) {
                 step(true);
             }
-            const auto updates = callbacks.Updates;
+            const auto updates = callbacks.Updates.load();
             const auto draws = callbacks.Draws;
             for (int index = 0; index < 20; ++index) {
                 step(true);
