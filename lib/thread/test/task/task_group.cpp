@@ -63,6 +63,7 @@ TEST(TaskGroup, SpawnStormAndConcurrentContinuations) {
         }
         std::atomic_size_t continuations{0};
         std::vector<std::thread> producers;
+        producers.reserve(4);
         for (std::size_t index = 0; index < 4; ++index) {
             producers.emplace_back([&] {
                 for (std::size_t continuation = 0; continuation < 24; ++continuation) {

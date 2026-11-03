@@ -350,7 +350,7 @@ private:
                           const std::shared_ptr<TaskGroupHandle::State>& group = {},
                           bool descendant = false);
     void ValidateGroup(const TaskGroupHandle& group) const;
-    void QueueGroupCompletionLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept;
+    static void QueueGroupCompletionLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept;
     void RetireGroupMemberLocked(const std::shared_ptr<TaskHandle::State>& state, FinalizationBatch& batch) noexcept;
     void CloseGroupLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept;
     void PublishGroupGateLocked(TaskHandle::State& state, FinalizationBatch& batch) noexcept;
