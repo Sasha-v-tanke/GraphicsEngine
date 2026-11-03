@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -289,11 +290,15 @@ TEST(EcsScheduling, FailureJoinsIndependentWorkCancelsDependentsAndRollsBackPhas
     world.BeginDeferredStructuralPhase({{.Order = 0, .EntityCreateCount = 1, .SystemOrder = 10},
                                         {.Order = 0, .EntityCreateCount = 1, .SystemOrder = 30}});
     NEcs::Entity created;
+    std::binary_semaphore independentEntered{0};
+    std::binary_semaphore releaseIndependent{0};
     std::atomic_bool independentFinished = false;
     std::atomic_bool dependentExecuted = false;
     world.RegisterSystem(
             {},
             [&](NEcs::World& current) {
+                independentEntered.release();
+                releaseIndependent.acquire();
                 auto producer = current.CreateDeferredStructuralCommandBuffer(0);
                 created = current.DeferCreateEntity(producer);
                 NEcs::World::DeferDestroyEntity(producer, existing);
@@ -304,7 +309,11 @@ TEST(EcsScheduling, FailureJoinsIndependentWorkCancelsDependentsAndRollsBackPhas
             10);
     world.RegisterSystem(
             {},
-            [](NEcs::World&) { GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "test failure"); },
+            [&](NEcs::World&) {
+                independentEntered.acquire();
+                releaseIndependent.release();
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "test failure");
+            },
             NEcs::SystemSchedule{.Id = 20});
     world.RegisterSystem(
             {},
