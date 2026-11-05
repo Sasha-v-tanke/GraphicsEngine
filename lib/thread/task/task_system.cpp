@@ -225,10 +225,12 @@ bool TaskHandle::IsValid() const noexcept {
 }
 
 TaskHandle TaskContext::Spawn(TaskFunction function) {
+    function = BindFrameOrigin(std::move(function), GetFrameOrigin());
     return m_taskSystem->SubmitImpl(function, {});
 }
 
 TaskHandle TaskContext::Spawn(TaskFunction function, std::span<const TaskHandle> dependencies) {
+    function = BindFrameOrigin(std::move(function), GetFrameOrigin());
     return m_taskSystem->SubmitImpl(function, dependencies);
 }
 
@@ -237,6 +239,7 @@ TaskHandle TaskContext::SpawnInGroup(TaskFunction function, std::span<const Task
     if (!group) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Invocation does not belong to a task group");
     }
+    function = BindFrameOrigin(std::move(function), GetFrameOrigin());
     return m_taskSystem->SubmitImpl(function, dependencies, group, true);
 }
 
@@ -279,11 +282,13 @@ TaskHandle TaskSystem::SubmitToGroup(const TaskGroupHandle& group,
                                      TaskFunction function,
                                      std::span<const TaskHandle> dependencies) {
     ValidateGroup(group);
+    function = BindFrameOrigin(std::move(function), FrameOriginScope::Current());
     return SubmitImpl(function, dependencies, group.m_state);
 }
 
 TaskHandle TaskSystem::SubmitAfterGroup(const TaskGroupHandle& group, TaskFunction function) {
     ValidateGroup(group);
+    function = BindFrameOrigin(std::move(function), FrameOriginScope::Current());
     return SubmitImpl(function, std::span{&group.m_state->Completion, 1});
 }
 

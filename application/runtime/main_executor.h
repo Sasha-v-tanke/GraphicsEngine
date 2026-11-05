@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <concepts>
 #include <condition_variable>
 #include <cstddef>
@@ -9,11 +10,13 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <type_traits>
 #include <utility>
 
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/lib/thread/task/frame_origin.h>
 
 namespace NApplication::NRuntime {
 
@@ -103,6 +106,15 @@ public:
         }
     };
     static constexpr std::size_t DISPATCH_BATCH = 64;
+    static constexpr std::size_t FRAME_BURST = 8;
+    struct Diagnostics {
+        std::size_t PeakDepth = 0;
+        std::uint64_t Dispatched = 0;
+        std::chrono::nanoseconds MaxQueueAge{};
+        std::chrono::nanoseconds BlockedTime{};
+        std::optional<NCommon::FrameOrigin> LastOrigin;
+    };
+    [[nodiscard]] Diagnostics GetDiagnostics() const;
 
     MainExecutor();
     ~MainExecutor();
@@ -118,6 +130,8 @@ public:
 
 private:
     struct Entry {
+        std::optional<NCommon::FrameOrigin> Origin;
+        std::chrono::steady_clock::time_point Enqueued;
         Command Function;
         std::shared_ptr<MainCompletion::State> Completion;
     };
@@ -132,6 +146,8 @@ private:
     Wakeup m_wakeup;
     Generation m_generation = 0;
     std::size_t m_stopping = 0;
+    std::size_t m_frameBurst = 0;
+    Diagnostics m_diagnostics;
     bool m_running = false;
     bool m_draining = false;
 };

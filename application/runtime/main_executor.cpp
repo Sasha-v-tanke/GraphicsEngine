@@ -1,5 +1,6 @@
 #include "main_executor.h"
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -63,6 +64,8 @@ MainExecutor::Generation MainExecutor::Start(Wakeup wakeup) {
     m_wakeup = wakeup;
     ++m_generation;
     m_running = true;
+    m_frameBurst = 0;
+    m_diagnostics = {};
     return m_generation;
 }
 
@@ -121,8 +124,16 @@ void MainExecutor::Invoke(Command command) {
         command();
         return;
     }
+    const auto waitStarted = std::chrono::steady_clock::now();
     const MainCompletion completion = Post(generation, std::move(command));
-    if (completion.Wait() == EMainCommandState::FAILED) {
+    const auto state = completion.Wait();
+    {
+        std::lock_guard lock{m_mutex};
+        if (generation == m_generation) {
+            m_diagnostics.BlockedTime += std::chrono::steady_clock::now() - waitStarted;
+        }
+    }
+    if (state == EMainCommandState::FAILED) {
         std::rethrow_exception(completion.GetFailure());
     }
 }
@@ -131,7 +142,10 @@ MainCompletion MainExecutor::Post(Generation generation, Command command) {
     if (!command) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Main command is empty");
     }
-    Entry entry{std::move(command), std::make_shared<MainCompletion::State>()};
+    Entry entry{NCommon::FrameOriginScope::Current(),
+                std::chrono::steady_clock::now(),
+                std::move(command),
+                std::make_shared<MainCompletion::State>()};
     entry.Completion->Consumer = m_consumer;
     MainCompletion completion{entry.Completion};
     {
@@ -141,6 +155,7 @@ MainCompletion MainExecutor::Post(Generation generation, Command command) {
         }
         if (m_running && generation == m_generation) {
             m_queue.push_back(std::move(entry));
+            m_diagnostics.PeakDepth = std::max(m_diagnostics.PeakDepth, m_queue.size());
             // Serialize the native signal with Stop, so it cannot access Window after Stop returns.
             // Only a nonthrowing, non-reentrant platform notifier is allowed here, not a command callback.
             if (m_wakeup) {
@@ -171,13 +186,36 @@ std::size_t MainExecutor::Drain(std::size_t limit) {
             if (!m_running || m_queue.empty()) {
                 break;
             }
-            entry = std::move(m_queue.front());
-            m_queue.pop_front();
+            auto selected = m_queue.end();
+            auto unframed = m_queue.end();
+            for (auto it = m_queue.begin(); it != m_queue.end(); ++it) {
+                if (!it->Origin) {
+                    if (unframed == m_queue.end()) {
+                        unframed = it;
+                    }
+                } else if (selected == m_queue.end() || it->Origin->RunGeneration < selected->Origin->RunGeneration ||
+                           (it->Origin->RunGeneration == selected->Origin->RunGeneration &&
+                            it->Origin->FrameSequence < selected->Origin->FrameSequence)) {
+                    selected = it;
+                }
+            }
+            if (selected == m_queue.end() || (unframed != m_queue.end() && m_frameBurst >= FRAME_BURST)) {
+                selected = unframed;
+            }
+            m_frameBurst = selected->Origin ? std::min(FRAME_BURST, m_frameBurst + 1) : 0;
+            entry = std::move(*selected);
+            m_queue.erase(selected);
+            ++m_diagnostics.Dispatched;
+            m_diagnostics.LastOrigin = entry.Origin;
+            m_diagnostics.MaxQueueAge = std::max(m_diagnostics.MaxQueueAge,
+                                                 std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                         std::chrono::steady_clock::now() - entry.Enqueued));
             std::lock_guard stateLock{entry.Completion->Mutex};
             entry.Completion->Value = EMainCommandState::RUNNING;
         }
         std::exception_ptr failure;
         try {
+            const NCommon::FrameOriginScope origin{entry.Origin};
             entry.Function();
         } catch (...) {
             failure = std::current_exception();
@@ -194,6 +232,11 @@ std::size_t MainExecutor::Drain(std::size_t limit) {
 std::size_t MainExecutor::GetPendingCount() const {
     std::lock_guard lock{m_mutex};
     return m_queue.size();
+}
+
+MainExecutor::Diagnostics MainExecutor::GetDiagnostics() const {
+    std::lock_guard lock{m_mutex};
+    return m_diagnostics;
 }
 
 } // namespace NApplication::NRuntime

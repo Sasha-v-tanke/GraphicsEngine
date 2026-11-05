@@ -79,8 +79,10 @@ void UserJobScope::Dispatch() noexcept {
             if (!retired) {
                 if (selected->Phase.load() == EJobPhase::RESUME_QUEUED) {
                     try {
-                        static_cast<void>(
-                                m_tasks.Submit([execution = selected](NCommon::TaskContext&) { execution->Run(); }));
+                        static_cast<void>(m_tasks.Submit([execution = selected](NCommon::TaskContext&) {
+                            const NCommon::FrameOriginScope unframed{std::nullopt};
+                            execution->Run();
+                        }));
                     } catch (...) {
                         selected->FailResume();
                     }

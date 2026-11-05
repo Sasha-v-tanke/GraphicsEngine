@@ -603,3 +603,17 @@ TEST(UserJobCancellation, FrameFailureClosesUserScopeBeforeQueuedCallableCanStar
 }
 
 } // namespace
+
+namespace {
+TEST(UserJobsOrigin, IndependentJobFromFrameScopeRemainsUnframed) {
+    NEngine::Engine engine{{.WorkerCount = 1}};
+    engine.Start();
+    {
+        const NCommon::FrameOriginScope scope{NCommon::FrameOrigin{1, 99}};
+        auto job = engine.RunAsync([] { return NCommon::TaskContext::GetFrameOrigin().has_value(); });
+        ASSERT_TRUE(WaitReady(job));
+        EXPECT_FALSE(job.TryTake()->value());
+    }
+    engine.Stop();
+}
+} // namespace
