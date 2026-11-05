@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -32,7 +33,7 @@ struct AsyncResourceLoader::Work {
     bool Decoded = false;
     bool Finished = false;
 
-    void Failure(const std::exception& error) {
+    void Failure(const std::exception& error) const {
         Fail({.Code = NCommon::EError::IO_ERROR,
               .Message =
                       "Resource '" + std::string{Identity.GetKey()} + "' at '" + Path.string() + "': " + error.what()});
@@ -52,6 +53,17 @@ struct AsyncResourceLoader::Impl {
         : Tasks(tasks)
         , Io(config, std::move(reader))
         , Limit(config.MaxPendingReads) {
+    }
+
+    void CancelQueued(const NCommon::TaskHandle& task) {
+        try {
+            Tasks.Cancel(task);
+        } catch (const NCommon::Exception& error) {
+            // A queued task may start between observation and cancellation. Its stop_token handles that race.
+            if (error.code() != NCommon::EError::INVALID_STATE) {
+                throw;
+            }
+        }
     }
 
     void CheckOwner() const {
@@ -79,7 +91,7 @@ AsyncResourceLoader::LoadImage(ResourceIdentity identity, std::filesystem::path 
     return Load<ImageData>(
             std::move(identity),
             std::move(path),
-            [](auto bytes, auto) { return DecodeImage(bytes); },
+            [](auto bytes, const auto&) { return DecodeImage(bytes); },
             std::move(upload));
 }
 
@@ -88,7 +100,7 @@ AsyncResourceLoader::LoadMesh(ResourceIdentity identity, std::filesystem::path p
     return Load<MeshData>(
             std::move(identity),
             std::move(path),
-            [](auto bytes, auto) { return DecodeMesh(bytes); },
+            [](auto bytes, const auto&) { return DecodeMesh(bytes); },
             std::move(upload));
 }
 
@@ -99,7 +111,7 @@ ResourceHandle<ShaderArtifact> AsyncResourceLoader::LoadShaderArtifact(ResourceI
     return Load<ShaderArtifact>(
             std::move(identity),
             std::move(path),
-            [stage](auto bytes, auto) { return DecodeShaderArtifact(bytes, stage); },
+            [stage](auto bytes, const auto&) { return DecodeShaderArtifact(bytes, stage); },
             std::move(upload));
 }
 
@@ -128,7 +140,7 @@ void AsyncResourceLoader::Enqueue(
     }
     m_impl->WorkItems.push_back(work);
     try {
-        auto request = m_impl->Io.Read(work->Path, [this, work](auto result) {
+        auto request = m_impl->Io.Read(work->Path, [this, work](const auto& result) {
             struct CompletionGuard {
                 Work& Item;
                 ~CompletionGuard() {
@@ -190,11 +202,16 @@ void AsyncResourceLoader::CancelMatching(const ResourceIdentity& identity) {
             work->Cancel();
             work->Stop.request_stop();
             ResourceIoRequest request;
+            NCommon::TaskHandle task;
             {
                 std::lock_guard lock{work->Mutex};
                 request = work->Io;
+                task = work->Task;
             }
             request.Cancel();
+            if (task.IsValid()) {
+                m_impl->CancelQueued(task);
+            }
         }
     }
 }
@@ -233,21 +250,21 @@ void AsyncResourceLoader::PumpUploads() {
                 work->Ready(work->Upload.Representation);
                 work->Upload = {};
             }
-            if (!work->Current()) {
-                // Do not retire execution captures until TaskSystem reports callable retirement.
-                std::lock_guard lock{work->Mutex};
-                const bool taskDone = !work->Task.IsValid() ||
-                                      m_impl->Tasks.GetStatus(work->Task) == NCommon::ETaskStatus::COMPLETED ||
-                                      m_impl->Tasks.GetStatus(work->Task) == NCommon::ETaskStatus::FAILED ||
-                                      m_impl->Tasks.GetStatus(work->Task) == NCommon::ETaskStatus::CANCELLED;
-                work->Finished = work->CallbackDone.load() && taskDone;
-            }
         } catch (const std::exception& error) {
             work->Failure(error);
-            // Keep an unsuccessful completion poll retained for shutdown's exact drain.
-            if (!work->Upload.Representation) {
-                work->Finished = true;
+        } catch (...) {
+            work->Fail({.Code = NCommon::EError::IO_ERROR, .Message = "Unknown resource upload failure"});
+        }
+        if (!work->Upload.Representation && !work->Current()) {
+            // Even submit failures must wait for handoff/callable retirement before removing the work.
+            std::lock_guard lock{work->Mutex};
+            bool taskDone = !work->Task.IsValid();
+            if (!taskDone) {
+                const auto status = m_impl->Tasks.GetStatus(work->Task);
+                taskDone = status == NCommon::ETaskStatus::COMPLETED || status == NCommon::ETaskStatus::FAILED ||
+                           status == NCommon::ETaskStatus::CANCELLED;
             }
+            work->Finished = work->CallbackDone.load() && taskDone;
         }
     }
     std::vector<std::shared_ptr<Work>> retired;
@@ -277,13 +294,24 @@ void AsyncResourceLoader::Shutdown() {
         work->Stop.request_stop();
     }
     m_impl->Io.Shutdown();
+    std::exception_ptr failure;
     for (const auto& work: items) {
         if (work->Task.IsValid()) {
+            m_impl->CancelQueued(work->Task);
             m_impl->Tasks.Wait(work->Task);
         }
         if (work->Upload.Representation && work->Upload.Wait) {
-            work->Upload.Wait();
+            try {
+                work->Upload.Wait();
+            } catch (...) {
+                if (!failure) {
+                    failure = std::current_exception();
+                }
+            }
         }
+    }
+    if (failure) {
+        std::rethrow_exception(failure);
     }
 }
 
