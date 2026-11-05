@@ -196,13 +196,25 @@ private:
     friend struct TaskHandle::State;
     friend class TaskContext;
 
+    // Storage belongs to the dependent State and is never resized after linking.
+    // Both endpoint lists and every hook mutation are protected by m_mutex.
+    struct DependencyEdge {
+        TaskHandle::State* Prerequisite = nullptr;
+        TaskHandle::State* Dependent = nullptr;
+        DependencyEdge* PreviousIncoming = nullptr;
+        DependencyEdge* NextIncoming = nullptr;
+        DependencyEdge* PreviousOutgoing = nullptr;
+        DependencyEdge* NextOutgoing = nullptr;
+    };
+
     struct Task {
         Task() = default;
         Task(Task&& other) noexcept
             : Function()
             , Status(other.Status)
             , Dependencies(std::move(other.Dependencies))
-            , Dependents(std::move(other.Dependents))
+            , Incoming(std::exchange(other.Incoming, nullptr))
+            , Outgoing(std::exchange(other.Outgoing, nullptr))
             , RemainingDependencies(other.RemainingDependencies.load(std::memory_order_relaxed))
             , Finalizing(other.Finalizing)
             , PendingStatus(other.PendingStatus)
@@ -219,7 +231,8 @@ private:
             Function.swap(other.Function);
             Status = other.Status;
             Dependencies = std::move(other.Dependencies);
-            Dependents = std::move(other.Dependents);
+            Incoming = std::exchange(other.Incoming, nullptr);
+            Outgoing = std::exchange(other.Outgoing, nullptr);
             RemainingDependencies.store(other.RemainingDependencies.load(std::memory_order_relaxed),
                                         std::memory_order_relaxed);
             Finalizing = other.Finalizing;
@@ -235,8 +248,9 @@ private:
 
         TaskFunction Function;
         ETaskStatus Status = ETaskStatus::CREATED;
-        std::vector<std::uint64_t> Dependencies;
-        std::vector<std::uint64_t> Dependents;
+        std::vector<DependencyEdge> Dependencies;
+        DependencyEdge* Incoming = nullptr;
+        DependencyEdge* Outgoing = nullptr;
         std::atomic_size_t RemainingDependencies = 0;
         bool Finalizing = false;
         ETaskStatus PendingStatus = ETaskStatus::CREATED;
@@ -255,13 +269,7 @@ private:
         std::uint64_t Id = 0;
         std::shared_ptr<TaskHandle::State> State;
         Task Task;
-        std::vector<std::uint64_t> LinkedDependencies;
         bool OutstandingCommitted = false;
-    };
-
-    struct LinkedDependencies {
-        bool Cancelled = false;
-        std::vector<std::uint64_t> LinkedIds;
     };
 
     struct TaskRegistry {
@@ -274,10 +282,11 @@ private:
         void ValidateHandleOwner(const TaskHandle& task) const;
         [[nodiscard]] std::shared_ptr<TaskHandle::State> AllocateStateLocked();
         void ValidateDependenciesLocked(std::span<const TaskHandle> dependencies) const;
-        [[nodiscard]] LinkedDependencies
-        LinkDependencyEdgesLocked(std::uint64_t taskId, Task& task, std::span<const TaskHandle> dependencies);
-        void RollbackDependencyEdgesLocked(std::uint64_t taskId, std::span<const std::uint64_t> dependencyIds);
-        void UnlinkDependencyEdgesLocked(std::uint64_t taskId, const Task& task);
+        [[nodiscard]] static bool LinkDependencyEdgesLocked(TaskHandle::State& state,
+                                                            std::span<const TaskHandle> dependencies);
+        [[nodiscard]] static std::shared_ptr<TaskHandle::State> PinStateLocked(TaskHandle::State& state) noexcept;
+        static void UnlinkEdgeLocked(DependencyEdge& edge) noexcept;
+        static void UnlinkDependencyEdgesLocked(Task& task) noexcept;
         void CommitActiveTaskLocked(std::uint64_t taskId, std::shared_ptr<TaskHandle::State> state);
         void RollbackAllocationLocked(std::uint64_t taskId);
     };
@@ -330,6 +339,8 @@ private:
 
         std::shared_ptr<TaskHandle::State> First;
         TaskHandle::State* Last = nullptr;
+        TaskHandle::State* FirstUnprepared = nullptr;
+        TaskHandle::State* LastUnprepared = nullptr;
 
     private:
         TaskSystem& m_owner;
@@ -342,8 +353,8 @@ private:
                        std::optional<ErrorInfo> error,
                        TaskFunction& function);
     static void CancelTaskLocked(const std::shared_ptr<TaskHandle::State>& state, FinalizationBatch& batch);
-    void PropagateCancellationLocked(Task& task, FinalizationBatch& batch);
-    void PrepareCancellationsLocked(FinalizationBatch& batch);
+    static void PropagateCancellationLocked(Task& task, FinalizationBatch& batch);
+    static void PrepareCancellationsLocked(FinalizationBatch& batch);
     void CancelPendingTasksLocked(FinalizationBatch& batch) noexcept;
     void DrainFinalizations(FinalizationBatch& batch) noexcept;
     [[noreturn]] static void FailDagInvariantLocked(const char* message) noexcept;

@@ -207,4 +207,36 @@ TEST(TaskGroupFault, FanInAndCancellationNeedNoAllocation) {
     EXPECT_EQ(pool.GetStatus(cancelledContinuation), NCommon::ETaskStatus::CANCELLED);
 }
 
+TEST(TaskDagFault, CancellationDetachesSharedEdgesWithoutAllocating) {
+    std::binary_semaphore entered{0};
+    std::binary_semaphore resume{0};
+    NCommon::TaskSystem pool{1};
+    pool.Submit([&](NCommon::TaskContext&) {
+        entered.release();
+        resume.acquire();
+    });
+    entered.acquire();
+    const NCommon::TaskHandle root = pool.Submit([](NCommon::TaskContext&) {});
+    const NCommon::TaskHandle unaffected = pool.Submit([](NCommon::TaskContext&) {});
+    const NCommon::TaskHandle parents[]{root, unaffected};
+    const NCommon::TaskHandle left = pool.Submit([](NCommon::TaskContext&) {}, parents);
+    const NCommon::TaskHandle right = pool.Submit([](NCommon::TaskContext&) {}, parents);
+    const NCommon::TaskHandle joinedParents[]{root, left, right};
+    const NCommon::TaskHandle join = pool.Submit([](NCommon::TaskContext&) {}, joinedParents);
+    bool allocated = false;
+    AllocationBudget = 0;
+    try {
+        pool.Cancel(root);
+        allocated = AllocationBudget != 0;
+    } catch (const std::bad_alloc&) {
+        allocated = true;
+    }
+    AllocationBudget = -1;
+    EXPECT_FALSE(allocated);
+    EXPECT_EQ(pool.GetStatus(join), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_EQ(pool.GetStatus(unaffected), NCommon::ETaskStatus::READY);
+    resume.release();
+    pool.WaitIdle();
+}
+
 } // namespace

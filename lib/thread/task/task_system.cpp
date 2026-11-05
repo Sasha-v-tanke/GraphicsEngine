@@ -68,7 +68,7 @@ thread_local WorkerThreadContext CurrentWorker;
 
 struct TaskSystem::OwnerToken {};
 
-struct TaskHandle::State {
+struct TaskHandle::State: std::enable_shared_from_this<TaskHandle::State> {
     mutable std::mutex Mutex;
     std::condition_variable Condition;
     std::shared_ptr<const TaskSystem::OwnerToken> Owner;
@@ -76,6 +76,7 @@ struct TaskHandle::State {
     std::atomic_bool RetirementQueued = false;
     std::uint64_t Id = 0;
     std::shared_ptr<State> FinalizationNext;
+    State* CancellationNext = nullptr;
     std::shared_ptr<State> GroupReadyNext;
     TaskSystem::Task Task;
 };
@@ -129,82 +130,81 @@ void TaskSystem::TaskRegistry::ValidateDependenciesLocked(std::span<const TaskHa
     }
 }
 
-TaskSystem::LinkedDependencies
-TaskSystem::TaskRegistry::LinkDependencyEdgesLocked(std::uint64_t taskId,
-                                                    Task& task,
-                                                    std::span<const TaskHandle> dependencies) {
-    LinkedDependencies result;
-    result.LinkedIds.reserve(dependencies.size());
-
-    try {
-        for (const TaskHandle& dependency: dependencies) {
-            ValidateHandleOwner(dependency);
-            std::lock_guard dependencyLock{dependency.m_state->Mutex};
-            Task& dependencyTask = dependency.m_state->Task;
-
-            if (dependencyTask.Finalizing && dependencyTask.PendingStatus != ETaskStatus::COMPLETED) {
-                result.Cancelled = true;
-                break;
-            }
-
-            if (!TaskLifetime::IsTerminalLocked(dependencyTask)) {
-                dependencyTask.Dependents.push_back(taskId);
-                result.LinkedIds.push_back(dependency.GetId());
-                task.RemainingDependencies.fetch_add(1, std::memory_order_relaxed);
-            } else if (!TaskLifetime::IsSuccessfulLocked(dependencyTask)) {
-                result.Cancelled = true;
-                break;
-            }
+bool TaskSystem::TaskRegistry::LinkDependencyEdgesLocked(TaskHandle::State& state,
+                                                         std::span<const TaskHandle> dependencies) {
+    Task& task = state.Task;
+    for (std::size_t index = 0; index < dependencies.size(); ++index) {
+        TaskHandle::State& prerequisite = *dependencies[index].m_state;
+        bool isTerminal = false;
+        bool isSuccessful = false;
+        {
+            std::lock_guard dependencyLock{prerequisite.Mutex};
+            const Task& dependencyTask = prerequisite.Task;
+            isTerminal = TaskLifetime::IsTerminalLocked(dependencyTask);
+            isSuccessful = isTerminal
+                                 ? TaskLifetime::IsSuccessfulLocked(dependencyTask)
+                                 : !dependencyTask.Finalizing || dependencyTask.PendingStatus == ETaskStatus::COMPLETED;
         }
-
-        if (!result.Cancelled) {
-            return result;
+        if (!isSuccessful) {
+            UnlinkDependencyEdgesLocked(task);
+            task.RemainingDependencies.store(0, std::memory_order_relaxed);
+            return true;
         }
-
-        RollbackDependencyEdgesLocked(taskId, result.LinkedIds);
-        task.RemainingDependencies.store(0, std::memory_order_relaxed);
-        return result;
-    } catch (...) {
-        RollbackDependencyEdgesLocked(taskId, result.LinkedIds);
-        task.RemainingDependencies.store(0, std::memory_order_relaxed);
-        throw;
-    }
-}
-
-void TaskSystem::TaskRegistry::RollbackDependencyEdgesLocked(std::uint64_t taskId,
-                                                             std::span<const std::uint64_t> dependencyIds) {
-    for (const std::uint64_t dependencyId: dependencyIds) {
-        const auto dependencyIt = ActiveTasks.find(dependencyId);
-
-        if (dependencyIt == ActiveTasks.end()) {
+        if (isTerminal) {
             continue;
         }
-
-        std::lock_guard dependencyLock{dependencyIt->second->Mutex};
-        std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
-        const auto dependentIt = std::ranges::find(dependents, taskId);
-
-        if (dependentIt != dependents.end()) {
-            dependents.erase(dependentIt);
+        DependencyEdge& edge = task.Dependencies[index];
+        edge.Prerequisite = &prerequisite;
+        edge.Dependent = &state;
+        edge.NextIncoming = task.Incoming;
+        if (task.Incoming != nullptr) {
+            task.Incoming->PreviousIncoming = &edge;
         }
+        task.Incoming = &edge;
+        edge.NextOutgoing = prerequisite.Task.Outgoing;
+        if (prerequisite.Task.Outgoing != nullptr) {
+            prerequisite.Task.Outgoing->PreviousOutgoing = &edge;
+        }
+        prerequisite.Task.Outgoing = &edge;
+        task.RemainingDependencies.fetch_add(1, std::memory_order_relaxed);
     }
+    return false;
 }
 
-void TaskSystem::TaskRegistry::UnlinkDependencyEdgesLocked(std::uint64_t taskId, const Task& task) {
-    for (const std::uint64_t dependencyId: task.Dependencies) {
-        const auto dependencyIt = ActiveTasks.find(dependencyId);
+std::shared_ptr<TaskHandle::State> TaskSystem::TaskRegistry::PinStateLocked(TaskHandle::State& state) noexcept {
+    std::shared_ptr<TaskHandle::State> pin = state.weak_from_this().lock();
+    if (pin == nullptr) {
+        FailDagInvariantLocked("Linked dependency endpoint has no strong owner");
+    }
+    return pin;
+}
 
-        if (dependencyIt == ActiveTasks.end()) {
-            continue;
-        }
+void TaskSystem::TaskRegistry::UnlinkEdgeLocked(DependencyEdge& edge) noexcept {
+    if (edge.Prerequisite == nullptr) {
+        return;
+    }
+    if (edge.PreviousIncoming != nullptr) {
+        edge.PreviousIncoming->NextIncoming = edge.NextIncoming;
+    } else {
+        edge.Dependent->Task.Incoming = edge.NextIncoming;
+    }
+    if (edge.NextIncoming != nullptr) {
+        edge.NextIncoming->PreviousIncoming = edge.PreviousIncoming;
+    }
+    if (edge.PreviousOutgoing != nullptr) {
+        edge.PreviousOutgoing->NextOutgoing = edge.NextOutgoing;
+    } else {
+        edge.Prerequisite->Task.Outgoing = edge.NextOutgoing;
+    }
+    if (edge.NextOutgoing != nullptr) {
+        edge.NextOutgoing->PreviousOutgoing = edge.PreviousOutgoing;
+    }
+    edge = {};
+}
 
-        std::lock_guard dependencyLock{dependencyIt->second->Mutex};
-        std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
-        const auto dependentIt = std::ranges::find(dependents, taskId);
-
-        if (dependentIt != dependents.end()) {
-            dependents.erase(dependentIt);
-        }
+void TaskSystem::TaskRegistry::UnlinkDependencyEdgesLocked(Task& task) noexcept {
+    while (task.Incoming != nullptr) {
+        UnlinkEdgeLocked(*task.Incoming);
     }
 }
 
@@ -407,12 +407,10 @@ void TaskSystem::ReadyScheduler::PublishGroupReadyTask(const std::shared_ptr<Tas
 void TaskSystem::PublishGroupGateLocked(TaskHandle::State& state, FinalizationBatch& batch) noexcept {
     // The gate is preallocated at group creation. Fan-in and ready publication cannot allocate.
     if (state.Task.PendingStatus == ETaskStatus::COMPLETED) {
-        for (const std::uint64_t id: state.Task.Dependents) {
-            const auto found = m_registry.ActiveTasks.find(id);
-            if (found == m_registry.ActiveTasks.end()) {
-                continue;
-            }
-            const std::shared_ptr<TaskHandle::State>& dependent = found->second;
+        while (state.Task.Outgoing != nullptr) {
+            DependencyEdge& edge = *state.Task.Outgoing;
+            const std::shared_ptr<TaskHandle::State> dependent = TaskRegistry::PinStateLocked(*edge.Dependent);
+            TaskRegistry::UnlinkEdgeLocked(edge);
             std::lock_guard taskLock{dependent->Mutex};
             if (dependent->Task.Status == ETaskStatus::WAITING && !dependent->Task.Finalizing &&
                 dependent->Task.RemainingDependencies.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -459,10 +457,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function,
     SubmittedTask submitted;
     Task task;
     task.Function.swap(function);
-    task.Dependencies.reserve(dependencies.size());
-    for (const TaskHandle& dependency: dependencies) {
-        task.Dependencies.push_back(dependency.GetId());
-    }
+    task.Dependencies.resize(dependencies.size());
 
     std::unique_lock lock{m_mutex};
     m_lifetime.DrainRetiredTasksLocked(m_registry);
@@ -479,13 +474,12 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function,
     submitted.Id = submitted.State->Id;
 
     try {
-        LinkedDependencies linked = m_registry.LinkDependencyEdgesLocked(submitted.Id, submitted.Task, dependencies);
-        submitted.LinkedDependencies = std::move(linked.LinkedIds);
-        submitted.Task.Status = submitted.Task.RemainingDependencies.load(std::memory_order_relaxed) == 0
-                                      ? ETaskStatus::READY
-                                      : ETaskStatus::WAITING;
-        const TaskHandle handle{submitted.Id, submitted.State};
         submitted.State->Task = std::move(submitted.Task);
+        const bool cancelled = TaskRegistry::LinkDependencyEdgesLocked(*submitted.State, dependencies);
+        submitted.State->Task.Status = submitted.State->Task.RemainingDependencies.load(std::memory_order_relaxed) == 0
+                                             ? ETaskStatus::READY
+                                             : ETaskStatus::WAITING;
+        const TaskHandle handle{submitted.Id, submitted.State};
         m_registry.CommitActiveTaskLocked(submitted.Id, submitted.State);
 
         m_lifetime.OutstandingTasks.fetch_add(1, std::memory_order_release);
@@ -494,7 +488,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function,
             ++group->Outstanding;
             submitted.State->Task.Group = group;
         }
-        if (linked.Cancelled) {
+        if (cancelled) {
             CancelTaskLocked(submitted.State, finalizations);
             PrepareCancellationsLocked(finalizations);
         } else {
@@ -507,7 +501,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function,
         }
         return handle;
     } catch (...) {
-        m_registry.RollbackDependencyEdgesLocked(submitted.Id, submitted.LinkedDependencies);
+        TaskRegistry::UnlinkDependencyEdgesLocked(submitted.State->Task);
         m_registry.RollbackAllocationLocked(submitted.Id);
         // Rollback payload destruction must precede releasing accepted-work accounting.
         lock.unlock();
@@ -828,6 +822,14 @@ void TaskSystem::FinalizationBatch::Add(const std::shared_ptr<TaskHandle::State>
         First = state;
     }
     Last = state.get();
+    if (state->Task.GroupGateId == 0 && state->Task.PendingStatus == ETaskStatus::CANCELLED) {
+        if (LastUnprepared != nullptr) {
+            LastUnprepared->CancellationNext = state.get();
+        } else {
+            FirstUnprepared = state.get();
+        }
+        LastUnprepared = state.get();
+    }
 }
 
 void TaskSystem::DrainFinalizations(FinalizationBatch& batch) noexcept {
@@ -884,20 +886,21 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
         std::lock_guard lock{m_mutex};
         if (status == ETaskStatus::COMPLETED) {
             std::vector<std::shared_ptr<TaskHandle::State>> readyDependents;
-            readyDependents.reserve(state->Task.Dependents.size());
+            std::size_t dependentCount = 0;
+            for (const DependencyEdge* edge = state->Task.Outgoing; edge != nullptr; edge = edge->NextOutgoing) {
+                ++dependentCount;
+            }
+            readyDependents.reserve(dependentCount);
             ReadyQueue& readyQueue = *m_readyScheduler.WorkerQueues[CurrentWorker.Index.GetValue()];
             {
                 std::lock_guard queueLock{readyQueue.Mutex};
                 ReadyScheduler::CompactReadyQueueLocked(readyQueue);
-                readyQueue.Tasks.reserve(readyQueue.Tasks.size() + state->Task.Dependents.size());
+                readyQueue.Tasks.reserve(readyQueue.Tasks.size() + dependentCount);
             }
-            std::vector<std::uint64_t> dependents = std::move(state->Task.Dependents);
-            for (const std::uint64_t dependent: dependents) {
-                const auto dependentIt = m_registry.ActiveTasks.find(dependent);
-                if (dependentIt == m_registry.ActiveTasks.end()) {
-                    continue;
-                }
-                const std::shared_ptr<TaskHandle::State>& dependentState = dependentIt->second;
+            while (state->Task.Outgoing != nullptr) {
+                DependencyEdge& edge = *state->Task.Outgoing;
+                const std::shared_ptr<TaskHandle::State> dependentState = TaskRegistry::PinStateLocked(*edge.Dependent);
+                TaskRegistry::UnlinkEdgeLocked(edge);
                 std::lock_guard dependentLock{dependentState->Mutex};
                 Task& dependentTask = dependentState->Task;
                 if (dependentTask.Status != ETaskStatus::WAITING || dependentTask.Finalizing) {
@@ -972,19 +975,25 @@ void TaskSystem::CancelTaskLocked(const std::shared_ptr<TaskHandle::State>& stat
 }
 
 void TaskSystem::PropagateCancellationLocked(Task& task, FinalizationBatch& batch) {
-    const std::vector<std::uint64_t> dependents = std::move(task.Dependents);
-    for (const std::uint64_t dependent: dependents) {
-        const auto dependentIt = m_registry.ActiveTasks.find(dependent);
-        if (dependentIt != m_registry.ActiveTasks.end()) {
-            CancelTaskLocked(dependentIt->second, batch);
-        }
+    while (task.Outgoing != nullptr) {
+        DependencyEdge& edge = *task.Outgoing;
+        const std::shared_ptr<TaskHandle::State> dependent = TaskRegistry::PinStateLocked(*edge.Dependent);
+        TaskRegistry::UnlinkEdgeLocked(edge);
+        CancelTaskLocked(dependent, batch);
     }
 }
 
 void TaskSystem::PrepareCancellationsLocked(FinalizationBatch& batch) {
-    // No nested State locks: detach the graph before any user destructor can reenter it.
-    for (TaskHandle::State* state = batch.First.get(); state != nullptr; state = state->FinalizationNext.get()) {
-        m_registry.UnlinkDependencyEdgesLocked(state->Id, state->Task);
+    // The pending graph-work queue is separate from capture retirement. Reentrant group cleanup
+    // can append work without revisiting the already detached portion of the batch.
+    while (batch.FirstUnprepared != nullptr) {
+        TaskHandle::State* state = batch.FirstUnprepared;
+        batch.FirstUnprepared = std::exchange(state->CancellationNext, nullptr);
+        if (batch.FirstUnprepared == nullptr) {
+            batch.LastUnprepared = nullptr;
+        }
+        TaskRegistry::UnlinkDependencyEdgesLocked(state->Task);
+        state->Task.RemainingDependencies.store(0, std::memory_order_relaxed);
         PropagateCancellationLocked(state->Task, batch);
     }
 }
@@ -1000,8 +1009,10 @@ void TaskSystem::CancelPendingTasksLocked(FinalizationBatch& batch) noexcept {
 }
 
 void TaskSystem::TaskLifetime::ReleaseDependencyPayloadLocked(Task& task) {
+    if (task.Incoming != nullptr || task.Outgoing != nullptr) {
+        FailDagInvariantLocked("Retiring a task with linked dependency edges");
+    }
     task.Dependencies.clear();
-    task.Dependents.clear();
     task.RemainingDependencies.store(0, std::memory_order_relaxed);
 }
 
@@ -1025,69 +1036,37 @@ void TaskSystem::ValidateDagLocked() const {
         const Task& task = state->Task;
         std::unordered_set<std::uint64_t> uniqueDependencies;
         std::size_t unfinishedDependencies = 0;
-
-        for (const std::uint64_t dependencyId: task.Dependencies) {
-            if (!uniqueDependencies.insert(dependencyId).second) {
-                FailDagInvariantLocked("Task has duplicate dependency");
+        const DependencyEdge* previous = nullptr;
+        for (const DependencyEdge* edge = task.Incoming; edge != nullptr; edge = edge->NextIncoming) {
+            if (edge->Dependent != state.get() || edge->Prerequisite == nullptr || edge->PreviousIncoming != previous ||
+                !uniqueDependencies.insert(edge->Prerequisite->Id).second) {
+                FailDagInvariantLocked("Invalid incoming dependency edge");
             }
-
-            const auto dependencyIt = m_registry.ActiveTasks.find(dependencyId);
-
-            if (dependencyIt == m_registry.ActiveTasks.end()) {
-                continue;
+            if ((edge->PreviousOutgoing == nullptr && edge->Prerequisite->Task.Outgoing != edge) ||
+                (edge->PreviousOutgoing != nullptr && edge->PreviousOutgoing->NextOutgoing != edge) ||
+                (edge->NextOutgoing != nullptr && edge->NextOutgoing->PreviousOutgoing != edge)) {
+                FailDagInvariantLocked("Dependency edge does not link back from prerequisite");
             }
-
-            std::lock_guard dependencyLock{dependencyIt->second->Mutex};
-
-            const std::vector<std::uint64_t>& dependents = dependencyIt->second->Task.Dependents;
-            const bool hasBacklink = std::ranges::find(dependents, taskId) != dependents.end();
-
-            if (!hasBacklink) {
-                if (dependencyIt->second->Task.Status == ETaskStatus::RUNNING) {
-                    if (status == ETaskStatus::WAITING) {
-                        ++unfinishedDependencies;
-                    }
-                    continue;
-                }
-
-                if (TaskLifetime::IsSuccessfulLocked(dependencyIt->second->Task)) {
-                    continue;
-                }
-            }
-
-            if (!hasBacklink) {
-                FailDagInvariantLocked("Task dependency does not link back to dependent");
-            }
-
-            if (status == ETaskStatus::WAITING) {
-                ++unfinishedDependencies;
-            }
+            ++unfinishedDependencies;
+            previous = edge;
         }
-
         if (status == ETaskStatus::WAITING &&
             task.RemainingDependencies.load(std::memory_order_relaxed) != unfinishedDependencies) {
             FailDagInvariantLocked("Task remaining dependency counter is inconsistent");
         }
-
         std::unordered_set<std::uint64_t> uniqueDependents;
-
-        for (const std::uint64_t dependentId: task.Dependents) {
-            if (!uniqueDependents.insert(dependentId).second) {
-                FailDagInvariantLocked("Task has duplicate dependent");
+        previous = nullptr;
+        for (const DependencyEdge* edge = task.Outgoing; edge != nullptr; edge = edge->NextOutgoing) {
+            if (edge->Prerequisite != state.get() || edge->Dependent == nullptr || edge->PreviousOutgoing != previous ||
+                !uniqueDependents.insert(edge->Dependent->Id).second) {
+                FailDagInvariantLocked("Invalid outgoing dependency edge");
             }
-
-            const auto dependentIt = m_registry.ActiveTasks.find(dependentId);
-
-            if (dependentIt == m_registry.ActiveTasks.end()) {
-                FailDagInvariantLocked("Task dependent is not active");
+            if ((edge->PreviousIncoming == nullptr && edge->Dependent->Task.Incoming != edge) ||
+                (edge->PreviousIncoming != nullptr && edge->PreviousIncoming->NextIncoming != edge) ||
+                (edge->NextIncoming != nullptr && edge->NextIncoming->PreviousIncoming != edge)) {
+                FailDagInvariantLocked("Dependency edge does not link back from dependent");
             }
-
-            std::lock_guard dependentLock{dependentIt->second->Mutex};
-            const std::vector<std::uint64_t>& dependencies = dependentIt->second->Task.Dependencies;
-
-            if (std::ranges::find(dependencies, taskId) == dependencies.end()) {
-                FailDagInvariantLocked("Task dependent does not link back to dependency");
-            }
+            previous = edge;
         }
     }
 }
