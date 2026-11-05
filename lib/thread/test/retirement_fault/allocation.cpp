@@ -123,4 +123,88 @@ TEST(TaskRetirementFault, ReentrantCaptureSurvivesEverySubmitAllocationFailure) 
     FAIL() << "No successful submission after all injected allocation prefixes";
 }
 
+TEST(TaskGroupFault, AdmissionRollbackHasNoLeakedContribution) {
+    for (std::ptrdiff_t failureIndex = 0; failureIndex < 128; ++failureIndex) {
+        NCommon::TaskSystem pool{1};
+        const NCommon::TaskGroupHandle group = pool.CreateTaskGroup();
+        bool accepted = false;
+        NCommon::TaskHandle member;
+        AllocationBudget = failureIndex;
+        try {
+            member = pool.SubmitToGroup(group, [](NCommon::TaskContext&) {});
+            accepted = true;
+        } catch (const std::bad_alloc&) {
+        }
+        AllocationBudget = -1;
+        pool.SealGroup(group);
+        pool.WaitGroup(group);
+        pool.WaitIdle();
+        EXPECT_EQ(pool.GetGroupStatus(group), NCommon::ETaskGroupStatus::COMPLETED);
+        if (accepted) {
+            EXPECT_EQ(pool.GetStatus(member), NCommon::ETaskStatus::COMPLETED);
+            return;
+        }
+    }
+    FAIL() << "No successful group submission";
+}
+
+TEST(TaskGroupFault, CreationAndContinuationRollback) {
+    for (std::ptrdiff_t failureIndex = 0; failureIndex < 128; ++failureIndex) {
+        NCommon::TaskSystem pool{1};
+        NCommon::TaskGroupHandle group;
+        AllocationBudget = failureIndex;
+        try {
+            group = pool.CreateTaskGroup();
+        } catch (const std::bad_alloc&) {
+        }
+        AllocationBudget = -1;
+        if (group.IsValid()) {
+            pool.CancelGroup(group);
+        }
+        pool.WaitIdle();
+        if (group.IsValid()) {
+            break;
+        }
+    }
+    for (std::ptrdiff_t failureIndex = 0; failureIndex < 128; ++failureIndex) {
+        NCommon::TaskSystem pool{1};
+        const NCommon::TaskGroupHandle group = pool.CreateTaskGroup();
+        NCommon::TaskHandle continuation;
+        AllocationBudget = failureIndex;
+        try {
+            continuation = pool.SubmitAfterGroup(group, [](NCommon::TaskContext&) {});
+        } catch (const std::bad_alloc&) {
+        }
+        AllocationBudget = -1;
+        pool.SealGroup(group);
+        pool.WaitIdle();
+        EXPECT_EQ(pool.GetGroupStatus(group), NCommon::ETaskGroupStatus::COMPLETED);
+        if (continuation.IsValid()) {
+            EXPECT_EQ(pool.GetStatus(continuation), NCommon::ETaskStatus::COMPLETED);
+            return;
+        }
+    }
+    FAIL() << "No successful continuation submission";
+}
+
+TEST(TaskGroupFault, FanInAndCancellationNeedNoAllocation) {
+    NCommon::TaskSystem pool{1};
+    const NCommon::TaskGroupHandle group = pool.CreateTaskGroup();
+    const NCommon::TaskHandle continuation = pool.SubmitAfterGroup(group, [](NCommon::TaskContext&) {});
+    AllocationBudget = 0;
+    pool.SealGroup(group);
+    AllocationBudget = -1;
+    pool.Wait(continuation);
+    EXPECT_EQ(pool.GetStatus(continuation), NCommon::ETaskStatus::COMPLETED);
+
+    const NCommon::TaskGroupHandle cancelled = pool.CreateTaskGroup();
+    const NCommon::TaskHandle cancelledContinuation = pool.SubmitAfterGroup(cancelled, [](NCommon::TaskContext&) {});
+    AllocationBudget = 0;
+    pool.CancelGroup(cancelled);
+    AllocationBudget = -1;
+    pool.WaitGroup(cancelled);
+    pool.WaitIdle();
+    EXPECT_EQ(pool.GetStatus(cancelledContinuation), NCommon::ETaskStatus::CANCELLED);
+}
+
 } // namespace

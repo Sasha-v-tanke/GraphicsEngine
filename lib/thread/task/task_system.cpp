@@ -76,7 +76,18 @@ struct TaskHandle::State {
     std::atomic_bool RetirementQueued = false;
     std::uint64_t Id = 0;
     std::shared_ptr<State> FinalizationNext;
+    std::shared_ptr<State> GroupReadyNext;
     TaskSystem::Task Task;
+};
+
+struct TaskGroupHandle::State {
+    std::shared_ptr<const void> Owner;
+    TaskHandle Completion;
+    std::size_t Outstanding = 0;
+    bool Sealed = false;
+    bool CompletionQueued = false;
+    ETaskStatus Outcome = ETaskStatus::COMPLETED;
+    TaskHandle FirstFailure;
 };
 
 TaskSystem::TaskRegistry::TaskRegistry()
@@ -221,6 +232,196 @@ TaskHandle TaskContext::Spawn(TaskFunction function, std::span<const TaskHandle>
     return m_taskSystem->SubmitImpl(function, dependencies);
 }
 
+TaskHandle TaskContext::SpawnInGroup(TaskFunction function, std::span<const TaskHandle> dependencies) {
+    const std::shared_ptr<TaskGroupHandle::State>& group = m_task.m_state->Task.Group;
+    if (!group) {
+        GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Invocation does not belong to a task group");
+    }
+    return m_taskSystem->SubmitImpl(function, dependencies, group, true);
+}
+
+bool TaskContext::IsGroupCancellationRequested() const {
+    std::lock_guard lock{m_taskSystem->m_mutex};
+    const std::shared_ptr<TaskGroupHandle::State>& group = m_task.m_state->Task.Group;
+    return group && (group->Outcome != ETaskStatus::COMPLETED || m_taskSystem->m_stopping.load());
+}
+
+void TaskSystem::ValidateGroup(const TaskGroupHandle& group) const {
+    if (!group.IsValid() || group.m_state->Owner != m_registry.Owner ||
+        group.GetId() != group.m_state->Completion.GetId()) {
+        GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Invalid or foreign task group");
+    }
+}
+
+TaskGroupHandle TaskSystem::CreateTaskGroup() {
+    auto group = std::make_shared<TaskGroupHandle::State>();
+    group->Owner = m_registry.Owner;
+    std::lock_guard lock{m_mutex};
+    if (m_stopping.load(std::memory_order_acquire)) {
+        GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "TaskSystem is stopping");
+    }
+    auto state = m_registry.AllocateStateLocked();
+    state->Task.Status = ETaskStatus::WAITING;
+    state->Task.GroupGateId = state->Id;
+    group->Completion = TaskHandle{state->Id, state};
+    try {
+        m_registry.CommitActiveTaskLocked(state->Id, state);
+        m_groups.emplace(state->Id, group);
+    } catch (...) {
+        m_registry.RollbackAllocationLocked(state->Id);
+        throw;
+    }
+    m_lifetime.OutstandingTasks.fetch_add(1, std::memory_order_release);
+    return TaskGroupHandle{state->Id, std::move(group)};
+}
+
+TaskHandle TaskSystem::SubmitToGroup(const TaskGroupHandle& group,
+                                     TaskFunction function,
+                                     std::span<const TaskHandle> dependencies) {
+    ValidateGroup(group);
+    return SubmitImpl(function, dependencies, group.m_state);
+}
+
+TaskHandle TaskSystem::SubmitAfterGroup(const TaskGroupHandle& group, TaskFunction function) {
+    ValidateGroup(group);
+    return SubmitImpl(function, std::span{&group.m_state->Completion, 1});
+}
+
+void TaskSystem::QueueGroupCompletionLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept {
+    if (!group.Sealed || group.Outstanding != 0 || group.CompletionQueued) {
+        return;
+    }
+    group.CompletionQueued = true;
+    const std::shared_ptr<TaskHandle::State>& gate = group.Completion.m_state;
+    {
+        std::lock_guard taskLock{gate->Mutex};
+        gate->Task.Finalizing = true;
+        gate->Task.PendingStatus = group.Outcome;
+    }
+    batch.Add(gate);
+}
+
+void TaskSystem::CloseGroupLocked(TaskGroupHandle::State& group, FinalizationBatch& batch) noexcept {
+    group.Sealed = true;
+    for (const auto& [id, member]: m_registry.ActiveTasks) {
+        static_cast<void>(id);
+        if (member->Task.Group.get() == &group) {
+            CancelTaskLocked(member, batch);
+        }
+    }
+    PrepareCancellationsLocked(batch);
+    QueueGroupCompletionLocked(group, batch);
+}
+
+void TaskSystem::SealGroup(const TaskGroupHandle& group) {
+    ValidateGroup(group);
+    FinalizationBatch finalizations{*this};
+    std::lock_guard lock{m_mutex};
+    group.m_state->Sealed = true;
+    QueueGroupCompletionLocked(*group.m_state, finalizations);
+}
+
+void TaskSystem::CancelGroup(const TaskGroupHandle& group) {
+    ValidateGroup(group);
+    FinalizationBatch finalizations{*this};
+    std::lock_guard lock{m_mutex};
+    if (group.m_state->CompletionQueued) {
+        return;
+    }
+    if (group.m_state->Outcome != ETaskStatus::FAILED) {
+        group.m_state->Outcome = ETaskStatus::CANCELLED;
+    }
+    CloseGroupLocked(*group.m_state, finalizations);
+}
+
+void TaskSystem::WaitGroup(const TaskGroupHandle& group) {
+    if (IsCurrentThreadWorker()) {
+        GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "WaitGroup is host-only");
+    }
+    ValidateGroup(group);
+    Wait(group.m_state->Completion);
+}
+
+ETaskGroupStatus TaskSystem::GetGroupStatus(const TaskGroupHandle& group) const {
+    ValidateGroup(group);
+    std::lock_guard lock{m_mutex};
+    switch (GetStatus(group.m_state->Completion)) {
+    case ETaskStatus::COMPLETED:
+        return ETaskGroupStatus::COMPLETED;
+    case ETaskStatus::FAILED:
+        return ETaskGroupStatus::FAILED;
+    case ETaskStatus::CANCELLED:
+        return ETaskGroupStatus::CANCELLED;
+    default:
+        return group.m_state->Sealed ? ETaskGroupStatus::SEALED : ETaskGroupStatus::OPEN;
+    }
+}
+
+std::optional<ErrorInfo> TaskSystem::GetGroupError(const TaskGroupHandle& group) const {
+    ValidateGroup(group);
+    std::lock_guard lock{m_mutex};
+    if (!TaskLifetime::IsTerminalLocked(group.m_state->Completion.m_state->Task) ||
+        !group.m_state->FirstFailure.IsValid()) {
+        return std::nullopt;
+    }
+    return GetError(group.m_state->FirstFailure);
+}
+
+void TaskSystem::RetireGroupMemberLocked(const std::shared_ptr<TaskHandle::State>& state,
+                                         FinalizationBatch& batch) noexcept {
+    std::shared_ptr<TaskGroupHandle::State> group = std::move(state->Task.Group);
+    if (!group) {
+        return;
+    }
+    if (state->Task.Status == ETaskStatus::FAILED && !group->FirstFailure.IsValid()) {
+        group->FirstFailure = TaskHandle{state->Id, state};
+        group->Outcome = ETaskStatus::FAILED;
+        CloseGroupLocked(*group, batch);
+    } else if (state->Task.Status == ETaskStatus::CANCELLED && group->Outcome == ETaskStatus::COMPLETED) {
+        group->Outcome = ETaskStatus::CANCELLED;
+        CloseGroupLocked(*group, batch);
+    }
+    --group->Outstanding;
+    QueueGroupCompletionLocked(*group, batch);
+}
+
+void TaskSystem::ReadyScheduler::PublishGroupReadyTask(const std::shared_ptr<TaskHandle::State>& state) noexcept {
+    {
+        std::lock_guard lock{GroupReadyMutex};
+        if (GroupReadyLast) {
+            GroupReadyLast->GroupReadyNext = state;
+        } else {
+            GroupReadyFirst = state;
+        }
+        GroupReadyLast = state.get();
+        ReadyTaskCount.fetch_add(1, std::memory_order_release);
+    }
+    Wakeups.release();
+}
+
+void TaskSystem::PublishGroupGateLocked(TaskHandle::State& state, FinalizationBatch& batch) noexcept {
+    // The gate is preallocated at group creation. Fan-in and ready publication cannot allocate.
+    if (state.Task.PendingStatus == ETaskStatus::COMPLETED) {
+        for (const std::uint64_t id: state.Task.Dependents) {
+            const auto found = m_registry.ActiveTasks.find(id);
+            if (found == m_registry.ActiveTasks.end()) {
+                continue;
+            }
+            const std::shared_ptr<TaskHandle::State>& dependent = found->second;
+            std::lock_guard taskLock{dependent->Mutex};
+            if (dependent->Task.Status == ETaskStatus::WAITING && !dependent->Task.Finalizing &&
+                dependent->Task.RemainingDependencies.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                dependent->Task.Status = ETaskStatus::READY;
+                m_readyScheduler.PublishGroupReadyTask(dependent);
+            }
+        }
+    } else {
+        PropagateCancellationLocked(state.Task, batch);
+        PrepareCancellationsLocked(batch);
+    }
+    m_groups.erase(state.Task.GroupGateId);
+}
+
 TaskSystem::TaskSystem(std::size_t workerCount)
     : m_workerCount(workerCount == 0 ? 1 : workerCount) {
     m_workers.reserve(m_workerCount);
@@ -240,7 +441,10 @@ TaskSystem::~TaskSystem() {
     StopWorkers();
 }
 
-TaskHandle TaskSystem::SubmitImpl(TaskFunction& function, std::span<const TaskHandle> dependencies) {
+TaskHandle TaskSystem::SubmitImpl(TaskFunction& function,
+                                  std::span<const TaskHandle> dependencies,
+                                  const std::shared_ptr<TaskGroupHandle::State>& group,
+                                  bool descendant) {
     if (!function) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Task function is empty");
     }
@@ -260,6 +464,10 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function, std::span<const TaskHa
     if (m_stopping.load(std::memory_order_acquire)) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "TaskSystem is stopping");
     }
+    if (group &&
+        (group->CompletionQueued || group->Outcome != ETaskStatus::COMPLETED || (group->Sealed && !descendant))) {
+        GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "Task group admission is closed");
+    }
     m_registry.ValidateDependenciesLocked(dependencies);
     submitted.Task = std::move(task);
     submitted.State = m_registry.AllocateStateLocked();
@@ -277,6 +485,10 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function, std::span<const TaskHa
 
         m_lifetime.OutstandingTasks.fetch_add(1, std::memory_order_release);
         submitted.OutstandingCommitted = true;
+        if (group) {
+            ++group->Outstanding;
+            submitted.State->Task.Group = group;
+        }
         if (linked.Cancelled) {
             CancelTaskLocked(submitted.State, finalizations);
             PrepareCancellationsLocked(finalizations);
@@ -296,6 +508,12 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function, std::span<const TaskHa
         lock.unlock();
         submitted.State.reset();
         submitted.Task.Function = {};
+        if (group && submitted.OutstandingCommitted) {
+            lock.lock();
+            --group->Outstanding;
+            QueueGroupCompletionLocked(*group, finalizations);
+            lock.unlock();
+        }
         if (submitted.OutstandingCommitted) {
             m_lifetime.ReleaseOutstandingTask();
         }
@@ -423,6 +641,18 @@ void TaskSystem::ReadyScheduler::PublishReadyTask(TaskSystem& owner, std::shared
 }
 
 std::shared_ptr<TaskHandle::State> TaskSystem::ReadyScheduler::TryPopReadyTask(WorkerIndex workerIndex) {
+    {
+        std::lock_guard lock{GroupReadyMutex};
+        if (GroupReadyFirst) {
+            std::shared_ptr<TaskHandle::State> state = std::move(GroupReadyFirst);
+            GroupReadyFirst = std::move(state->GroupReadyNext);
+            if (!GroupReadyFirst) {
+                GroupReadyLast = nullptr;
+            }
+            ReadyTaskCount.fetch_sub(1, std::memory_order_acq_rel);
+            return state;
+        }
+    }
     if (auto state = TryPopLocalReadyTask(workerIndex)) {
         return state;
     }
@@ -599,6 +829,9 @@ void TaskSystem::DrainFinalizations(FinalizationBatch& batch) noexcept {
     while (batch.First != nullptr) {
         std::shared_ptr<TaskHandle::State> state = std::move(batch.First);
         batch.First = std::move(state->FinalizationNext);
+        if (!batch.First) {
+            batch.Last = nullptr;
+        }
         TaskFunction function;
         {
             std::lock_guard taskLock{state->Mutex};
@@ -607,9 +840,15 @@ void TaskSystem::DrainFinalizations(FinalizationBatch& batch) noexcept {
         function = {}; // Captures may call back into this pool, including during StopWorkers.
         {
             std::lock_guard lock{m_mutex};
-            std::lock_guard taskLock{state->Mutex};
-            TaskLifetime::ReleaseDependencyPayloadLocked(state->Task);
-            state->Task.Status = state->Task.PendingStatus;
+            if (state->Task.GroupGateId != 0) {
+                PublishGroupGateLocked(*state, batch);
+            }
+            {
+                std::lock_guard taskLock{state->Mutex};
+                TaskLifetime::ReleaseDependencyPayloadLocked(state->Task);
+                state->Task.Status = state->Task.PendingStatus;
+            }
+            RetireGroupMemberLocked(state, batch);
             m_lifetime.RetireTask(*state);
             m_lifetime.ReleaseOutstandingTask();
         }
@@ -691,6 +930,7 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
             TaskLifetime::ReleaseDependencyPayloadLocked(state->Task);
             state->Task.Status = status;
         }
+        RetireGroupMemberLocked(state, finalizations);
         m_lifetime.RetireTask(*state);
         m_lifetime.ReleaseOutstandingTask();
     } catch (...) {
@@ -708,6 +948,7 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
             TaskLifetime::ReleaseDependencyPayloadLocked(state->Task);
             state->Task.Status = ETaskStatus::FAILED;
         }
+        RetireGroupMemberLocked(state, finalizations);
         m_lifetime.RetireTask(*state);
         m_lifetime.ReleaseOutstandingTask();
     }
@@ -746,7 +987,9 @@ void TaskSystem::PrepareCancellationsLocked(FinalizationBatch& batch) {
 void TaskSystem::CancelPendingTasksLocked(FinalizationBatch& batch) noexcept {
     for (const auto& [id, state]: m_registry.ActiveTasks) {
         static_cast<void>(id);
-        CancelTaskLocked(state, batch);
+        if (state->Task.GroupGateId == 0) {
+            CancelTaskLocked(state, batch);
+        }
     }
     PrepareCancellationsLocked(batch);
 }
@@ -850,6 +1093,12 @@ void TaskSystem::StopWorkers() noexcept {
         FinalizationBatch finalizations{*this};
         std::lock_guard lock{m_mutex};
         m_stopping.store(true, std::memory_order_release);
+        for (const auto& [id, group]: m_groups) {
+            static_cast<void>(id);
+            group->Outcome = group->Outcome == ETaskStatus::FAILED ? ETaskStatus::FAILED : ETaskStatus::CANCELLED;
+            group->Sealed = true;
+            QueueGroupCompletionLocked(*group, finalizations);
+        }
         CancelPendingTasksLocked(finalizations);
     }
 

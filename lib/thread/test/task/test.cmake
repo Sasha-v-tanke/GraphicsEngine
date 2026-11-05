@@ -2,6 +2,7 @@ TEST(Task)
 
 SOURCES(
     task_system_test.cpp
+    task_group.cpp
 )
 
 set(taskSystemStressTests
@@ -54,4 +55,15 @@ set_tests_properties(
     PROPERTIES
     TIMEOUT 45
     LABELS "small;cpp;thread;task;dir:lib/thread/test/task;test:TaskRetirement"
+)
+
+add_test(
+    NAME GraphicsEngineThreadTaskGroupTests
+    COMMAND ${GRAPHICS_ENGINE_CURRENT_TARGET} "--gtest_filter=TaskGroup.*"
+)
+set_tests_properties(
+    GraphicsEngineThreadTaskGroupTests
+    PROPERTIES
+    TIMEOUT 60
+    LABELS "small;cpp;thread;task;test:TaskGroup"
 )
