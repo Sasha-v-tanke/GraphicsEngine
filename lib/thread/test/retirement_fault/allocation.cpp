@@ -84,6 +84,7 @@ struct RollbackProbe {
 };
 
 TEST(TaskRetirementFault, ReentrantCaptureSurvivesEverySubmitAllocationFailure) {
+    bool exercisedRollback = false;
     for (std::ptrdiff_t failureIndex = 0; failureIndex < 128; ++failureIndex) {
         // The semaphores outlive the pool, including on any test failure.
         std::binary_semaphore entered{0};
@@ -107,16 +108,20 @@ TEST(TaskRetirementFault, ReentrantCaptureSurvivesEverySubmitAllocationFailure) 
             task = pool.Submit([probe = std::move(probe)](NCommon::TaskContext&) {}, parents);
             accepted = true;
         } catch (const std::bad_alloc&) {
+            exercisedRollback = true;
         }
         AllocationBudget = -1;
         if (accepted) {
             pool.Cancel(task);
         }
         EXPECT_EQ(destroyed, 1U) << "allocation failure index " << failureIndex;
+        EXPECT_EQ(pool.GetStatus(parents[0]), NCommon::ETaskStatus::READY);
+        EXPECT_EQ(pool.GetStatus(parents[1]), NCommon::ETaskStatus::READY);
         finish.release();
         pool.WaitIdle();
         if (accepted) {
-            EXPECT_GT(failureIndex, 4);
+            // Stable edges remove allocations; the contract is rollback at every failing prefix.
+            EXPECT_TRUE(exercisedRollback);
             return;
         }
     }
@@ -205,6 +210,38 @@ TEST(TaskGroupFault, FanInAndCancellationNeedNoAllocation) {
     pool.WaitGroup(cancelled);
     pool.WaitIdle();
     EXPECT_EQ(pool.GetStatus(cancelledContinuation), NCommon::ETaskStatus::CANCELLED);
+}
+
+TEST(TaskDagFault, CancellationDetachesSharedEdgesWithoutAllocating) {
+    std::binary_semaphore entered{0};
+    std::binary_semaphore resume{0};
+    NCommon::TaskSystem pool{1};
+    pool.Submit([&](NCommon::TaskContext&) {
+        entered.release();
+        resume.acquire();
+    });
+    entered.acquire();
+    const NCommon::TaskHandle root = pool.Submit([](NCommon::TaskContext&) {});
+    const NCommon::TaskHandle unaffected = pool.Submit([](NCommon::TaskContext&) {});
+    const NCommon::TaskHandle parents[]{root, unaffected};
+    const NCommon::TaskHandle left = pool.Submit([](NCommon::TaskContext&) {}, parents);
+    const NCommon::TaskHandle right = pool.Submit([](NCommon::TaskContext&) {}, parents);
+    const NCommon::TaskHandle joinedParents[]{root, left, right};
+    const NCommon::TaskHandle join = pool.Submit([](NCommon::TaskContext&) {}, joinedParents);
+    bool allocated = false;
+    AllocationBudget = 0;
+    try {
+        pool.Cancel(root);
+        allocated = AllocationBudget != 0;
+    } catch (const std::bad_alloc&) {
+        allocated = true;
+    }
+    AllocationBudget = -1;
+    EXPECT_FALSE(allocated);
+    EXPECT_EQ(pool.GetStatus(join), NCommon::ETaskStatus::CANCELLED);
+    EXPECT_EQ(pool.GetStatus(unaffected), NCommon::ETaskStatus::READY);
+    resume.release();
+    pool.WaitIdle();
 }
 
 } // namespace

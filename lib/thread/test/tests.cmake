@@ -2,6 +2,7 @@ TEST_SUITE(Thread)
 
 RECURSE(
     task
+    dag
     retirement_fault
 )
 
