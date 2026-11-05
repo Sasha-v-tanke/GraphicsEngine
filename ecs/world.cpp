@@ -8,6 +8,7 @@
 #include <numeric>
 
 #include <GraphicsEngine/lib/thread/task/task_system.h>
+#include <ecs/internal/scoped_batch.h>
 #include <ecs/internal/system_run.h>
 #include <ecs/internal/topology.h>
 
@@ -70,6 +71,9 @@ struct World::SystemInvocation {
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
     std::vector<DeferredCommandBatch> WorkerBatches;
     std::exception_ptr Error;
+    std::shared_ptr<NInternal::ResolvedBatch> Batch;
+    std::vector<NInternal::AccessFootprint> Footprints;
+    bool Invoked = false;
 };
 
 thread_local World::SystemInvocation* World::CurrentSystemInvocation_ = nullptr;
@@ -95,6 +99,10 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
     std::vector<SystemInvocation> Invocations;
     std::vector<NCommon::TaskHandle> Handles;
     std::vector<std::vector<NCommon::TaskHandle>> Dependencies;
+    std::unique_ptr<NInternal::AccessCoordinator> Coordinator;
+    std::vector<NInternal::OperationKey> Operations;
+    std::vector<std::vector<NInternal::OperationKey>> OperationDependencies;
+    std::function<void()> OnDrained;
     std::function<void(NInternal::SystemRunOutcome)> OnFinished;
     mutable std::mutex Mutex;
     std::optional<NInternal::SystemRunOutcome> Outcome;
@@ -115,7 +123,11 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
     void Abandon() noexcept override {
         if (!Started.exchange(true)) {
             RequestCancel();
-            Retire();
+            if (Coordinator) {
+                Coordinator->Seal(std::move(OnDrained));
+            } else {
+                Retire();
+            }
         }
     }
     void Start() override {
@@ -123,6 +135,10 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS run was already started");
         }
         const std::shared_ptr<SystemRunState> pin = shared_from_this();
+        if (Coordinator) {
+            StartScoped();
+            return;
+        }
         for (const std::size_t index: Graph.Order) {
             if (Cancelled || Failed) {
                 break;
@@ -156,6 +172,36 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
             }
         }
         Retire();
+    }
+    void StartScoped() {
+        for (const std::size_t index: Graph.Order) {
+            if (Cancelled || Failed) {
+                break;
+            }
+            try {
+                for (std::size_t dependency = 0; dependency < Graph.Dependencies[index].size(); ++dependency) {
+                    OperationDependencies[index][dependency] = Operations[Graph.Dependencies[index][dependency]];
+                }
+                Operations[index] = Coordinator->Schedule(
+                        std::move(Invocations[index].Footprints),
+                        [weak = weak_from_this(), index] {
+                            const auto state = weak.lock();
+                            if (state && !state->Cancelled && !state->Failed) {
+                                try {
+                                    state->Lease->ExecuteSystem(index, state->Invocations[index]);
+                                } catch (...) {
+                                    state->Failed.store(true);
+                                }
+                            }
+                        },
+                        OperationDependencies[index]);
+            } catch (...) {
+                PublicationError = std::current_exception();
+                Failed.store(true);
+                break;
+            }
+        }
+        Coordinator->Seal(std::move(OnDrained));
     }
     void Retire() noexcept {
         if (Outstanding.fetch_sub(1) != 1) {
@@ -196,6 +242,7 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
             world->ExecutionPoisoned_ = true;
         }
         CommittingWorld_ = previous;
+        world->CollectScopedDirty(Invocations);
         Invocations.clear();
         world->ActiveSystemRun_.reset();
         Lease.reset();
@@ -246,6 +293,34 @@ NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
             invocation.Owner = owner.get();
             invocation.StructuralOrder = owner->Systems_[index].StructuralOrder;
             invocation.Id = ++owner->NextSystemInvocationId_;
+        }
+        owner->PrepareScopedInvocations(state->Invocations);
+        if (std::ranges::any_of(owner->Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
+            state->Coordinator = std::make_unique<NInternal::AccessCoordinator>(tasks);
+            state->Operations.resize(owner->Systems_.size());
+            state->OperationDependencies.resize(owner->Systems_.size());
+            std::vector<NInternal::DataDomainKey> domains;
+            for (const auto index: state->Graph.Order) {
+                state->OperationDependencies[index].resize(state->Graph.Dependencies[index].size());
+                for (const auto& footprint: state->Invocations[index].Footprints) {
+                    if (std::ranges::find(domains, footprint.Domain) == domains.end()) {
+                        domains.push_back(footprint.Domain);
+                        state->Coordinator->RegisterDomain(footprint.Domain, owner);
+                    }
+                }
+            }
+            state->OnDrained = [weak = std::weak_ptr<World::SystemRunState>{state}] {
+                const auto run = weak.lock();
+                if (!run) {
+                    return;
+                }
+                for (const auto operation: run->Operations) {
+                    if (operation.GetSequence() != 0 && !run->PublicationError) {
+                        run->PublicationError = run->Coordinator->GetError(operation);
+                    }
+                }
+                run->Retire();
+            };
         }
         owner->ActiveSystemRun_ = state;
         return NInternal::PreparedSystemRun{std::move(state)};
@@ -715,7 +790,8 @@ World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedul
                            (lhs.Mode == ESystemAccessMode::WRITE || rhs.Mode == ESystemAccessMode::WRITE);
                 });
             });
-            edges[before][after] = edges[before][after] || conflicts;
+            edges[before][after] =
+                    edges[before][after] || (conflicts && !(Systems_[before].Scoped && Systems_[after].Scoped));
         }
     }
     for (const std::size_t after: graph.Order) {
@@ -902,11 +978,94 @@ void World::RunSystems(NCommon::TaskSystem& taskSystem) {
     }
 }
 
+void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations) {
+    if (!std::ranges::any_of(Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
+        return;
+    }
+    std::map<std::type_index, std::uint64_t> types;
+    for (const auto& system: Systems_) {
+        for (const auto& access: system.Access) {
+            types.emplace(access.Component, 0);
+        }
+    }
+    std::uint64_t typeId = 2; // Domain 1 is the conservative World barrier for undeclared legacy access.
+    for (auto& [type, id]: types) {
+        static_cast<void>(type);
+        id = typeId++;
+    }
+    ScopedDirtyTypes_.reserve(ScopedDirtyTypes_.size() + types.size());
+    const auto domain = [&](std::uint64_t id) {
+        return NInternal::DataDomainKey{m_topology->WorldId, id, invocations.front().Id};
+    };
+    for (std::size_t index = 0; index < Systems_.size(); ++index) {
+        const auto& system = Systems_[index];
+        auto& invocation = invocations[index];
+        invocation.Footprints.push_back({domain(1),
+                                         {},
+                                         !system.Scoped && system.Access.empty()
+                                                 ? NInternal::EAccessRequirement::EXCLUSIVE
+                                                 : NInternal::EAccessRequirement::READ});
+        if (system.Scoped) {
+            invocation.Batch = NInternal::ScopedWorldAccess::Resolve(*this, *system.Scoped);
+            for (const auto& declaration: system.Scoped->Access) {
+                NInternal::AccessScope scope{.Kind = declaration.Scope.Kind,
+                                             .Begin = declaration.Scope.Begin,
+                                             .Count = declaration.Scope.Count};
+                if (scope.Kind == NInternal::EAccessScope::ENTITY) {
+                    scope.Begin = declaration.Scope.Entities.front().Identity.Index;
+                } else if (scope.Kind == NInternal::EAccessScope::ENTITY_SET) {
+                    for (const auto entity: declaration.Scope.Entities) {
+                        scope.Elements.push_back(entity.Identity.Index);
+                    }
+                }
+                invocation.Footprints.push_back({domain(types.at(declaration.Access.Component)),
+                                                 std::move(scope),
+                                                 declaration.Access.Mode == ESystemAccessMode::WRITE
+                                                         ? NInternal::EAccessRequirement::WRITE
+                                                         : NInternal::EAccessRequirement::READ});
+            }
+        } else {
+            for (const auto& access: system.Access) {
+                invocation.Footprints.push_back({domain(types.at(access.Component)),
+                                                 {},
+                                                 access.Mode == ESystemAccessMode::WRITE
+                                                         ? NInternal::EAccessRequirement::WRITE
+                                                         : NInternal::EAccessRequirement::READ});
+            }
+        }
+    }
+}
+
+void World::CollectScopedDirty(std::vector<SystemInvocation>& invocations) noexcept {
+    if (invocations.size() != Systems_.size() ||
+        !std::ranges::any_of(Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
+        return;
+    }
+    for (std::size_t index = 0; index < Systems_.size(); ++index) {
+        if (!invocations[index].Invoked) {
+            continue;
+        }
+        const auto& system = Systems_[index];
+        ScopedDirtyAll_ = ScopedDirtyAll_ || (!system.Scoped && system.Access.empty());
+        for (const auto& access: system.Access) {
+            if (access.Mode == ESystemAccessMode::WRITE &&
+                std::ranges::find(ScopedDirtyTypes_, access.Component) == ScopedDirtyTypes_.end()) {
+                ScopedDirtyTypes_.push_back(access.Component);
+            }
+        }
+    }
+}
+
 void World::ExecuteSystem(std::size_t index, SystemInvocation& invocation) {
     auto* previous = CurrentSystemInvocation_;
     CurrentSystemInvocation_ = &invocation;
     try {
-        Systems_[index].Callback(*this);
+        invocation.Invoked = true;
+        if (Systems_[index].Scoped) {
+            NInternal::ScopedWorldAccess::Invoke(*this, *Systems_[index].Scoped, invocation.Batch);
+        } else {
+            Systems_[index].Callback(*this);
+        }
     } catch (...) {
         invocation.Error = std::current_exception();
         CurrentSystemInvocation_ = previous;
@@ -997,6 +1156,7 @@ void World::RunSystemsImpl() {
             invocations[index].StructuralOrder = Systems_[index].StructuralOrder;
             invocations[index].Id = ++NextSystemInvocationId_;
         }
+        PrepareScopedInvocations(invocations);
         std::exception_ptr error;
         try {
             for (const std::size_t index: graph.Order) {
@@ -1027,10 +1187,12 @@ void World::RunSystemsImpl() {
         }
         CommittingWorld_ = previous;
     } catch (...) {
+        CollectScopedDirty(invocations);
         DiscardSystemCommands(invocations);
         IsRunningSystems_ = false;
         throw;
     }
+    CollectScopedDirty(invocations);
     IsRunningSystems_ = false;
 }
 
@@ -1127,6 +1289,13 @@ void World::ValidateAlive(Entity entity) const {
 void World::ValidateSystemIndex(std::size_t index) const {
     if (index >= Systems_.size()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS system index is out of range");
+    }
+}
+
+void World::ValidateUnscopedAccess() const {
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (invocation && invocation->Batch) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Scoped systems must access components through views");
     }
 }
 

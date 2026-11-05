@@ -8,6 +8,8 @@ API(
 )
 
 SOURCES(
+    internal/scoped_batch.h
+    internal/scoped_batch.cpp
     internal/system_run.h
     internal/system_run.cpp
     world.cpp

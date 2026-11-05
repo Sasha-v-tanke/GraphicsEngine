@@ -30,7 +30,10 @@ class TaskSystem;
 
 namespace NEcs::NInternal {
 class WorldExecutionAccess;
-}
+class ScopedWorldAccess;
+struct ScopedSystem;
+struct ResolvedBatch;
+} // namespace NEcs::NInternal
 
 namespace NEcs {
 
@@ -106,6 +109,7 @@ public:
 
     template<typename T>
     [[nodiscard]] T& GetComponent(Entity entity) {
+        ValidateUnscopedAccess();
         ValidateAlive(entity);
         auto* storage = FindStorage<T>();
 
@@ -118,6 +122,7 @@ public:
 
     template<typename T>
     [[nodiscard]] const T& GetComponent(Entity entity) const {
+        ValidateUnscopedAccess();
         ValidateAlive(entity);
         const auto* storage = FindStorage<T>();
 
@@ -435,6 +440,7 @@ private:
 
     [[nodiscard]] SystemExecutionGraph BuildSystemExecutionGraph(bool requireSchedules) const;
     friend class NInternal::WorldExecutionAccess;
+    friend class NInternal::ScopedWorldAccess;
     struct SystemRunState;
     std::shared_ptr<SystemRunState> ActiveSystemRun_;
     bool ExecutionPoisoned_ = false;
@@ -448,6 +454,9 @@ private:
     static thread_local SystemInvocation* CurrentSystemInvocation_;
     static thread_local World* CommittingWorld_;
     void ValidateStructuralWriteAllowed() const;
+    void ValidateUnscopedAccess() const;
+    void PrepareScopedInvocations(std::vector<SystemInvocation>& invocations);
+    void CollectScopedDirty(std::vector<SystemInvocation>& invocations) noexcept;
     void ValidateDeferredStructuralCommandBuffer(const DeferredStructuralCommandBuffer& buffer) const;
     void ValidateSystemDeferredCommandCollectionLocked() const;
     void PushDeferredCommand(std::unique_ptr<IDeferredCommand> command);
@@ -483,11 +492,15 @@ private:
     std::atomic_bool IsRunningSystems_ = false;
     std::uint64_t NextSystemInvocationId_ = 0;
 
+    std::vector<std::type_index> ScopedDirtyTypes_;
+    bool ScopedDirtyAll_ = false;
+
     struct RegisteredSystem {
         SystemAccessList Access;
         SystemCallback Callback;
         std::optional<std::uint32_t> StructuralOrder;
         std::optional<SystemSchedule> Schedule = std::nullopt;
+        std::shared_ptr<NInternal::ScopedSystem> Scoped = {};
     };
 
     std::vector<RegisteredSystem> Systems_;

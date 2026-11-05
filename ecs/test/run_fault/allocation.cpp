@@ -7,6 +7,7 @@
 #include <semaphore>
 #include <utility>
 
+#include <ecs/internal/scoped_batch.h>
 #include <ecs/internal/system_run.h>
 #include <ecs/world.h>
 #include <gtest/gtest.h>
@@ -136,6 +137,84 @@ TEST(EcsRunFault, EveryPublicationAllocationFailureDrainsAcceptedPrefixExactlyOn
             ++successes;
         }
         world->RunSystems();
+    }
+    EXPECT_GT(failures, 0);
+    EXPECT_GT(successes, 0);
+}
+
+TEST(EcsRunFault, ScopedPrepareAllocationFailuresAreSafeOnWorkers) {
+    NCommon::TaskSystem tasks{1};
+    int failures = 0;
+    int successes = 0;
+    for (std::ptrdiff_t budget = 0; budget < 160; ++budget) {
+        auto world = std::make_shared<NEcs::World>();
+        NEcs::NInternal::ScopedWorldAccess::Register(*world, {}, [](auto&) {}, NEcs::SystemSchedule{.Id = 1});
+        (void)tasks.Submit([&, budget](NCommon::TaskContext&) {
+            AllocationBudget = budget;
+            try {
+                auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [](const auto&) {});
+                AllocationBudget = -1;
+                ++successes;
+            } catch (const std::bad_alloc&) {
+                AllocationBudget = -1;
+                ++failures;
+            }
+        });
+        tasks.WaitIdle();
+        EXPECT_NO_THROW(world->CreateEntity());
+    }
+    EXPECT_GT(failures, 0);
+    EXPECT_GT(successes, 0);
+}
+
+TEST(EcsRunFault, ScopedPublicationFailureRetiresReservationsAndLeases) {
+    int failures = 0;
+    int successes = 0;
+    for (std::ptrdiff_t budget = 0; budget < 160; ++budget) {
+        std::binary_semaphore entered{0};
+        std::binary_semaphore release{0};
+        NCommon::TaskSystem tasks{1};
+        (void)tasks.Submit([&](NCommon::TaskContext&) {
+            entered.release();
+            release.acquire();
+        });
+        entered.acquire();
+        auto world = std::make_shared<NEcs::World>();
+        const auto entity = world->CreateEntity();
+        world->AddComponent<int>(entity, 0);
+        for (std::uint64_t id = 1; id <= 6; ++id) {
+            NEcs::NInternal::ScopedWorldAccess::Register(
+                    *world,
+                    {NEcs::NInternal::ScopedWrite<int>(
+                            NEcs::NInternal::BatchScope::Entity(world->GetEntityReference(entity)))},
+                    [](auto& context) { context.template Write<int>().ForEach([](auto, int& value) { ++value; }); },
+                    NEcs::SystemSchedule{.Id = id});
+        }
+        int calls = 0;
+        std::optional<NEcs::NInternal::SystemRunOutcome> outcome;
+        const auto weak = std::weak_ptr<NEcs::World>{world};
+        auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](const auto& result) {
+            EXPECT_TRUE(weak.expired());
+            ++calls;
+            outcome = result;
+        });
+        const auto handle = prepared.GetHandle();
+        world.reset();
+        AllocationBudget = budget;
+        prepared.Start();
+        AllocationBudget = -1;
+        release.release();
+        tasks.WaitIdle();
+        ASSERT_TRUE(handle.IsTerminal());
+        EXPECT_EQ(calls, 1);
+        ASSERT_TRUE(outcome);
+        if (outcome->Status == NEcs::NInternal::ESystemRunStatus::FAILED) {
+            EXPECT_TRUE(outcome->Error);
+            ++failures;
+        } else {
+            EXPECT_EQ(outcome->Status, NEcs::NInternal::ESystemRunStatus::COMPLETED);
+            ++successes;
+        }
     }
     EXPECT_GT(failures, 0);
     EXPECT_GT(successes, 0);

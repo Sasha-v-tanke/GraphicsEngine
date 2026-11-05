@@ -115,6 +115,11 @@ public:
     [[nodiscard]] std::vector<OperationKey> GetDependencies(OperationKey operation) const;
     [[nodiscard]] std::vector<AccessConflict> GetConflicts(OperationKey operation) const;
 
+    // Close admission without cancellation. Completion runs once, outside locks,
+    // after access and capture retirement, with owner tokens already released.
+    // May complete inline; a sealed, drained coordinator may be destroyed on a worker.
+    void Seal(std::function<void()> onDrained);
+
     // Host-only: close admission, cancel queued/waiting work, drain running callbacks.
     // Idempotent. Does not stop/wait the shared TaskSystem or execute work on the host.
     void Stop();

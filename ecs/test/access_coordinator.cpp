@@ -455,4 +455,52 @@ TEST(AccessCoordinator, ParallelProducersSerializeSameRegionAndKeepIndependentRe
         }
     }
 }
+
+TEST(AccessCoordinator, SealDrainsCapturesAndOwnerBeforeWorkerCompletion) {
+    NCommon::TaskSystem tasks{1};
+    auto coordinator = std::make_unique<AccessCoordinator>(tasks);
+    auto owner = std::make_shared<int>(1);
+    const auto weakOwner = std::weak_ptr<int>{owner};
+    coordinator->RegisterDomain(TEST_DOMAIN, owner);
+    owner.reset();
+    auto capture = std::make_shared<int>(2);
+    const auto weakCapture = std::weak_ptr<int>{capture};
+    HeldWork hold;
+    (void)coordinator->Schedule({Access(EAccessRequirement::WRITE)}, [capture, work = hold.Function()] { work(); });
+    capture.reset();
+    ASSERT_TRUE(hold.WaitStarted());
+    std::atomic<int> completions = 0;
+    coordinator->Seal([&] {
+        EXPECT_TRUE(weakOwner.expired());
+        EXPECT_TRUE(weakCapture.expired());
+        EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
+        coordinator.reset();
+        ++completions;
+    });
+    EXPECT_EQ(completions, 0);
+    hold.Open();
+    tasks.WaitIdle();
+    EXPECT_EQ(completions, 1);
+    EXPECT_FALSE(coordinator);
+}
+
+TEST(AccessCoordinator, SealEmptyAndCancelledWorkCompleteInlineOnlyOnce) {
+    NCommon::TaskSystem tasks{1};
+    HeldWork hold;
+    (void)tasks.Submit([work = hold.Function()](NCommon::TaskContext&) { work(); });
+    ASSERT_TRUE(hold.WaitStarted());
+    AccessCoordinator coordinator{tasks};
+    Register(coordinator);
+    const auto operation = coordinator.Schedule({Access(EAccessRequirement::WRITE)}, [] { FAIL(); });
+    EXPECT_TRUE(coordinator.Cancel(operation));
+    int completions = 0;
+    coordinator.Seal([&] { ++completions; });
+    EXPECT_EQ(completions, 1);
+    EXPECT_THROW(coordinator.Seal([] {}), NCommon::Exception);
+    EXPECT_THROW((void)coordinator.Schedule({}, [] {}), NCommon::Exception);
+    coordinator.Stop();
+    EXPECT_EQ(completions, 1);
+    hold.Open();
+    tasks.WaitIdle();
+}
 } // namespace

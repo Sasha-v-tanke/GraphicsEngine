@@ -263,6 +263,27 @@ struct AccessCoordinator::State: std::enable_shared_from_this<State> {
         }
         Progress();
         ReleaseTerminalFunctions();
+        CompleteSeal();
+    }
+
+    void CompleteSeal() {
+        const std::shared_ptr<State> pin = shared_from_this();
+        std::vector<Domain> released;
+        std::function<void()> callback;
+        {
+            const std::lock_guard lock{Mutex};
+            if (!Sealed || SealCompleted || Running != 0 || Retiring != 0 ||
+                std::ranges::any_of(Operations, HoldsAccess)) {
+                return;
+            }
+            SealCompleted = true;
+            released.swap(Domains);
+            callback = std::move(OnDrained);
+        }
+        released.clear();
+        if (callback) {
+            callback();
+        }
     }
 
     NCommon::TaskSystem& Tasks;
@@ -273,6 +294,9 @@ struct AccessCoordinator::State: std::enable_shared_from_this<State> {
     std::size_t Running = 0;
     std::size_t Retiring = 0;
     bool Closed = false;
+    bool Sealed = false;
+    bool SealCompleted = false;
+    std::function<void()> OnDrained;
     bool HasFailure = false;
 };
 
@@ -291,6 +315,13 @@ AccessCoordinator::AccessCoordinator(NCommon::TaskSystem& tasks)
     }
 }
 AccessCoordinator::~AccessCoordinator() {
+    {
+        const std::lock_guard lock{m_state->Mutex};
+        if (m_state->Running == 0 && m_state->Retiring == 0 &&
+            !std::ranges::any_of(m_state->Operations, State::HoldsAccess)) {
+            return;
+        }
+    }
     Stop();
 }
 
@@ -407,6 +438,7 @@ bool AccessCoordinator::Cancel(OperationKey operation) {
     }
     m_state->Progress();
     m_state->ReleaseTerminalFunctions();
+    m_state->CompleteSeal();
     return true;
 }
 EOperationStatus AccessCoordinator::GetStatus(OperationKey operation) const {
@@ -429,31 +461,50 @@ std::vector<AccessConflict> AccessCoordinator::GetConflicts(OperationKey operati
     const std::lock_guard lock{m_state->Mutex};
     return m_state->Operations[Resolve(operation)].Conflicts;
 }
+void AccessCoordinator::Seal(std::function<void()> onDrained) {
+    // Completion may release the owner of this coordinator.
+    const std::shared_ptr<State> state = m_state;
+    {
+        const std::lock_guard lock{state->Mutex};
+        if (state->Closed) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Access admission is already closed");
+        }
+        state->Closed = true;
+        state->Sealed = true;
+        state->OnDrained = std::move(onDrained);
+    }
+    state->Progress();
+    state->ReleaseTerminalFunctions();
+    state->CompleteSeal();
+}
+
 void AccessCoordinator::Stop() {
+    const std::shared_ptr<State> state = m_state;
     if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Access coordinator shutdown requires host thread");
     }
     {
-        const std::lock_guard lock{m_state->Mutex};
-        m_state->Closed = true;
-        for (State::Operation& operation: m_state->Operations) {
+        const std::lock_guard lock{state->Mutex};
+        state->Closed = true;
+        for (State::Operation& operation: state->Operations) {
             if (operation.Status != EOperationStatus::RUNNING && !IsTerminal(operation.Status)) {
                 operation.Status = EOperationStatus::CANCELLED;
             }
         }
     }
-    m_state->ReleaseTerminalFunctions();
+    state->ReleaseTerminalFunctions();
     {
-        std::unique_lock lock{m_state->Mutex};
-        m_state->Changed.wait(lock, [&] { return m_state->Running == 0 && m_state->Retiring == 0; });
+        std::unique_lock lock{state->Mutex};
+        state->Changed.wait(lock, [&] { return state->Running == 0 && state->Retiring == 0; });
     }
+    state->CompleteSeal();
     // Release owner tokens on the stopping host, outside the metadata lock. Queued
     // executor wrappers capture weak State only and can no longer invoke user work.
     for (;;) {
         std::shared_ptr<const void> retired;
         {
-            const std::lock_guard lock{m_state->Mutex};
-            for (State::Domain& domain: m_state->Domains) {
+            const std::lock_guard lock{state->Mutex};
+            for (State::Domain& domain: state->Domains) {
                 if (domain.Lifetime) {
                     retired = std::move(domain.Lifetime);
                     break;
