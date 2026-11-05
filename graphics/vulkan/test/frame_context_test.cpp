@@ -241,8 +241,9 @@ public:
                                 ++it;
                                 continue;
                             }
-                            it->second.Signal.set_value();
+                            // Publish accounting before the completion wakes Engine::Stop.
                             ++Completed;
+                            it->second.Signal.set_value();
                         } catch (...) {
                             it->second.Signal.set_exception(std::current_exception());
                         }
@@ -315,11 +316,12 @@ TEST(VulkanFrameContextChild, DISABLED_RecyclesEngineSlotsAfterTimelineEvents) {
             int submitted = 0;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
             while (submitted < 12 && std::chrono::steady_clock::now() < deadline) {
+                const auto version = engine->GetProgressVersion();
                 if (engine->Update()) {
                     ASSERT_TRUE(engine->Draw());
                     ++submitted;
                 } else {
-                    std::this_thread::yield();
+                    engine->WaitForProgress(version, std::chrono::milliseconds{1});
                 }
             }
             EXPECT_EQ(submitted, 12);
