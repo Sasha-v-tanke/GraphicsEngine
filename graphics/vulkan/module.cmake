@@ -32,6 +32,7 @@ SOURCES(
     resource_state.cpp
     submission_manager.cpp
     swapchain.cpp
+    upload_layout.h
     upload_manager.h
     upload_manager.cpp
 )

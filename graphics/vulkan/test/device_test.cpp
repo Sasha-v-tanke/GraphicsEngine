@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -12,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #include <sys/wait.h>
@@ -85,6 +87,57 @@ private:
         return Original(device, cache, count, info, allocator, pipelines);
     }
     inline static PFN_vkCreateGraphicsPipelines Original = nullptr;
+};
+
+class UploadProbe final: public NCommon::NonTransferable {
+public:
+    UploadProbe() {
+        OriginalCounter = vkGetSemaphoreCounterValue;
+        OriginalSubmit = vkQueueSubmit2;
+        OriginalIdle = vkDeviceWaitIdle;
+        CompletionLimit = std::numeric_limits<std::uint64_t>::max();
+        SubmitCalls = 0;
+        IdleCalls = 0;
+        FailSubmit = false;
+        vkGetSemaphoreCounterValue = Counter;
+        vkQueueSubmit2 = Submit;
+        vkDeviceWaitIdle = Idle;
+    }
+    ~UploadProbe() {
+        vkGetSemaphoreCounterValue = OriginalCounter;
+        vkQueueSubmit2 = OriginalSubmit;
+        vkDeviceWaitIdle = OriginalIdle;
+    }
+    inline static std::uint64_t CompletionLimit = 0;
+    inline static std::size_t SubmitCalls = 0;
+    inline static std::size_t IdleCalls = 0;
+    inline static bool FailSubmit = false;
+
+private:
+    static VKAPI_ATTR VkResult VKAPI_CALL Counter(VkDevice device, VkSemaphore semaphore, std::uint64_t* value) {
+        const VkResult result = OriginalCounter(device, semaphore, value);
+        if (result == VK_SUCCESS) {
+            *value = std::min(*value, CompletionLimit);
+        }
+        return result;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Submit(VkQueue queue,
+                                                 std::uint32_t count,
+                                                 const VkSubmitInfo2* info,
+                                                 VkFence fence) {
+        ++SubmitCalls;
+        if (std::exchange(FailSubmit, false)) {
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        return OriginalSubmit(queue, count, info, fence);
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL Idle(VkDevice device) {
+        ++IdleCalls;
+        return OriginalIdle(device);
+    }
+    inline static PFN_vkGetSemaphoreCounterValue OriginalCounter = nullptr;
+    inline static PFN_vkQueueSubmit2 OriginalSubmit = nullptr;
+    inline static PFN_vkDeviceWaitIdle OriginalIdle = nullptr;
 };
 
 NVulkan::VulkanPhysicalDeviceSelection MakeSelection() {
@@ -866,6 +919,131 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
         VkImage destroyedImage = image.GetImage();
         image = {};
         EXPECT_FALSE(resourceStates.GetImageState(destroyedImage, imageRange).has_value());
+        {
+            UploadProbe probe;
+            NVulkan::VulkanUploadManager batched{
+                    device,
+                    memory,
+                    submissions,
+                    resourceStates,
+                    {.ArenaSizeBytes = 256, .MaxStagingBytes = 512, .MaxBatchUploads = 64}};
+            std::vector<NVulkan::VulkanBufferUpload> bufferUploads;
+            for (std::size_t index = 0; index < 32; ++index) {
+                destinations.emplace_back(NVulkan::CreateVulkanBuffer(
+                        memory,
+                        {
+                                .SizeBytes = bytes.size(),
+                                .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                                .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
+                        }));
+            }
+            bufferUploads.reserve(destinations.size());
+            for (auto& destination: destinations) {
+                bufferUploads.push_back({&destination, bytes});
+            }
+            auto oddImage = NVulkan::CreateVulkanImage(
+                    memory,
+                    {
+                            .Extent = {.Width = 3, .Height = 1, .Depth = 1},
+                            .Format = NGraphics::EImageFormat::R8_UNORM,
+                            .Usage = NGraphics::EImageUsage::TransferDestination | NGraphics::EImageUsage::Sampled,
+                            .Access = NGraphics::ImageAccess(NGraphics::EImageAccess::GpuRead),
+                    });
+            const NVulkan::VulkanImageUpload imageUpload{&oddImage, std::span{bytes}.first(3)};
+            const std::span<const NVulkan::VulkanImageUpload> imageUploads{&imageUpload, 1};
+            UploadProbe::CompletionLimit = 0;
+            const auto first = batched.UploadBatch(bufferUploads, imageUploads);
+            const auto second = batched.UploadBatch(bufferUploads, imageUploads);
+            EXPECT_EQ(UploadProbe::SubmitCalls, 2U);
+            EXPECT_EQ(batched.GetStatistics().PendingBatches, 2U);
+            EXPECT_EQ(batched.GetStatistics().PendingUploads, 66U);
+            EXPECT_EQ(batched.GetStatistics().PendingBytes, 262U);
+            EXPECT_EQ(batched.GetStatistics().ArenaAllocations, 2U);
+            EXPECT_EQ(batched.GetStatistics().StagingBytes, 512U);
+            EXPECT_THROW((void)batched.UploadBatch(bufferUploads), NCommon::Exception);
+            EXPECT_EQ(UploadProbe::SubmitCalls, 2U);
+            submissions.Wait(second, 5'000'000'000);
+            UploadProbe::CompletionLimit = first.Value;
+            batched.ReleaseCompleted();
+            EXPECT_EQ(batched.GetStatistics().PendingBatches, 1U);
+            const auto third = batched.UploadBatch(bufferUploads, imageUploads);
+            EXPECT_EQ(batched.GetStatistics().ArenaAllocations, 2U);
+            EXPECT_EQ(batched.GetStatistics().Submissions, 3U);
+            submissions.Wait(third, 5'000'000'000);
+            UploadProbe::CompletionLimit = std::numeric_limits<std::uint64_t>::max();
+            batched.ReleaseCompleted();
+            EXPECT_EQ(batched.GetPendingUploadCount(), 0U);
+            EXPECT_EQ(batched.GetStatistics().PendingHighWaterBytes, 262U);
+            for (auto& destination: destinations) {
+                void* mapped = destination.Map();
+                destination.Invalidate(0, bytes.size());
+                EXPECT_EQ(std::memcmp(mapped, bytes.data(), bytes.size()), 0);
+                destination.Unmap();
+            }
+            EXPECT_THROW((void)batched.UploadBatch({}), NCommon::Exception);
+            const NVulkan::VulkanBufferUpload invalid{nullptr, bytes};
+            EXPECT_THROW((void)batched.UploadBatch({&invalid, 1}), NCommon::Exception);
+            std::vector<NVulkan::VulkanBufferUpload> oversized(65, bufferUploads.front());
+            EXPECT_THROW((void)batched.UploadBatch(oversized), NCommon::Exception);
+            const auto previous = resourceStates.GetBufferState(destinations.front().GetBuffer(), 0, bytes.size());
+            UploadProbe::FailSubmit = true;
+            EXPECT_THROW((void)batched.UploadBatch(bufferUploads), NCommon::Exception);
+            EXPECT_EQ(batched.GetPendingUploadCount(), 0U);
+            EXPECT_EQ(batched.GetStatistics().Submissions, 3U);
+            EXPECT_EQ(resourceStates.GetBufferState(destinations.front().GetBuffer(), 0, bytes.size())->AccessMask,
+                      previous->AccessMask);
+            const auto recovered = batched.UploadBatch(bufferUploads);
+            submissions.Wait(recovered, 5'000'000'000);
+            batched.ReleaseCompleted();
+            for (std::size_t iteration = 0; iteration < 64; ++iteration) {
+                const auto streamed = batched.UploadBatch(bufferUploads, imageUploads);
+                submissions.Wait(streamed, 5'000'000'000);
+                batched.ReleaseCompleted();
+            }
+            EXPECT_EQ(batched.GetStatistics().ArenaAllocations, 2U);
+            EXPECT_EQ(batched.GetStatistics().PendingBytes, 0U);
+            std::vector<std::byte> largeBytes(300, std::byte{0x57});
+            auto largeDestination = NVulkan::CreateVulkanBuffer(
+                    memory,
+                    {
+                            .SizeBytes = largeBytes.size(),
+                            .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
+                    });
+            const auto largeCompletion = batched.UploadBuffer(largeDestination, largeBytes);
+            EXPECT_EQ(batched.GetStatistics().StagingBytes, 300U);
+            EXPECT_EQ(batched.GetStatistics().ArenaAllocations, 3U);
+            submissions.Wait(largeCompletion, 5'000'000'000);
+            batched.ReleaseCompleted();
+            auto retention = largeDestination.GetRetentionToken();
+            const std::weak_ptr<void> retainedLifetime = retention;
+            retention.reset();
+            const auto batchRetainedCompletion = batched.UploadBuffer(largeDestination, largeBytes);
+            largeDestination = {};
+            EXPECT_FALSE(retainedLifetime.expired());
+            submissions.Wait(batchRetainedCompletion, 5'000'000'000);
+            batched.ReleaseCompleted();
+            EXPECT_TRUE(retainedLifetime.expired());
+            const NVulkan::VulkanBufferUpload overlapping[] = {
+                    {&partialDestination, firstPartialBytes, 0},
+                    {&partialDestination, secondPartialBytes, 2},
+            };
+            const auto overlapCompletion = batched.UploadBatch(overlapping);
+            submissions.Wait(overlapCompletion, 5'000'000'000);
+            batched.ReleaseCompleted();
+            mappedPartialDestination = partialDestination.Map();
+            partialDestination.Invalidate(0, expectedPartialBytes.size());
+            EXPECT_EQ(std::memcmp(mappedPartialDestination, expectedPartialBytes.data(), expectedPartialBytes.size()),
+                      0);
+            partialDestination.Unmap();
+            // Destruction waits the exact submission even when completion polling is deliberately held back.
+            {
+                NVulkan::VulkanUploadManager retiring{device, memory, submissions, resourceStates};
+                UploadProbe::CompletionLimit = 0;
+                (void)retiring.UploadBatch(bufferUploads, imageUploads);
+            }
+            EXPECT_EQ(UploadProbe::IdleCalls, 0U);
+        }
         EXPECT_TRUE(validationErrors.empty()) << (validationErrors.empty() ? "" : validationErrors.front());
     } catch (const NCommon::Exception& exception) {
         if (IsEnvironmentFailure(exception)) {

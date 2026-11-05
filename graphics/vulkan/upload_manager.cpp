@@ -5,6 +5,7 @@
 #include <limits>
 #include <string_view>
 
+#include <graphics/vulkan/upload_layout.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -138,240 +139,254 @@ void EndCommandBuffer(VkCommandBuffer commandBuffer) {
     }
 }
 
-class VulkanCommandBufferGuard final {
-public:
-    VulkanCommandBufferGuard(VkDevice device, VkCommandPool commandPool, VkCommandBuffer commandBuffer) noexcept
-        : m_device(device)
-        , m_commandPool(commandPool)
-        , m_commandBuffer(commandBuffer) {
-    }
-
-    ~VulkanCommandBufferGuard() {
-        if (m_commandBuffer != VK_NULL_HANDLE) {
-            vkFreeCommandBuffers(m_device, m_commandPool, 1, &m_commandBuffer);
-        }
-    }
-
-    void Release() noexcept {
-        m_commandBuffer = VK_NULL_HANDLE;
-    }
-
-private:
-    VkDevice m_device = VK_NULL_HANDLE;
-    VkCommandPool m_commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
-};
-
 } // namespace
 
 VulkanUploadManager::VulkanUploadManager(const VulkanDevice& device,
                                          VulkanMemoryAllocator& memoryAllocator,
                                          VulkanSubmissionManager& submissions,
-                                         VulkanResourceStateTracker& resourceStates)
+                                         VulkanResourceStateTracker& resourceStates,
+                                         VulkanUploadConfig config)
     : m_device(device)
     , m_memoryAllocator(memoryAllocator)
     , m_submissions(submissions)
     , m_resourceStates(resourceStates)
-    , m_handle(device.GetHandle())
-    , m_commandPool(CreateCommandPool()) {
-    if (m_handle == VK_NULL_HANDLE) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan upload manager requires a device");
+    , m_config(config)
+    , m_handle(device.GetHandle()) {
+    if (m_handle == VK_NULL_HANDLE || config.ArenaSizeBytes == 0 || config.ArenaSizeBytes > config.MaxStagingBytes ||
+        config.MaxBatchUploads == 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid Vulkan upload manager configuration");
     }
+    m_commandPool = CreateCommandPool();
 }
 
 VulkanUploadManager::~VulkanUploadManager() noexcept {
     try {
-        for (const PendingUpload& upload: m_pendingUploads) {
-            m_submissions.Wait(upload.Completion, std::numeric_limits<std::uint64_t>::max());
+        for (const auto& arena: m_arenas) {
+            if (arena->Completion.Value != 0) {
+                m_submissions.Wait(arena->Completion, std::numeric_limits<std::uint64_t>::max());
+            }
         }
-
-        ReleaseCompleted();
     } catch (...) {
+        // A failed device follows backend teardown; steady-state recycling never waits.
     }
-
-    m_pendingUploads.clear();
-
     if (m_commandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(m_handle, m_commandPool, nullptr);
-        m_commandPool = VK_NULL_HANDLE;
     }
+    m_arenas.clear();
 }
 
 VulkanQueueCompletion VulkanUploadManager::UploadBuffer(VulkanBufferAllocation& destination,
                                                         std::span<const std::byte> bytes,
                                                         std::uint64_t destinationOffsetBytes) {
-    ValidateUploadRange(destination, bytes, destinationOffsetBytes);
-    ReleaseCompleted();
-
-    VulkanBufferAllocation staging = CreateVulkanStagingBuffer(m_memoryAllocator, bytes.size());
-    void* mapped = staging.Map();
-    std::memcpy(mapped, bytes.data(), bytes.size());
-    staging.Flush(0, bytes.size());
-    staging.Unmap();
-
-    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
-    const VkCommandBuffer commandBuffer = AllocateCommandBuffer();
-    VulkanCommandBufferGuard commandBufferGuard{m_handle, m_commandPool, commandBuffer};
-    BeginCommandBuffer(commandBuffer);
-    VulkanResourceStateTracker::Transaction stateTransaction = m_resourceStates.BeginTransaction();
-
-    const VkBufferCopy copyRegion{
-            .srcOffset = 0,
-            .dstOffset = destinationOffsetBytes,
-            .size = bytes.size(),
-    };
-    for (const VkBufferMemoryBarrier2& barrier: m_resourceStates.TransitionBufferRanges({
-                 .Buffer = destination.GetBuffer(),
-                 .Offset = destinationOffsetBytes,
-                 .Size = bytes.size(),
-                 .Usage = EVulkanResourceUsage::TransferWrite,
-         })) {
-        RecordVulkanResourceBarrier(commandBuffer, barrier);
-    }
-    vkCmdCopyBuffer(commandBuffer, staging.GetBuffer(), destination.GetBuffer(), 1, &copyRegion);
-
-    EndCommandBuffer(commandBuffer);
-
-    const VkCommandBufferSubmitInfo commandBufferInfo{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            .pNext = nullptr,
-            .commandBuffer = commandBuffer,
-            .deviceMask = 0,
-    };
-    m_pendingUploads.push_back(PendingUpload{
-            .Staging = std::move(staging),
-            .CommandBuffer = commandBuffer,
-            .Destination = destination.GetRetentionToken(),
-    });
-    VulkanQueueCompletion completion{};
-    try {
-        completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
-                .CommandBuffers = {commandBufferInfo},
-        });
-    } catch (...) {
-        m_pendingUploads.pop_back();
-        throw;
-    }
-    m_pendingUploads.back().Completion = completion;
-    stateTransaction.Commit();
-    commandBufferGuard.Release();
-
-    return completion;
+    const VulkanBufferUpload upload{&destination, bytes, destinationOffsetBytes};
+    return UploadBatch({&upload, 1});
 }
 
 VulkanQueueCompletion VulkanUploadManager::UploadImage(VulkanImageAllocation& destination,
                                                        std::span<const std::byte> bytes,
                                                        EVulkanResourceUsage finalUsage) {
-    ValidateImageUpload(destination, bytes, finalUsage);
+    const VulkanImageUpload upload{&destination, bytes, finalUsage};
+    return UploadBatch({}, {&upload, 1});
+}
+
+VulkanQueueCompletion VulkanUploadManager::UploadBatch(std::span<const VulkanBufferUpload> buffers,
+                                                       std::span<const VulkanImageUpload> images) {
+    if (buffers.size() > m_config.MaxBatchUploads || images.size() > m_config.MaxBatchUploads - buffers.size() ||
+        (buffers.empty() && images.empty())) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid Vulkan upload batch count");
+    }
+    std::uint64_t sizeBytes = 0;
+    std::uint64_t payloadBytes = 0;
+    std::vector<std::uint64_t> offsets;
+    offsets.reserve(buffers.size() + images.size());
+    for (const VulkanBufferUpload& upload: buffers) {
+        if (upload.Destination == nullptr) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Null Vulkan upload buffer");
+        }
+        ValidateUploadRange(*upload.Destination, upload.Bytes, upload.DestinationOffsetBytes);
+        offsets.push_back(NInternal::AppendUploadSlice(sizeBytes, upload.Bytes.size()));
+        payloadBytes += upload.Bytes.size();
+    }
+    for (const VulkanImageUpload& upload: images) {
+        if (upload.Destination == nullptr) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Null Vulkan upload image");
+        }
+        ValidateImageUpload(*upload.Destination, upload.Bytes, upload.FinalUsage);
+        offsets.push_back(NInternal::AppendUploadSlice(sizeBytes, upload.Bytes.size()));
+        payloadBytes += upload.Bytes.size();
+    }
     ReleaseCompleted();
-
-    VulkanBufferAllocation staging = CreateVulkanStagingBuffer(m_memoryAllocator, bytes.size());
-    void* mapped = staging.Map();
-    std::memcpy(mapped, bytes.data(), bytes.size());
-    staging.Flush(0, bytes.size());
-    staging.Unmap();
-
-    const NGraphics::ImageDescriptor& descriptor = destination.GetDescriptor();
-    const VkImageAspectFlags aspectMask = GetImageAspect(descriptor.Format);
-    const VkImageSubresourceRange subresourceRange{
-            .aspectMask = aspectMask,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-    };
-    m_pendingUploads.reserve(m_pendingUploads.size() + 1);
-    const VkCommandBuffer commandBuffer = AllocateCommandBuffer();
-    VulkanCommandBufferGuard commandBufferGuard{m_handle, m_commandPool, commandBuffer};
-    BeginCommandBuffer(commandBuffer);
-    VulkanResourceStateTracker::Transaction stateTransaction = m_resourceStates.BeginTransaction();
-    if (const std::optional<VkImageMemoryBarrier2> barrier = m_resourceStates.TransitionImage({
-                .Image = destination.GetImage(),
-                .Usage = EVulkanResourceUsage::TransferWrite,
-                .SubresourceRange = subresourceRange,
-        });
-        barrier.has_value()) {
-        RecordVulkanResourceBarrier(commandBuffer, *barrier);
+    StagingArena& arena = AcquireArena(sizeBytes);
+    arena.Destinations.clear();
+    arena.Destinations.reserve(offsets.size());
+    const VkResult resetResult = vkResetCommandBuffer(arena.CommandBuffer, 0);
+    if (resetResult != VK_SUCCESS) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Failed to reset Vulkan upload command buffer: {}",
+                              GetVkResultName(resetResult));
     }
-
-    const VkBufferImageCopy copyRegion{
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource =
-                    {
-                            .aspectMask = aspectMask,
-                            .mipLevel = 0,
-                            .baseArrayLayer = 0,
-                            .layerCount = 1,
-                    },
-            .imageOffset = {.x = 0, .y = 0, .z = 0},
-            .imageExtent =
-                    {
-                            .width = descriptor.Extent.Width,
-                            .height = descriptor.Extent.Height,
-                            .depth = descriptor.Extent.Depth,
-                    },
-    };
-    vkCmdCopyBufferToImage(commandBuffer,
-                           staging.GetBuffer(),
-                           destination.GetImage(),
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           1,
-                           &copyRegion);
-    if (const std::optional<VkImageMemoryBarrier2> barrier = m_resourceStates.TransitionImage({
-                .Image = destination.GetImage(),
-                .Usage = finalUsage,
-                .SubresourceRange = subresourceRange,
-        });
-        barrier.has_value()) {
-        RecordVulkanResourceBarrier(commandBuffer, *barrier);
-    }
-    EndCommandBuffer(commandBuffer);
-
-    const VkCommandBufferSubmitInfo commandBufferInfo{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            .pNext = nullptr,
-            .commandBuffer = commandBuffer,
-            .deviceMask = 0,
-    };
-    m_pendingUploads.push_back(PendingUpload{
-            .Staging = std::move(staging),
-            .CommandBuffer = commandBuffer,
-            .Destination = destination.GetRetentionToken(),
-    });
-    VulkanQueueCompletion completion{};
     try {
-        completion = m_submissions.SubmitGraphics(VulkanQueueSubmitInfo{
-                .CommandBuffers = {commandBufferInfo},
-        });
+        BeginCommandBuffer(arena.CommandBuffer);
+        VulkanResourceStateTracker::Transaction stateTransaction = m_resourceStates.BeginTransaction();
+        std::size_t index = 0;
+        for (const VulkanBufferUpload& upload: buffers) {
+            const std::uint64_t offset = offsets[index++];
+            std::memcpy(arena.Mapped + offset, upload.Bytes.data(), upload.Bytes.size());
+            arena.Destinations.push_back(upload.Destination->GetRetentionToken());
+            for (const VkBufferMemoryBarrier2& barrier: m_resourceStates.TransitionBufferRanges({
+                         .Buffer = upload.Destination->GetBuffer(),
+                         .Offset = upload.DestinationOffsetBytes,
+                         .Size = upload.Bytes.size(),
+                         .Usage = EVulkanResourceUsage::TransferWrite,
+                 })) {
+                RecordVulkanResourceBarrier(arena.CommandBuffer, barrier);
+            }
+            const VkBufferCopy copyRegion{
+                    .srcOffset = offset,
+                    .dstOffset = upload.DestinationOffsetBytes,
+                    .size = upload.Bytes.size(),
+            };
+            vkCmdCopyBuffer(arena.CommandBuffer,
+                            arena.Staging.GetBuffer(),
+                            upload.Destination->GetBuffer(),
+                            1,
+                            &copyRegion);
+        }
+        for (const VulkanImageUpload& upload: images) {
+            const std::uint64_t offset = offsets[index++];
+            std::memcpy(arena.Mapped + offset, upload.Bytes.data(), upload.Bytes.size());
+            arena.Destinations.push_back(upload.Destination->GetRetentionToken());
+            const NGraphics::ImageDescriptor& descriptor = upload.Destination->GetDescriptor();
+            const VkImageAspectFlags aspect = GetImageAspect(descriptor.Format);
+            const VkImageSubresourceRange range{
+                    .aspectMask = aspect,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+            };
+            if (const auto barrier = m_resourceStates.TransitionImage({
+                        .Image = upload.Destination->GetImage(),
+                        .Usage = EVulkanResourceUsage::TransferWrite,
+                        .SubresourceRange = range,
+                })) {
+                RecordVulkanResourceBarrier(arena.CommandBuffer, *barrier);
+            }
+            const VkBufferImageCopy copyRegion{
+                    .bufferOffset = offset,
+                    .bufferRowLength = 0,
+                    .bufferImageHeight = 0,
+                    .imageSubresource = {.aspectMask = aspect, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                    .imageOffset = {.x = 0, .y = 0, .z = 0},
+                    .imageExtent = {.width = descriptor.Extent.Width,
+                                    .height = descriptor.Extent.Height,
+                                    .depth = descriptor.Extent.Depth},
+            };
+            vkCmdCopyBufferToImage(arena.CommandBuffer,
+                                   arena.Staging.GetBuffer(),
+                                   upload.Destination->GetImage(),
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   1,
+                                   &copyRegion);
+            if (const auto barrier = m_resourceStates.TransitionImage({
+                        .Image = upload.Destination->GetImage(),
+                        .Usage = upload.FinalUsage,
+                        .SubresourceRange = range,
+                })) {
+                RecordVulkanResourceBarrier(arena.CommandBuffer, *barrier);
+            }
+        }
+        // VMA rounds non-coherent flushes to nonCoherentAtomSize and skips coherent memory.
+        arena.Staging.Flush(0, sizeBytes);
+        EndCommandBuffer(arena.CommandBuffer);
+        const VkCommandBufferSubmitInfo commandBufferInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                .pNext = nullptr,
+                .commandBuffer = arena.CommandBuffer,
+                .deviceMask = 0,
+        };
+        const VulkanQueueCompletion completion = m_submissions.SubmitGraphics({.WaitSemaphores = {},
+                                                                               .CommandBuffers = {commandBufferInfo},
+                                                                               .SignalSemaphores = {},
+                                                                               .Fence = VK_NULL_HANDLE});
+        // Nothing after successful submit may allocate or fail: all retention is already installed.
+        arena.Completion = completion;
+        arena.PayloadBytes = payloadBytes;
+        arena.UploadCount = offsets.size();
+        stateTransaction.Commit();
+        m_statistics.SubmittedBytes += payloadBytes;
+        m_statistics.SubmittedUploads += offsets.size();
+        ++m_statistics.Submissions;
+        m_statistics.PendingHighWaterBytes = std::max(m_statistics.PendingHighWaterBytes, GetStatistics().PendingBytes);
+        return completion;
     } catch (...) {
-        m_pendingUploads.pop_back();
+        arena.Destinations.clear();
         throw;
     }
-    m_pendingUploads.back().Completion = completion;
-    stateTransaction.Commit();
-    commandBufferGuard.Release();
+}
 
-    return completion;
+VulkanUploadManager::StagingArena& VulkanUploadManager::AcquireArena(std::uint64_t sizeBytes) {
+    if (sizeBytes > m_config.MaxStagingBytes) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan upload batch exceeds staging budget");
+    }
+    for (const auto& arena: m_arenas) {
+        if (arena->Completion.Value == 0 && arena->Staging.GetSizeBytes() >= sizeBytes) {
+            return *arena;
+        }
+    }
+    const std::uint64_t capacity = std::max(m_config.ArenaSizeBytes, sizeBytes);
+    // Evict only idle arenas when a larger batch needs the bounded staging budget.
+    for (auto arena = m_arenas.begin();
+         capacity > m_config.MaxStagingBytes - m_statistics.StagingBytes && arena != m_arenas.end();) {
+        if ((*arena)->Completion.Value == 0) {
+            m_statistics.StagingBytes -= (*arena)->Staging.GetSizeBytes();
+            vkFreeCommandBuffers(m_handle, m_commandPool, 1, &(*arena)->CommandBuffer);
+            arena = m_arenas.erase(arena);
+        } else {
+            ++arena;
+        }
+    }
+    if (capacity > m_config.MaxStagingBytes - m_statistics.StagingBytes) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "Vulkan staging budget exhausted; retry after completion");
+    }
+    m_arenas.reserve(m_arenas.size() + 1);
+    auto arena = std::make_unique<StagingArena>();
+    arena->Staging = CreateVulkanStagingBuffer(m_memoryAllocator, capacity);
+    arena->Mapped = static_cast<std::byte*>(arena->Staging.Map());
+    arena->CommandBuffer = AllocateCommandBuffer();
+    m_arenas.push_back(std::move(arena));
+    m_statistics.StagingBytes += capacity;
+    m_statistics.StagingHighWaterBytes = std::max(m_statistics.StagingHighWaterBytes, m_statistics.StagingBytes);
+    ++m_statistics.ArenaAllocations;
+    return *m_arenas.back();
 }
 
 void VulkanUploadManager::ReleaseCompleted() {
-    auto upload = m_pendingUploads.begin();
-
-    while (upload != m_pendingUploads.end()) {
-        if (!m_submissions.IsCompleted(upload->Completion)) {
-            ++upload;
-            continue;
+    for (const auto& arena: m_arenas) {
+        if (arena->Completion.Value != 0 && m_submissions.IsCompleted(arena->Completion)) {
+            arena->Completion = {};
+            arena->PayloadBytes = 0;
+            arena->UploadCount = 0;
+            arena->Destinations.clear();
         }
-
-        vkFreeCommandBuffers(m_handle, m_commandPool, 1, &upload->CommandBuffer);
-        upload = m_pendingUploads.erase(upload);
     }
 }
 
 std::size_t VulkanUploadManager::GetPendingUploadCount() const noexcept {
-    return m_pendingUploads.size();
+    return GetStatistics().PendingUploads;
+}
+
+VulkanUploadStatistics VulkanUploadManager::GetStatistics() const noexcept {
+    VulkanUploadStatistics statistics = m_statistics;
+    for (const auto& arena: m_arenas) {
+        if (arena->Completion.Value != 0) {
+            statistics.PendingBytes += arena->PayloadBytes;
+            statistics.PendingUploads += arena->UploadCount;
+            ++statistics.PendingBatches;
+        }
+    }
+    return statistics;
 }
 
 VkCommandPool VulkanUploadManager::CreateCommandPool() const {
