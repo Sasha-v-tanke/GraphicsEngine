@@ -53,7 +53,7 @@ private:
     void OnUpdate() override {
         const auto stats = GetFrameDiagnostics();
         if (!m_resized && stats.Submitted >= 5) {
-            GetWindow().SetSize({.Width = 240, .Height = 180});
+            RunOnMainThread([this] { GetWindow().SetSize({.Width = 240, .Height = 180}); });
             m_resized = true;
         }
         if (stats.Submitted >= 24) {
@@ -115,7 +115,7 @@ public:
     void OnDraw() override {
         ++Draws;
     }
-    std::uint64_t Updates = 0;
+    std::atomic<std::uint64_t> Updates = 0;
     std::uint64_t Draws = 0;
 };
 
@@ -168,7 +168,7 @@ void RunPresentationLifecycle(std::size_t count) {
             for (int index = 0; index < 100; ++index) {
                 step(true);
             }
-            const auto updates = callbacks.Updates;
+            const auto updates = callbacks.Updates.load();
             const auto draws = callbacks.Draws;
             for (int index = 0; index < 20; ++index) {
                 step(true);

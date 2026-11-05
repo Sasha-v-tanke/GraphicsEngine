@@ -8,6 +8,7 @@
 #include <engine/controller/frame_scheduler.h>
 #include <engine/engine.h>
 #include <engine/engine_config.h>
+#include <engine/runtime/update_completion.h>
 
 namespace NEngine::NRuntime {
 
@@ -44,6 +45,18 @@ public:
     virtual ~IFrameRuntime() = default;
 
     virtual void Update(const FrameContext& frame) = 0;
+
+    // May return before simulation completes. Bind cancellation before publication and Finish after all consumers.
+    virtual void
+    ScheduleUpdate(const FrameContext& frame, NCommon::TaskSystem&, std::shared_ptr<UpdateCompletion> completion) {
+        const auto ownedCompletion = std::move(completion);
+        try {
+            Update(frame);
+            ownedCompletion->Finish();
+        } catch (...) {
+            ownedCompletion->Finish({.Status = EUpdateStatus::FAILED, .Error = std::current_exception()});
+        }
+    }
 
     virtual void Extract(const FrameContext&) {
     }

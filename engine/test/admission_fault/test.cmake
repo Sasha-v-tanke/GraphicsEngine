@@ -1,0 +1,9 @@
+TEST_SUITE(EngineAdmissionFault)
+
+SOURCES(allocation.cpp)
+PRIVATE_DEPENDS(Engine Thread Common)
+TEST_LABELS(small cpp engine)
+set_tests_properties(${GRAPHICS_ENGINE_CURRENT_TARGET} PROPERTIES TIMEOUT 45)
+if (GRAPHICS_ENGINE_ENABLE_ASAN)
+    target_compile_definitions(${GRAPHICS_ENGINE_CURRENT_TARGET} PRIVATE GRAPHICS_ENGINE_ADMISSION_FAULT_ASAN=1)
+endif ()

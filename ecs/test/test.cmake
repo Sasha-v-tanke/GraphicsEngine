@@ -16,3 +16,5 @@ TEST_LABELS(
     cpp
     ecs
 )
+
+RECURSE(run_fault)

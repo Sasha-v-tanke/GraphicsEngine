@@ -20,6 +20,9 @@ class IFrameLoopCallbacks {
 public:
     virtual ~IFrameLoopCallbacks() = default;
 
+    virtual void CaptureInput() {
+    }
+
     virtual void OnUpdate() = 0;
 
     virtual void OnDraw() = 0;
@@ -49,6 +52,7 @@ public:
     void SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job);
     void CheckError() const;
 
+    // Callbacks must remain alive until Stop has drained their worker invocations.
     bool Step(IFrameLoopCallbacks& callbacks);
     void WaitForProgress() const;
 

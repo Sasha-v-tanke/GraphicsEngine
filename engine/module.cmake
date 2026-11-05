@@ -14,6 +14,8 @@ PUBLIC_DEPENDS(
     Thread
 )
 
+PRIVATE_DEPENDS(Ecs)
+
 RECURSE(
     controller
     runtime

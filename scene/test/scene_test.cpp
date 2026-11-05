@@ -10,6 +10,7 @@
 #include <GraphicsEngine/renderer/render_components.h>
 #include <GraphicsEngine/resources/resource_manager.h>
 #include <GraphicsEngine/scene/scene_manager.h>
+#include <ecs/internal/system_run.h>
 #include <engine/controller/frame_scheduler.h>
 #include <gtest/gtest.h>
 #include <renderer/extraction.h>
@@ -338,3 +339,42 @@ TEST(Scene, UnloadingOldScenePreservesFrameSnapshotAndSharedResources) {
 }
 
 } // namespace
+
+TEST(SceneAsyncSystems, UnloadRetainsAliasingWorldLeaseUntilSystemQuiescence) {
+    std::atomic<int> destroyed{0};
+    NScene::SceneManager manager;
+    const auto handle = manager.RegisterScene(std::make_unique<UserScene>(destroyed));
+    auto scene = manager.Acquire(handle);
+    std::promise<void> entered;
+    auto enteredFuture = entered.get_future();
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    scene->GetWorld().RegisterSystem(
+            {},
+            [&](NEcs::World&) {
+                entered.set_value();
+                released.wait();
+                EXPECT_EQ(destroyed.load(), 0);
+            },
+            NEcs::SystemSchedule{.Id = 1});
+    NCommon::TaskSystem tasks{1};
+    std::promise<void> done;
+    auto finished = done.get_future();
+    auto prepared =
+            NEcs::NInternal::PrepareSystems(std::shared_ptr<NEcs::World>{scene, &scene->GetWorld()},
+                                            tasks,
+                                            [&](const auto& outcome) {
+                                                EXPECT_EQ(outcome.Status, NEcs::NInternal::ESystemRunStatus::COMPLETED);
+                                                EXPECT_EQ(destroyed.load(), 1);
+                                                done.set_value();
+                                            });
+    prepared.Start();
+    EXPECT_EQ(enteredFuture.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+    manager.Unload(handle);
+    scene.reset();
+    EXPECT_EQ(destroyed.load(), 0);
+    release.set_value();
+    EXPECT_EQ(finished.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+    tasks.WaitIdle();
+    EXPECT_EQ(destroyed.load(), 1);
+}

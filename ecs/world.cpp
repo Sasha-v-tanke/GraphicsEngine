@@ -1,12 +1,14 @@
 #include "world.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <exception>
 #include <iterator>
 #include <limits>
 #include <numeric>
 
 #include <GraphicsEngine/lib/thread/task/task_system.h>
+#include <ecs/internal/system_run.h>
 #include <ecs/internal/topology.h>
 
 namespace NEcs {
@@ -86,12 +88,183 @@ void World::IDeferredCommand::RollbackReservation(World& world) {
     static_cast<void>(world);
 }
 
+struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_shared_from_this<SystemRunState> {
+    std::shared_ptr<World> Lease;
+    NCommon::TaskSystem* Tasks = nullptr;
+    SystemExecutionGraph Graph;
+    std::vector<SystemInvocation> Invocations;
+    std::vector<NCommon::TaskHandle> Handles;
+    std::vector<std::vector<NCommon::TaskHandle>> Dependencies;
+    std::function<void(NInternal::SystemRunOutcome)> OnFinished;
+    mutable std::mutex Mutex;
+    std::optional<NInternal::SystemRunOutcome> Outcome;
+    std::atomic_bool Cancelled = false;
+    std::atomic_bool Failed = false;
+    std::atomic_bool Started = false;
+    // The initial participant owns publication; no final Submit can fail after partial publication.
+    std::atomic_size_t Outstanding{1};
+    std::exception_ptr PublicationError;
+
+    std::optional<NInternal::SystemRunOutcome> TryGetOutcome() const override {
+        std::lock_guard lock{Mutex};
+        return Outcome;
+    }
+    void RequestCancel() noexcept override {
+        Cancelled.store(true);
+    }
+    void Abandon() noexcept override {
+        if (!Started.exchange(true)) {
+            RequestCancel();
+            Retire();
+        }
+    }
+    void Start() override {
+        if (Started.exchange(true)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS run was already started");
+        }
+        const std::shared_ptr<SystemRunState> pin = shared_from_this();
+        for (const std::size_t index: Graph.Order) {
+            if (Cancelled || Failed) {
+                break;
+            }
+            Outstanding.fetch_add(1);
+            try {
+                for (std::size_t dependency = 0; dependency < Graph.Dependencies[index].size(); ++dependency) {
+                    Dependencies[index][dependency] = Handles[Graph.Dependencies[index][dependency]];
+                }
+                Handles[index] = Tasks->Submit(
+                        [weak = weak_from_this(), index](NCommon::TaskContext&) {
+                            const std::shared_ptr<SystemRunState> state = weak.lock();
+                            if (!state) {
+                                return;
+                            }
+                            if (!state->Cancelled && !state->Failed) {
+                                try {
+                                    state->Lease->ExecuteSystem(index, state->Invocations[index]);
+                                } catch (...) {
+                                    state->Failed.store(true);
+                                }
+                            }
+                            state->Retire();
+                        },
+                        Dependencies[index]);
+            } catch (...) {
+                PublicationError = std::current_exception();
+                Failed.store(true);
+                Retire();
+                break;
+            }
+        }
+        Retire();
+    }
+    void Retire() noexcept {
+        if (Outstanding.fetch_sub(1) != 1) {
+            return;
+        }
+        // No participant may access invocation or World storage after its retirement.
+        std::shared_ptr<World> world = Lease;
+        NInternal::SystemRunOutcome result;
+        result.Error = PublicationError;
+        for (const std::size_t index: Graph.Order) {
+            if (!result.Error && Invocations[index].Error) {
+                result.Error = Invocations[index].Error;
+                result.FailedSystem = world->Systems_[index].Schedule ? world->Systems_[index].Schedule->Id : index;
+            }
+        }
+        result.Status = (result.Error || Failed) ? NInternal::ESystemRunStatus::FAILED
+                                                 : (Cancelled ? NInternal::ESystemRunStatus::CANCELLED
+                                                              : NInternal::ESystemRunStatus::COMPLETED);
+        World* previous = CommittingWorld_;
+        try {
+            if (result.Status == NInternal::ESystemRunStatus::COMPLETED) {
+                world->PublishSystemCommands(Invocations);
+                CommittingWorld_ = world.get();
+                world->ApplyDeferredStructuralChanges();
+            } else {
+                world->DiscardSystemCommands(Invocations);
+            }
+        } catch (...) {
+            result.Error = std::current_exception();
+            result.Status = NInternal::ESystemRunStatus::FAILED;
+            try {
+                world->DiscardSystemCommands(Invocations);
+                world->DiscardPublishedCommands();
+            } catch (...) {
+                world->ExecutionPoisoned_ = true;
+            }
+            // A failed commit can retain partially applied commands; require teardown/recovery.
+            world->ExecutionPoisoned_ = true;
+        }
+        CommittingWorld_ = previous;
+        Invocations.clear();
+        world->ActiveSystemRun_.reset();
+        Lease.reset();
+        world->IsRunningSystems_.store(false);
+        // Releasing the last lease may run registry capture destructors; it precedes terminal publication.
+        world.reset();
+        {
+            std::lock_guard lock{Mutex};
+            Outcome = result;
+        }
+        std::function<void(NInternal::SystemRunOutcome)> callback = std::move(OnFinished);
+        if (callback) {
+            try {
+                callback(result);
+            } catch (...) { /* Runtime subscribers must contain their own errors. */
+            }
+        }
+    }
+};
+
+NInternal::PreparedSystemRun
+NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
+                                         NCommon::TaskSystem& tasks,
+                                         std::function<void(NInternal::SystemRunOutcome)> onFinished) {
+    const std::shared_ptr<World> owner = std::move(world);
+    if (!owner) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Async ECS requires a World owner");
+    }
+    if (owner->IsRunningSystems_.exchange(true)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+    }
+    try {
+        if (owner->ExecutionPoisoned_) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS execution requires recovery after cleanup failure");
+        }
+        auto state = std::make_shared<World::SystemRunState>();
+        state->Lease = owner;
+        state->Tasks = &tasks;
+        state->OnFinished = std::move(onFinished);
+        state->Graph = owner->BuildSystemExecutionGraph(true);
+        state->Invocations.resize(owner->Systems_.size());
+        state->Handles.resize(owner->Systems_.size());
+        state->Dependencies.resize(owner->Systems_.size());
+        for (const std::size_t index: state->Graph.Order) {
+            state->Dependencies[index].resize(state->Graph.Dependencies[index].size());
+            auto& invocation = state->Invocations[index];
+            invocation.Owner = owner.get();
+            invocation.StructuralOrder = owner->Systems_[index].StructuralOrder;
+            invocation.Id = ++owner->NextSystemInvocationId_;
+        }
+        owner->ActiveSystemRun_ = state;
+        return NInternal::PreparedSystemRun{std::move(state)};
+    } catch (...) {
+        owner->IsRunningSystems_.store(false);
+        throw;
+    }
+}
+
 struct World::DeferredStructuralCommandBuffer::State {
     World* Owner = nullptr;
     std::weak_ptr<bool> OwnerLifetime;
     std::uint32_t ProducerOrder = 0;
     std::optional<std::uint32_t> SystemOrder;
     std::uint64_t SystemInvocationId = 0;
+    ~State();
+    std::shared_ptr<SystemRunState> Run;
+    std::size_t InvocationIndex = 0;
+    bool DeclaredProducer = false;
     bool Submitted = false;
     bool HasClaimedReservations = false;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
@@ -119,32 +292,31 @@ World::DeferredStructuralCommandBuffer::DeferredStructuralCommandBuffer(Deferred
         default;
 
 World::DeferredStructuralCommandBuffer&
-World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffer&& other) noexcept {
-    if (this != &other) {
-        if (State_ != nullptr && State_->Owner != nullptr && !State_->OwnerLifetime.expired() && !State_->Submitted) {
-            State_->Owner->RollbackDeferredStructuralCommands(State_->Commands);
-            std::scoped_lock lock{State_->Owner->DeferredStructuralMutex_};
-            State_->Owner->ReleaseUnusedDeferredEntityReservationsLocked(State_->EntityReservations,
-                                                                         State_->NextEntityReservation);
-            if (State_->HasClaimedReservations) {
-                --State_->Owner->OutstandingDeferredReservationBufferCount_;
+World::DeferredStructuralCommandBuffer::operator=(DeferredStructuralCommandBuffer&&) noexcept = default;
+World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() = default;
+
+World::DeferredStructuralCommandBuffer::State::~State() {
+    if (Owner != nullptr && !OwnerLifetime.expired() && !Submitted) {
+        try {
+            Owner->RollbackDeferredStructuralCommands(Commands);
+            {
+                std::scoped_lock lock{Owner->DeferredStructuralMutex_};
+                Owner->ReleaseUnusedDeferredEntityReservationsLocked(EntityReservations, NextEntityReservation);
+                if (HasClaimedReservations) {
+                    --Owner->OutstandingDeferredReservationBufferCount_;
+                }
             }
+        } catch (...) {
+            if (Run) {
+                Run->Failed.store(true);
+            }
+            Owner->ExecutionPoisoned_ = true;
         }
-        State_ = std::move(other.State_);
     }
-
-    return *this;
-}
-
-World::DeferredStructuralCommandBuffer::~DeferredStructuralCommandBuffer() {
-    if (State_ != nullptr && State_->Owner != nullptr && !State_->OwnerLifetime.expired() && !State_->Submitted) {
-        State_->Owner->RollbackDeferredStructuralCommands(State_->Commands);
-        std::scoped_lock lock{State_->Owner->DeferredStructuralMutex_};
-        State_->Owner->ReleaseUnusedDeferredEntityReservationsLocked(State_->EntityReservations,
-                                                                     State_->NextEntityReservation);
-        if (State_->HasClaimedReservations) {
-            --State_->Owner->OutstandingDeferredReservationBufferCount_;
-        }
+    Commands.clear();
+    EntityReservations.clear();
+    if (Run) {
+        Run->Retire();
     }
 }
 
@@ -283,9 +455,10 @@ Entity World::DeferCreateEntity(DeferredStructuralCommandBuffer& buffer) {
                                   "ECS producer did not declare enough deferred entity reservations");
         }
         const DeferredEntityReservation& reservation =
-                buffer.State_->EntityReservations[buffer.State_->NextEntityReservation++];
+                buffer.State_->EntityReservations[buffer.State_->NextEntityReservation];
         buffer.State_->Commands.push_back(
                 std::make_unique<DeferredCreateEntityCommand>(reservation.Identity, reservation.ReusesFreeSlot));
+        ++buffer.State_->NextEntityReservation;
         entity = reservation.Identity;
     }
 
@@ -293,13 +466,22 @@ Entity World::DeferCreateEntity(DeferredStructuralCommandBuffer& buffer) {
 }
 
 Entity World::ReserveDeferredEntityLocked(std::vector<std::unique_ptr<IDeferredCommand>>& commands) {
+    commands.reserve(commands.size() + 1);
     const DeferredEntityReservation reservation = ReserveDeferredEntityLocked();
-    commands.push_back(std::make_unique<DeferredCreateEntityCommand>(reservation.Identity, reservation.ReusesFreeSlot));
+    try {
+        commands.push_back(
+                std::make_unique<DeferredCreateEntityCommand>(reservation.Identity, reservation.ReusesFreeSlot));
+    } catch (...) {
+        ReleaseDeferredEntityReservationLocked(reservation);
+        throw;
+    }
     return reservation.Identity;
 }
 
 World::DeferredEntityReservation World::ReserveDeferredEntityLocked() {
     DeferredEntityReservation reservation;
+    FreeEntityIndices_.reserve(Entities_.size() + PendingDeferredEntityCreateCount_ + 1);
+    PendingDeferredAppendEntities_.reserve(PendingDeferredAppendEntities_.size() + 1);
 
     if (!FreeEntityIndices_.empty()) {
         const std::uint32_t index = FreeEntityIndices_.back();
@@ -594,10 +776,20 @@ World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuf
         const auto* invocation = GetCurrentSystemInvocation();
         buffer.State_->SystemOrder = invocation->StructuralOrder;
         buffer.State_->SystemInvocationId = invocation->Id;
+        if (ActiveSystemRun_) {
+            if (ActiveSystemRun_->Cancelled || ActiveSystemRun_->Failed) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS producer admission is closed");
+            }
+            buffer.State_->InvocationIndex =
+                    static_cast<std::size_t>(invocation - ActiveSystemRun_->Invocations.data());
+            ActiveSystemRun_->Outstanding.fetch_add(1);
+            buffer.State_->Run = ActiveSystemRun_;
+        }
     }
     if (const auto phase = PlannedDeferredEntityReservations_.find(buffer.State_->SystemOrder);
         phase != PlannedDeferredEntityReservations_.end()) {
         if (const auto iterator = phase->second.find(producerOrder); iterator != phase->second.end()) {
+            buffer.State_->DeclaredProducer = true;
             buffer.State_->EntityReservations = std::move(iterator->second);
             phase->second.erase(iterator);
             if (!buffer.State_->EntityReservations.empty()) {
@@ -612,56 +804,73 @@ World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuf
 void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer) {
     ValidateDeferredStructuralCommandBuffer(buffer);
 
-    std::scoped_lock lock{DeferredStructuralMutex_};
-    auto* invocation = GetCurrentSystemInvocation();
-    if (IsRunningSystems_) {
-        if (invocation == nullptr || !invocation->StructuralOrder.has_value() ||
-            buffer.State_->SystemOrder != invocation->StructuralOrder ||
-            buffer.State_->SystemInvocationId != invocation->Id) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                                  "ECS worker buffer must be submitted by its owning structural system");
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        auto* invocation = GetCurrentSystemInvocation();
+        if (buffer.State_->Run) {
+            if (invocation == nullptr && !buffer.State_->DeclaredProducer) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Async producer must be declared before the run");
+            }
+            invocation = &buffer.State_->Run->Invocations[buffer.State_->InvocationIndex];
         }
-    } else if (buffer.State_->SystemOrder.has_value()) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
-                              "ECS worker buffer must be submitted before its system returns");
-    }
-    const auto& batches = invocation != nullptr ? invocation->WorkerBatches : DeferredStructuralBatches_;
-    if (std::ranges::any_of(batches, [&](const DeferredCommandBatch& batch) {
-            return batch.Source == (buffer.State_->SystemOrder.has_value() ? DeferredCommandBatch::ESource::SYSTEM
-                                                                           : DeferredCommandBatch::ESource::EXTERNAL) &&
-                   (!buffer.State_->SystemOrder.has_value() ||
-                    (batch.IsWorker && batch.SystemOrder == *buffer.State_->SystemOrder)) &&
-                   batch.ProducerOrder == buffer.State_->ProducerOrder;
-        })) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
-                              "ECS deferred command buffer producer order must be unique");
-    }
+        if (IsRunningSystems_) {
+            if (invocation == nullptr || !invocation->StructuralOrder.has_value() ||
+                buffer.State_->SystemOrder != invocation->StructuralOrder ||
+                buffer.State_->SystemInvocationId != invocation->Id) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                      "ECS worker buffer must be submitted by its owning structural system");
+            }
+        } else if (buffer.State_->SystemOrder.has_value()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS worker buffer must be submitted before its system returns");
+        }
+        const auto& batches = invocation != nullptr ? invocation->WorkerBatches : DeferredStructuralBatches_;
+        if (std::ranges::any_of(batches, [&](const DeferredCommandBatch& batch) {
+                return batch.Source == (buffer.State_->SystemOrder.has_value()
+                                                ? DeferredCommandBatch::ESource::SYSTEM
+                                                : DeferredCommandBatch::ESource::EXTERNAL) &&
+                       (!buffer.State_->SystemOrder.has_value() ||
+                        (batch.IsWorker && batch.SystemOrder == *buffer.State_->SystemOrder)) &&
+                       batch.ProducerOrder == buffer.State_->ProducerOrder;
+            })) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                  "ECS deferred command buffer producer order must be unique");
+        }
 
-    DeferredCommandBatch batch{
-            .Source = buffer.State_->SystemOrder.has_value() ? DeferredCommandBatch::ESource::SYSTEM
-                                                             : DeferredCommandBatch::ESource::EXTERNAL,
-            .SystemOrder = buffer.State_->SystemOrder.value_or(0),
-            .IsWorker = buffer.State_->SystemOrder.has_value(),
-            .ProducerOrder = buffer.State_->ProducerOrder,
-            .Commands = std::move(buffer.State_->Commands),
-    };
+        // Reserve before moving payload or releasing reservations; a failed allocation leaves the buffer intact.
+        if (invocation) {
+            invocation->WorkerBatches.reserve(invocation->WorkerBatches.size() + 1);
+        } else {
+            DeferredStructuralBatches_.reserve(DeferredStructuralBatches_.size() + 1);
+        }
+        DeferredCommandBatch batch{
+                .Source = buffer.State_->SystemOrder.has_value() ? DeferredCommandBatch::ESource::SYSTEM
+                                                                 : DeferredCommandBatch::ESource::EXTERNAL,
+                .SystemOrder = buffer.State_->SystemOrder.value_or(0),
+                .IsWorker = buffer.State_->SystemOrder.has_value(),
+                .ProducerOrder = buffer.State_->ProducerOrder,
+                .Commands = std::move(buffer.State_->Commands),
+        };
 
-    ReleaseUnusedDeferredEntityReservationsLocked(buffer.State_->EntityReservations,
-                                                  buffer.State_->NextEntityReservation);
-    if (invocation != nullptr) {
-        invocation->WorkerBatches.push_back(std::move(batch));
-    } else {
-        AppendDeferredCommandBatch(std::move(batch));
+        ReleaseUnusedDeferredEntityReservationsLocked(buffer.State_->EntityReservations,
+                                                      buffer.State_->NextEntityReservation);
+        if (invocation != nullptr) {
+            invocation->WorkerBatches.push_back(std::move(batch));
+        } else {
+            AppendDeferredCommandBatch(std::move(batch));
+        }
+        if (buffer.State_->HasClaimedReservations) {
+            --OutstandingDeferredReservationBufferCount_;
+            buffer.State_->HasClaimedReservations = false;
+        }
+        buffer.State_->Submitted = true;
     }
-    if (buffer.State_->HasClaimedReservations) {
-        --OutstandingDeferredReservationBufferCount_;
-        buffer.State_->HasClaimedReservations = false;
-    }
-    buffer.State_->Submitted = true;
+    // Ticket retirement may finalize the entire run and must happen outside the World lock.
+    buffer.State_.reset();
 }
 
 void World::RunSystems() {
-    RunSystemsImpl(nullptr);
+    RunSystemsImpl();
 }
 
 void World::RunSystems(NCommon::TaskSystem& taskSystem) {
@@ -669,7 +878,28 @@ void World::RunSystems(NCommon::TaskSystem& taskSystem) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS parallel execution must be coordinated by a host thread");
     }
-    RunSystemsImpl(&taskSystem);
+    struct HostCompletion {
+        std::mutex Mutex;
+        std::condition_variable Condition;
+        std::optional<NInternal::SystemRunOutcome> Outcome;
+    };
+    const auto completion = std::make_shared<HostCompletion>();
+    // Borrowed admission is confined to this host wrapper, which cannot return before cleanup.
+    auto prepared = NInternal::PrepareSystems(std::shared_ptr<World>{this, [](World*) {}},
+                                              taskSystem,
+                                              [completion](const NInternal::SystemRunOutcome& result) {
+                                                  {
+                                                      std::lock_guard lock{completion->Mutex};
+                                                      completion->Outcome = result;
+                                                  }
+                                                  completion->Condition.notify_one();
+                                              });
+    prepared.Start();
+    std::unique_lock lock{completion->Mutex};
+    completion->Condition.wait(lock, [&] { return completion->Outcome.has_value(); });
+    if (completion->Outcome->Error) {
+        std::rethrow_exception(completion->Outcome->Error);
+    }
 }
 
 void World::ExecuteSystem(std::size_t index, SystemInvocation& invocation) {
@@ -709,6 +939,20 @@ void World::DiscardSystemCommands(std::vector<SystemInvocation>& invocations) {
     std::ranges::sort(FreeEntityIndices_);
 }
 
+void World::DiscardPublishedCommands() {
+    std::vector<std::unique_ptr<IDeferredCommand>> commands;
+    std::vector<DeferredCommandBatch> batches;
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        commands.swap(DeferredStructuralCommands_);
+        batches.swap(DeferredStructuralBatches_);
+    }
+    RollbackDeferredStructuralCommands(commands);
+    for (auto& batch: batches) {
+        RollbackDeferredStructuralCommands(batch.Commands);
+    }
+}
+
 void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
     std::scoped_lock lock{DeferredStructuralMutex_};
     if (OutstandingDeferredReservationBufferCount_ != 0) {
@@ -736,49 +980,30 @@ void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
     }
 }
 
-void World::RunSystemsImpl(NCommon::TaskSystem* taskSystem) {
-    const SystemExecutionGraph graph = BuildSystemExecutionGraph(taskSystem != nullptr);
-    std::vector<SystemInvocation> invocations(Systems_.size());
-    std::vector<NCommon::TaskHandle> tasks(Systems_.size());
-    std::vector<NCommon::TaskHandle> submitted;
-    submitted.reserve(Systems_.size());
+void World::RunSystemsImpl() {
     if (IsRunningSystems_.exchange(true)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
     }
+    std::vector<SystemInvocation> invocations;
     try {
+        if (ExecutionPoisoned_) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "ECS execution requires recovery after cleanup failure");
+        }
+        const SystemExecutionGraph graph = BuildSystemExecutionGraph(false);
+        invocations.resize(Systems_.size());
         for (const std::size_t index: graph.Order) {
             invocations[index].Owner = this;
             invocations[index].StructuralOrder = Systems_[index].StructuralOrder;
             invocations[index].Id = ++NextSystemInvocationId_;
         }
         std::exception_ptr error;
-        if (taskSystem == nullptr) {
-            try {
-                for (const std::size_t index: graph.Order) {
-                    ExecuteSystem(index, invocations[index]);
-                }
-            } catch (...) {
-                error = std::current_exception();
+        try {
+            for (const std::size_t index: graph.Order) {
+                ExecuteSystem(index, invocations[index]);
             }
-        } else {
-            try {
-                for (const std::size_t index: graph.Order) {
-                    std::vector<NCommon::TaskHandle> dependencies;
-                    dependencies.reserve(graph.Dependencies[index].size());
-                    for (const std::size_t dependency: graph.Dependencies[index]) {
-                        dependencies.push_back(tasks[dependency]);
-                    }
-                    tasks[index] = taskSystem->Submit(
-                            [&, index](NCommon::TaskContext&) { ExecuteSystem(index, invocations[index]); },
-                            dependencies);
-                    submitted.push_back(tasks[index]);
-                }
-            } catch (...) {
-                error = std::current_exception();
-            }
-            for (const auto& task: submitted) {
-                taskSystem->Wait(task);
-            }
+        } catch (...) {
+            error = std::current_exception();
         }
         if (error == nullptr) {
             for (const std::size_t index: graph.Order) {
@@ -850,6 +1075,12 @@ void World::ApplyDeferredStructuralChanges() {
                               return lhs.SubmissionOrder < rhs.SubmissionOrder;
                           });
 
+        std::size_t commandCount = DeferredStructuralCommands_.size();
+        for (const auto& batch: DeferredStructuralBatches_) {
+            commandCount += batch.Commands.size();
+        }
+        DeferredStructuralCommands_.reserve(commandCount);
+        commands.reserve(commandCount);
         for (auto& batch: DeferredStructuralBatches_) {
             DeferredStructuralCommands_.insert(DeferredStructuralCommands_.end(),
                                                std::make_move_iterator(batch.Commands.begin()),
@@ -952,13 +1183,13 @@ void World::AppendDeferredCommandBatch(DeferredCommandBatch batch) {
 }
 
 void World::RollbackDeferredStructuralCommands(std::vector<std::unique_ptr<IDeferredCommand>>& commands) {
-    std::scoped_lock lock{DeferredStructuralMutex_};
-
-    for (const auto& command: commands) {
-        ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
-        command->RollbackReservation(*this);
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        for (const auto& command: commands) {
+            ReservedDeferredEntityCount_ -= command->GetReservedEntityCount();
+            command->RollbackReservation(*this);
+        }
     }
-
     commands.clear();
 }
 

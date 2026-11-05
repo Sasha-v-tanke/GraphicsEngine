@@ -109,8 +109,8 @@ public:
 
 private:
     void OnUpdate() override {
-        EXPECT_EQ(std::this_thread::get_id(), m_state.OwningThread);
-        m_state.Events.emplace_back("user.update");
+        EXPECT_NE(std::this_thread::get_id(), m_state.OwningThread);
+        RunOnMainThread([this] { m_state.Events.emplace_back("user.update"); });
         ++m_updateCount;
 
         if (m_updateCount == 3) {
@@ -212,12 +212,18 @@ public:
     }
 
     void OnUpdate() override {
-        m_events.emplace_back("user.update");
+        ++Updates;
     }
 
     void OnDraw() override {
+        EXPECT_EQ(++Draws, Updates.load());
+        m_events.emplace_back("user.update");
         m_events.emplace_back("user.draw");
     }
+
+public:
+    std::atomic<int> Updates{0};
+    int Draws = 0;
 
 private:
     std::vector<std::string>& m_events;
@@ -336,9 +342,23 @@ TEST_F(RuntimeMvpTest, ApplicationOwnsSingleWindowAndStopsBeforeWindowDestructio
     EXPECT_EQ(m_state.Events.back(), "window.destroy");
 }
 
+template<typename Predicate>
+bool PumpUntil(NApplication::NRuntime::FrameLoop& loop,
+               NApplication::NRuntime::IFrameLoopCallbacks& callbacks,
+               Predicate ready) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!ready() && std::chrono::steady_clock::now() < deadline) {
+        if (!loop.Step(callbacks)) {
+            loop.WaitForProgress();
+        }
+    }
+    return ready();
+}
+
 TEST(RuntimeMvpStress, MaxActiveFramesRingBackpressuresFastApplicationLoop) {
     NApplication::ApplicationConfig config = MakeRuntimeConfig();
     config.MaxActiveFrames = 2;
+    config.WorkerCount = 2;
 
     auto engineFactory = std::make_unique<RuntimeEngineFactory>();
     RuntimeEngineFactory& engineFactoryRef = *engineFactory;
@@ -350,12 +370,10 @@ TEST(RuntimeMvpStress, MaxActiveFramesRingBackpressuresFastApplicationLoop) {
     frameLoop.Start();
     frameLoop.Step(callbacks);
     FinishFirstDrawGuard finishFirstDrawGuard{*engineFactoryRef.Runtime};
-    ASSERT_TRUE(engineFactoryRef.Runtime->WaitDrawCountAtLeast(1, 2s));
+    ASSERT_TRUE(
+            PumpUntil(frameLoop, callbacks, [&] { return engineFactoryRef.Runtime->WaitDrawCountAtLeast(1, 0ms); }));
 
-    frameLoop.Step(callbacks);
-    frameLoop.Step(callbacks);
-    frameLoop.Step(callbacks);
-    frameLoop.Step(callbacks);
+    ASSERT_TRUE(PumpUntil(frameLoop, callbacks, [&] { return callbacks.Draws == 2; }));
 
     EXPECT_EQ(events,
               (std::vector<std::string>{
@@ -367,10 +385,8 @@ TEST(RuntimeMvpStress, MaxActiveFramesRingBackpressuresFastApplicationLoop) {
 
     engineFactoryRef.Runtime->FinishFirstDraw();
     finishFirstDrawGuard.Release();
-    ASSERT_TRUE(engineFactoryRef.Runtime->WaitDrawCountAtLeast(2, 2s));
-
-    frameLoop.Step(callbacks);
-    ASSERT_TRUE(engineFactoryRef.Runtime->WaitDrawCountAtLeast(3, 2s));
+    ASSERT_TRUE(
+            PumpUntil(frameLoop, callbacks, [&] { return engineFactoryRef.Runtime->WaitDrawCountAtLeast(3, 0ms); }));
 
     EXPECT_EQ(events,
               (std::vector<std::string>{
