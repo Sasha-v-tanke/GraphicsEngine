@@ -83,17 +83,29 @@ public:
         : m_scene(scene)
         , m_presentation(presentation) {
     }
-    void Update(const NEngine::NRuntime::FrameContext&) override {
+    void Update(const NEngine::NRuntime::FrameContext& frame) override {
+        if constexpr (requires { m_scene.Update(frame.GetFrame().GetApplicationFrameIndex()); }) {
+            m_scene.Update(frame.GetFrame().GetApplicationFrameIndex());
+        }
     }
     void Draw(const NEngine::NRuntime::FrameContext& frame) override {
+        Pending* pending = nullptr;
+        {
+            std::lock_guard lock{m_mutex};
+            pending = m_queued.at(frame.GetFrame().GetApplicationFrameIndex()).get();
+        }
+        const auto& plan = NRenderer::Renderer::Prepare(*pending->Snapshot, frame.GetMemoryResource());
+        std::lock_guard lock{m_mutex};
+        pending->Plan = &plan;
+    }
+    void Extract(const NEngine::NRuntime::FrameContext& frame) override {
         const auto& snapshot =
                 NRenderer::NInternal::ExtractRenderWorld(m_scene.World, m_scene.Resources, frame.GetStorage());
-        const auto& plan = NRenderer::Renderer::Prepare(snapshot, frame.GetMemoryResource());
         auto pending = std::make_unique<Pending>();
-        pending->Plan = &plan;
+        pending->Snapshot = &snapshot;
         frame.RegisterGpuCompletion(pending->Done.get_future().share());
         std::lock_guard lock{m_mutex};
-        m_queued.emplace(plan.GetFrame().ApplicationFrameIndex, std::move(pending));
+        m_queued.emplace(snapshot.GetFrame().ApplicationFrameIndex, std::move(pending));
     }
     void Pump() {
         std::lock_guard lock{m_mutex};
@@ -105,7 +117,7 @@ public:
             } else
                 ++it;
         }
-        if (m_queued.empty() || m_queued.begin()->first != m_next)
+        if (m_queued.empty() || m_queued.begin()->first != m_next || m_queued.begin()->second->Plan == nullptr)
             return;
         auto& pending = *m_queued.begin()->second;
         m_submitted.emplace_back();
@@ -164,6 +176,7 @@ public:
 
 private:
     struct Pending {
+        const NRenderer::RenderWorld* Snapshot = nullptr;
         const NRenderer::RenderPlan* Plan = nullptr;
         NGraphics::CompletionPoint Completion;
         std::promise<void> Done;
@@ -209,6 +222,9 @@ inline Result Run(std::size_t activeFrames,
             window.ProcessEvents();
             const auto size = window.GetFramebufferSize();
             presentation.SetPresentationSize(size.Width, size.Height);
+            if constexpr (requires { scene.SetViewport(size.Width, size.Height); }) {
+                scene.SetViewport(size.Width, size.Height);
+            }
             if (exerciseResize && observer->Submitted >= 4 && !resized) {
                 window.SetSize({640, 400});
                 resized = true;
@@ -220,6 +236,9 @@ inline Result Run(std::size_t activeFrames,
                 if (observer->Submitted != before)
                     throw std::runtime_error{"Suspended graph was submitted"};
                 presentation.SetPresentationSize(size.Width, size.Height);
+                if constexpr (requires { scene.SetViewport(size.Width, size.Height); }) {
+                    scene.SetViewport(size.Width, size.Height);
+                }
                 suspended = true;
             }
             observer->Pump();

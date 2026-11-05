@@ -921,7 +921,8 @@ TEST(Renderer, ParallelPreparationMatchesSerialAndBatchesCompatibleInstances) {
     for (int index = 0; index < 3; ++index) {
         const auto entity = world.CreateEntity();
         world.AddComponent<TransformComponent>(entity);
-        world.AddComponent<CameraComponent>(entity);
+        world.AddComponent<CameraComponent>(entity).Projection = {1.0F, 1.0F + static_cast<float>(index), 0.1F, 100.0F};
+        world.GetComponent<TransformComponent>(entity).Value.Translation.Z = 4.0F;
     }
     for (int index = 0; index < 2053; ++index) {
         const auto entity = world.CreateEntity();
@@ -969,6 +970,7 @@ TEST(Renderer, ParallelPreparationMatchesSerialAndBatchesCompatibleInstances) {
                 EXPECT_EQ(actual.ViewId, expected.ViewId);
                 EXPECT_EQ(actual.ObjectId, expected.ObjectId);
                 EXPECT_EQ(actual.WorldTransform.Translation.X, expected.WorldTransform.Translation.X);
+                EXPECT_EQ(actual.ViewProjection.GetValues(), expected.ViewProjection.GetValues());
                 EXPECT_EQ(actual.Mesh, expected.Mesh);
                 EXPECT_EQ(actual.Material, expected.Material);
                 EXPECT_EQ(actual.MeshVersion, expected.MeshVersion);

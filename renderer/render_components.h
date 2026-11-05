@@ -22,6 +22,8 @@ struct TransformComponent {
     NMath::Transform Value = {};
 };
 
+// Positive FOV selects perspective projection from the camera's inverse world transform.
+// Zero FOV is a clip-space view (identity view/projection), retained for simple 2D samples.
 struct CameraComponent {
     NMath::PerspectiveProjection Projection = {};
 };
