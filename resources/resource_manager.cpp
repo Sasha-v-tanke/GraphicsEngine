@@ -76,6 +76,7 @@ ResourceManager::InternalHandle ResourceManager::Request(ResourceIdentity identi
     entry.CancelledOperationGeneration = 0;
     entry.PublishedVersion = 0;
     entry.CpuResource.reset();
+    entry.GpuResource.reset();
     entry.Failure.reset();
 
     m_identityIndex.emplace(entry.Identity, slotIndex);
@@ -104,6 +105,7 @@ std::uint64_t ResourceManager::BeginLoading(Entry& entry) {
     entry.CancelledOperationGeneration = 0;
     entry.State = EResourceState::LOADING;
     entry.CpuResource.reset();
+    entry.GpuResource.reset();
     entry.Failure.reset();
 
     return entry.OperationGeneration;
@@ -142,13 +144,13 @@ void ResourceManager::Fail(Entry& entry, std::uint64_t operationGeneration, NCom
     }
 
     entry.CpuResource.reset();
+    entry.GpuResource.reset();
     entry.Failure = std::move(error);
     entry.State = EResourceState::FAILED;
 }
 
 void ResourceManager::RequestUnload(Entry& entry) {
-    if (entry.State != EResourceState::LOADING && entry.State != EResourceState::READY &&
-        entry.State != EResourceState::FAILED) {
+    if (!IsLoadingState(entry.State) && entry.State != EResourceState::READY && entry.State != EResourceState::FAILED) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Resource '{}' cannot begin unloading from state {}",
                               entry.Identity.GetKey(),
@@ -161,14 +163,13 @@ void ResourceManager::RequestUnload(Entry& entry) {
                               entry.Identity.GetKey());
     }
 
-    if (entry.State == EResourceState::LOADING) {
+    if (IsLoadingState(entry.State)) {
         entry.CancelledOperationGeneration = entry.OperationGeneration;
     } else {
         entry.CancelledOperationGeneration = 0;
     }
 
     ++entry.OperationGeneration;
-    entry.CpuResource.reset();
     entry.Failure.reset();
     entry.State = EResourceState::UNLOADING;
 }
@@ -182,6 +183,7 @@ void ResourceManager::CompleteUnload(Entry& entry) {
     }
 
     entry.CpuResource.reset();
+    entry.GpuResource.reset();
     entry.Failure.reset();
     entry.State = EResourceState::UNLOADED;
 }
@@ -204,6 +206,7 @@ void ResourceManager::Forget(Entry& entry) {
     entry.CancelledOperationGeneration = 0;
     entry.PublishedVersion = 0;
     entry.CpuResource.reset();
+    entry.GpuResource.reset();
     entry.Failure.reset();
 
     if (entry.Generation == std::numeric_limits<std::uint64_t>::max()) {

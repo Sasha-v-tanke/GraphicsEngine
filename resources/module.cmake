@@ -1,6 +1,7 @@
 MODULE(Resources)
 
 API(
+    async_resource_loader.h
     image_data.h
     image_loader.h
     mesh_data.h
@@ -17,6 +18,7 @@ API(
 )
 
 SOURCES(
+    async_resource_loader.cpp
     image_loader.cpp
     mesh_loader.cpp
     resource_io.cpp
@@ -25,6 +27,7 @@ SOURCES(
 )
 
 PUBLIC_DEPENDS(
+    Thread
     Common
 )
 
