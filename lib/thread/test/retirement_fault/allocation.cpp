@@ -84,6 +84,7 @@ struct RollbackProbe {
 };
 
 TEST(TaskRetirementFault, ReentrantCaptureSurvivesEverySubmitAllocationFailure) {
+    bool exercisedRollback = false;
     for (std::ptrdiff_t failureIndex = 0; failureIndex < 128; ++failureIndex) {
         // The semaphores outlive the pool, including on any test failure.
         std::binary_semaphore entered{0};
@@ -107,16 +108,20 @@ TEST(TaskRetirementFault, ReentrantCaptureSurvivesEverySubmitAllocationFailure) 
             task = pool.Submit([probe = std::move(probe)](NCommon::TaskContext&) {}, parents);
             accepted = true;
         } catch (const std::bad_alloc&) {
+            exercisedRollback = true;
         }
         AllocationBudget = -1;
         if (accepted) {
             pool.Cancel(task);
         }
         EXPECT_EQ(destroyed, 1U) << "allocation failure index " << failureIndex;
+        EXPECT_EQ(pool.GetStatus(parents[0]), NCommon::ETaskStatus::READY);
+        EXPECT_EQ(pool.GetStatus(parents[1]), NCommon::ETaskStatus::READY);
         finish.release();
         pool.WaitIdle();
         if (accepted) {
-            EXPECT_GT(failureIndex, 4);
+            // Stable edges remove allocations; the contract is rollback at every failing prefix.
+            EXPECT_TRUE(exercisedRollback);
             return;
         }
     }
