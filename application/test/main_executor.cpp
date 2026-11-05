@@ -291,3 +291,25 @@ TEST(MainExecutorPriority, MeasuresSynchronousProducerBlocking) {
     EXPECT_GT(executor.GetDiagnostics().BlockedTime.count(), 0);
 }
 } // namespace
+
+namespace {
+TEST(MainExecutorPriority, OriginPreservesEmptyCallbackRejectionAcrossSubmissionPaths) {
+    for (const auto origin: {std::optional<NCommon::FrameOrigin>{}, std::optional<NCommon::FrameOrigin>{{1, 42}}}) {
+        const NCommon::FrameOriginScope scope{origin};
+        NCommon::TaskSystem tasks{1};
+        const auto group = tasks.CreateTaskGroup();
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)tasks.Submit({}); });
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)tasks.SubmitToGroup(group, {}); });
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)tasks.SubmitAfterGroup(group, {}); });
+        const auto root = tasks.SubmitToGroup(group, [](NCommon::TaskContext& context) {
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.Spawn({}); });
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.Spawn({}, {}); });
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.SpawnInGroup({}); });
+        });
+        tasks.SealGroup(group);
+        tasks.Wait(root);
+        tasks.WaitGroup(group);
+        EXPECT_EQ(tasks.GetGroupStatus(group), NCommon::ETaskGroupStatus::COMPLETED);
+    }
+}
+} // namespace

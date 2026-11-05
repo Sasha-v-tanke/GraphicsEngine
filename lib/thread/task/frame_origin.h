@@ -34,7 +34,7 @@ private:
 
 template<typename Function>
 Function BindFrameOrigin(Function function, std::optional<FrameOrigin> origin) {
-    if (!origin) {
+    if (!origin || !function) {
         return function;
     }
     return [function = std::move(function), origin](auto& context) mutable {
