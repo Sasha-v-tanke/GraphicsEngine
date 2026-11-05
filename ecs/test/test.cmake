@@ -5,6 +5,7 @@ SOURCES(
     world_test.cpp
     hierarchy.cpp
     scheduling_test.cpp
+    scoped_batch.cpp
 )
 
 PRIVATE_DEPENDS(
