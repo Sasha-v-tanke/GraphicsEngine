@@ -224,3 +224,22 @@ TEST(EngineAsyncUpdate, StopWaitsForProducerTicketEvenWhenExecutorIsIdle) {
     EXPECT_FALSE(engine->GetLastError());
 }
 } // namespace
+
+namespace {
+TEST(EngineFrameOrigin, AdmissionCarriesMonotonicIdentityIntoWorkerAndSpawn) {
+    NEngine::Engine engine{{.MaxActiveFrames = 3, .WorkerCount = 1}};
+    engine.Start();
+    const auto key = engine.TryBeginFrame();
+    ASSERT_TRUE(key);
+    std::promise<void> observed;
+    auto done = observed.get_future();
+    ASSERT_TRUE(engine.ScheduleUserUpdate(*key, [&] {
+        EXPECT_EQ(NCommon::FrameOriginScope::Current(),
+                  (std::optional<NCommon::FrameOrigin>{{key->GetRunGeneration(), key->GetFrameSequence()}}));
+        observed.set_value();
+    }));
+    ASSERT_EQ(done.wait_for(2s), std::future_status::ready);
+    engine.Stop();
+    EXPECT_FALSE(NCommon::FrameOriginScope::Current());
+}
+} // namespace

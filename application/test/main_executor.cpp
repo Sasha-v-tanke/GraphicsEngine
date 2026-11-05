@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <barrier>
 #include <chrono>
@@ -10,6 +11,7 @@
 
 #include <application/runtime/main_executor.h>
 #include <gtest/gtest.h>
+#include <lib/thread/task/task_system.h>
 #include <tests/common/test_error.h>
 
 namespace {
@@ -217,4 +219,97 @@ TEST(MainExecutor, SelfReplenishingQueueStillYieldsAtBatchBoundary) {
     executor.Stop();
 }
 
+} // namespace
+
+namespace {
+TEST(MainExecutorPriority, OldestFrameThenFifoAndBoundedUnframedService) {
+    MainExecutor executor;
+    const auto generation = executor.Start();
+    std::vector<int> order;
+    auto post = [&](std::optional<NCommon::FrameOrigin> origin, int value) {
+        const NCommon::FrameOriginScope scope{origin};
+        return executor.Post(generation, [&, value] { order.push_back(value); });
+    };
+    auto newer = post(NCommon::FrameOrigin{1, 100}, 100);
+    auto first = post(NCommon::FrameOrigin{1, 99}, 1);
+    auto second = post(NCommon::FrameOrigin{1, 99}, 2);
+    executor.Drain();
+    EXPECT_EQ(order, (std::vector<int>{1, 2, 100}));
+    order.clear();
+    auto background = post(std::nullopt, -1);
+    for (int index = 0; index < 32; ++index) {
+        (void)post(NCommon::FrameOrigin{1, 101}, index);
+    }
+    for (std::size_t index = 0; index <= MainExecutor::FRAME_BURST; ++index) {
+        executor.Drain(1);
+    }
+    EXPECT_EQ(background.GetState(), EMainCommandState::COMPLETED);
+    EXPECT_LE(std::find(order.begin(), order.end(), -1) - order.begin(), MainExecutor::FRAME_BURST);
+    EXPECT_GE(executor.GetDiagnostics().PeakDepth, 33);
+    EXPECT_GT(executor.GetDiagnostics().MaxQueueAge.count(), 0);
+    executor.Stop();
+    executor.Start();
+    EXPECT_EQ(executor.GetDiagnostics().Dispatched, 0);
+    EXPECT_EQ(executor.Post(generation, [] {}).GetState(), EMainCommandState::SKIPPED);
+}
+} // namespace
+
+namespace {
+TEST(MainExecutorPriority, NestedSpawnKeepsOriginAndIndependentWorkerDoesNotInheritIt) {
+    NCommon::TaskSystem tasks{1};
+    const NCommon::FrameOrigin origin{3, 100};
+    NCommon::TaskHandle child;
+    {
+        const NCommon::FrameOriginScope scope{origin};
+        const auto root = tasks.Submit([&](NCommon::TaskContext& context) {
+            EXPECT_EQ(NCommon::TaskContext::GetFrameOrigin(), origin);
+            child = context.Spawn(
+                    [&](NCommon::TaskContext&) { EXPECT_EQ(NCommon::TaskContext::GetFrameOrigin(), origin); });
+        });
+        tasks.Wait(root);
+    }
+    tasks.Wait(child);
+    const auto independent =
+            tasks.Submit([](NCommon::TaskContext&) { EXPECT_FALSE(NCommon::TaskContext::GetFrameOrigin()); });
+    tasks.Wait(independent);
+}
+} // namespace
+
+namespace {
+TEST(MainExecutorPriority, MeasuresSynchronousProducerBlocking) {
+    MainExecutor executor;
+    executor.Start();
+    std::jthread producer{[&] { executor.Invoke([] {}); }};
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (executor.GetPendingCount() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(executor.GetPendingCount(), 1);
+    executor.Drain();
+    executor.Stop();
+    producer.join();
+    EXPECT_GT(executor.GetDiagnostics().BlockedTime.count(), 0);
+}
+} // namespace
+
+namespace {
+TEST(MainExecutorPriority, OriginPreservesEmptyCallbackRejectionAcrossSubmissionPaths) {
+    for (const auto origin: {std::optional<NCommon::FrameOrigin>{}, std::optional<NCommon::FrameOrigin>{{1, 42}}}) {
+        const NCommon::FrameOriginScope scope{origin};
+        NCommon::TaskSystem tasks{1};
+        const auto group = tasks.CreateTaskGroup();
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)tasks.Submit({}); });
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)tasks.SubmitToGroup(group, {}); });
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)tasks.SubmitAfterGroup(group, {}); });
+        const auto root = tasks.SubmitToGroup(group, [](NCommon::TaskContext& context) {
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.Spawn({}); });
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.Spawn({}, {}); });
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.SpawnInGroup({}); });
+        });
+        tasks.SealGroup(group);
+        tasks.Wait(root);
+        tasks.WaitGroup(group);
+        EXPECT_EQ(tasks.GetGroupStatus(group), NCommon::ETaskGroupStatus::COMPLETED);
+    }
+}
 } // namespace

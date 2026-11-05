@@ -228,6 +228,7 @@ set(
     "GraphicsEngine/lib/common/wrapper/non_transferable.h"
     "GraphicsEngine/lib/thread/job.h"
     "GraphicsEngine/lib/thread/job_control.h"
+    "GraphicsEngine/lib/thread/task/frame_origin.h"
     "GraphicsEngine/lib/thread/task/task_system.h"
     "GraphicsEngine/lib/thread/user_task.h"
     "GraphicsEngine/math/camera.h"

@@ -17,6 +17,7 @@
 
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
+#include <GraphicsEngine/lib/thread/task/frame_origin.h>
 
 namespace NCommon {
 
@@ -114,6 +115,10 @@ class TaskContext final {
 public:
     using TaskFunction = std::function<void(TaskContext&)>;
 
+    [[nodiscard]] static std::optional<FrameOrigin> GetFrameOrigin() noexcept {
+        return FrameOriginScope::Current();
+    }
+
     [[nodiscard]] WorkerIndex GetWorkerIndex() const noexcept {
         return m_workerIndex;
     }
@@ -156,6 +161,7 @@ public:
     TaskSystem& operator=(TaskSystem&&) noexcept = delete;
 
     TaskHandle Submit(TaskFunction function, std::span<const TaskHandle> dependencies = {}) {
+        function = BindFrameOrigin(std::move(function), FrameOriginScope::Current());
         return SubmitImpl(function, dependencies);
     }
 

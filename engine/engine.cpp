@@ -139,6 +139,7 @@ public:
     }
 
     void SubmitUserJob(const std::shared_ptr<NCommon::NJobInternal::JobControl>& job) {
+        const NCommon::FrameOriginScope unframed{std::nullopt};
         std::lock_guard lock{m_mutex};
         if (m_stateManager.GetState() != EEngineState::RUNNING || !m_taskSystem) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "User jobs require a running Engine");
@@ -441,9 +442,13 @@ private:
         m_frameScheduler->SignalDraw(frame);
         const NCommon::TaskHandle dependencies[] = {record.UpdateTask};
         try {
-            record.DrawTask =
-                    record.Executor->Submit([this, frame](NCommon::TaskContext& task) { RunDraw(frame, task); },
-                                            dependencies);
+            record.DrawTask = record.Executor->Submit(
+                    [this, frame, key = record.Key](NCommon::TaskContext& task) {
+                        const NCommon::FrameOriginScope origin{
+                                NCommon::FrameOrigin{key.GetRunGeneration(), key.GetFrameSequence()}};
+                        RunDraw(frame, task);
+                    },
+                    dependencies);
             record.HasDrawTask = true;
         } catch (...) {
             SetLastErrorLocked(MakeRuntimeError(std::current_exception()));
@@ -470,8 +475,10 @@ private:
                     });
             m_frameScheduler->ArmFrame(frame);
             record->UpdateTask = m_taskSystem->Submit(
-                    [this, frame, executor = record->Executor, completion = record->Completion, work](
+                    [this, frame, executor = record->Executor, completion = record->Completion, work, key](
                             NCommon::TaskContext&) {
+                        const NCommon::FrameOriginScope origin{
+                                NCommon::FrameOrigin{key.GetRunGeneration(), key.GetFrameSequence()}};
                         std::function<void()> callback;
                         if (work) {
                             callback = std::move(work->Callback);
