@@ -1,5 +1,5 @@
 TEST_SUITE(GraphPresentation)
-SOURCES(presentation.cpp)
+SOURCES(presentation.cpp model_visibility.h)
 PRIVATE_DEPENDS(GraphPresentation Engine Ecs VulkanBackend)
 TEST_LABELS(heavy cpp renderer vulkan)
 set_tests_properties(GraphicsEngineGraphPresentationTests PROPERTIES TIMEOUT 80

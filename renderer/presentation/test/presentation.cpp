@@ -1,4 +1,7 @@
+#include "model_visibility.h"
+
 #include <atomic>
+#include <string>
 
 #include <graphics/vulkan/test/wsi_result_override.h>
 #include <gtest/gtest.h>
@@ -73,6 +76,48 @@ TEST(GraphPresentation, TexturedObjModelThroughPerspectiveCameraResizeAndSlotMat
         throw;
     }
     EXPECT_EQ(errors.load(), 0);
+}
+
+struct VisibilityScene: NModel::Scene {
+    inline static NModelTest::VisibilityProbe* Probe = nullptr;
+    void Prepare(NRenderer::GraphPresentation& presentation) {
+        Probe->Install();
+        NModel::Scene::Prepare(presentation);
+    }
+};
+
+TEST(GraphPresentation, TexturedObjCullsFarFaceAndRasterizesCameraFacingSurface) {
+    for (bool flipped: {false, true}) {
+        SCOPED_TRACE(flipped ? "Negative control: flipped native winding" : "Unchanged sample winding");
+        NModelTest::VisibilityProbe probe;
+        probe.FlipFrontFace = flipped;
+        VisibilityScene::Probe = &probe;
+        std::atomic<int> errors{0};
+        try {
+            const auto result = NTriangle::Run<VisibilityScene>(
+                    1,
+                    1,
+                    1,
+                    false,
+                    {.RequireValidation = true, .ValidationErrorHandler = [&](std::string_view message) {
+                         ++errors;
+                         std::cerr << message << '\n';
+                     }});
+            EXPECT_EQ(result.Completed, 1U);
+        } catch (const NCommon::Exception& error) {
+            if (error.code() == NCommon::EError::UNSUPPORTED && errors.load() == 0) {
+                GTEST_SKIP() << error.GetMessage();
+            }
+            throw;
+        }
+        EXPECT_EQ(errors.load(), 0);
+        EXPECT_FALSE(probe.Failed);
+        ASSERT_TRUE(probe.Observed);
+        RecordProperty(flipped ? "flipped_front" : "sample_front", std::to_string(probe.Samples[0]));
+        RecordProperty(flipped ? "flipped_back" : "sample_back", std::to_string(probe.Samples[1]));
+        EXPECT_GT(probe.Samples[flipped ? 1 : 0], 0U) << "Expected face must rasterize actual GPU samples";
+        EXPECT_EQ(probe.Samples[flipped ? 0 : 1], 0U) << "Opposite face must be culled";
+    }
 }
 
 TEST(GraphPresentation, RejectsMissingSampledResourcesBeforeRecording) {
