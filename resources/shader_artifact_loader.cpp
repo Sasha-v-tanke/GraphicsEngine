@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace NResources {
@@ -65,6 +66,18 @@ bool IsValidSpirVArtifact(const std::vector<std::uint32_t>& words) noexcept {
     const std::uint32_t major = (version >> 16U) & 0xFFU;
 
     return (version & SPIR_V_VERSION_RESERVED_MASK) == 0 && major != 0;
+}
+
+std::shared_ptr<ShaderArtifact> DecodeShaderArtifact(std::span<const std::byte> bytes, EShaderStage stage) {
+    if (bytes.empty() || bytes.size() % sizeof(std::uint32_t) != 0) {
+        throw std::invalid_argument("invalid SPIR-V byte size");
+    }
+    std::vector<std::uint32_t> words(bytes.size() / sizeof(std::uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+    if (!IsValidSpirVArtifact(words)) {
+        throw std::invalid_argument("invalid SPIR-V artifact");
+    }
+    return std::make_shared<ShaderArtifact>(stage, std::move(words));
 }
 
 ResourceHandle<ShaderArtifact> LoadShaderArtifact(ResourceManager& resources,

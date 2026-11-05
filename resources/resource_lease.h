@@ -46,6 +46,10 @@ public:
         return m_payload.get();
     }
 
+    [[nodiscard]] const std::shared_ptr<const void>& GetGpuRepresentation() const noexcept {
+        return m_gpu;
+    }
+
     [[nodiscard]] ResourceUseRecord GetUseRecord() const noexcept {
         return ResourceUseRecord{
                 m_version,
@@ -54,16 +58,21 @@ public:
     }
 
 private:
-    ResourceLease(ResourceHandle<T> resource, std::uint64_t version, std::shared_ptr<const T> payload) noexcept
+    ResourceLease(ResourceHandle<T> resource,
+                  std::uint64_t version,
+                  std::shared_ptr<const T> payload,
+                  std::shared_ptr<const void> gpu) noexcept
         : m_resource(resource)
         , m_version(version)
-        , m_payload(std::move(payload)) {
+        , m_payload(std::move(payload))
+        , m_gpu(std::move(gpu)) {
     }
 
 private:
     ResourceHandle<T> m_resource;
     std::uint64_t m_version = 0;
     std::shared_ptr<const T> m_payload;
+    std::shared_ptr<const void> m_gpu;
 
     friend class ResourceManager;
 };

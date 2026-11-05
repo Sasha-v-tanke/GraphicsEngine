@@ -254,6 +254,15 @@ std::expected<MeshData, std::string> ImportMesh(std::istream& file) {
 
 } // namespace
 
+std::shared_ptr<MeshData> DecodeMesh(std::span<const std::byte> bytes) {
+    std::istringstream input{std::string{reinterpret_cast<const char*>(bytes.data()), bytes.size()}};
+    auto mesh = ImportMesh(input);
+    if (!mesh) {
+        throw std::invalid_argument(mesh.error());
+    }
+    return std::make_shared<MeshData>(std::move(*mesh));
+}
+
 ResourceHandle<MeshData>
 LoadMesh(ResourceManager& resources, ResourceIdentity identity, const std::filesystem::path& path) {
     const ResourceIdentity failureIdentity = identity;

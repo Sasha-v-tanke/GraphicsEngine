@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <stb_image.h>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,38 @@ void FailImageLoad(ResourceManager& resources,
 
 } // namespace
 
+std::shared_ptr<ImageData> DecodeImage(std::span<const std::byte> bytes) {
+    if (bytes.empty() || !NImageLoaderInternal::CanPassImageByteSizeToStb(bytes.size())) {
+        throw std::invalid_argument("empty image or stb_image size limit exceeded");
+    }
+    int width = 0;
+    int height = 0;
+    int sourceChannels = 0;
+    const int stbInputSize = static_cast<int>(bytes.size());
+    stbi_set_flip_vertically_on_load_thread(0);
+    std::unique_ptr<stbi_uc, StbImageDeleter> pixels{
+            stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()),
+                                  stbInputSize,
+                                  &width,
+                                  &height,
+                                  &sourceChannels,
+                                  RGBA_CHANNELS),
+    };
+
+    if (!pixels || width <= 0 || height <= 0 || sourceChannels <= 0) {
+        throw std::invalid_argument("invalid or corrupt image data");
+    }
+
+    const auto pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    std::vector<std::uint8_t> pixelBytes(pixelCount * RGBA_CHANNELS);
+    std::copy_n(pixels.get(), pixelBytes.size(), pixelBytes.begin());
+
+    return std::make_shared<ImageData>(static_cast<std::uint32_t>(width),
+                                       static_cast<std::uint32_t>(height),
+                                       EImagePixelFormat::RGBA8,
+                                       std::move(pixelBytes));
+}
+
 ResourceHandle<ImageData>
 LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::filesystem::path& path) {
     const ResourceIdentity failureIdentity = identity;
@@ -85,29 +118,11 @@ LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::file
         return handle;
     }
 
-    int width = 0;
-    int height = 0;
-    int sourceChannels = 0;
-    const int stbInputSize = static_cast<int>(bytes.size());
-    stbi_set_flip_vertically_on_load_thread(0);
-    std::unique_ptr<stbi_uc, StbImageDeleter> pixels{
-            stbi_load_from_memory(bytes.data(), stbInputSize, &width, &height, &sourceChannels, RGBA_CHANNELS),
-    };
-
-    if (!pixels || width <= 0 || height <= 0 || sourceChannels <= 0) {
-        FailImageLoad(resources, operation, failureIdentity, path, "invalid or corrupt image data");
-        return handle;
+    try {
+        resources.PublishReady(operation, DecodeImage(std::as_bytes(std::span{bytes})));
+    } catch (const std::invalid_argument& error) {
+        FailImageLoad(resources, operation, failureIdentity, path, error.what());
     }
-
-    const auto pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    std::vector<std::uint8_t> pixelBytes(pixelCount * RGBA_CHANNELS);
-    std::copy_n(pixels.get(), pixelBytes.size(), pixelBytes.begin());
-
-    resources.PublishReady(operation,
-                           std::make_shared<ImageData>(static_cast<std::uint32_t>(width),
-                                                       static_cast<std::uint32_t>(height),
-                                                       EImagePixelFormat::RGBA8,
-                                                       std::move(pixelBytes)));
 
     return handle;
 }
