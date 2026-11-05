@@ -34,7 +34,8 @@ public:
                         NResources::ResourceHandle<NGraphics::SamplerDescriptor> handle);
     // SampledImage/Sampler/CombinedImageSampler bindings use immutable set zero.
     // Buffer bindings remain available in DescriptorManager, outside this executor.
-    // VertexPushConstantBytes=64 passes the column-major WorldTransform at offset zero;
+    // VertexPushConstantBytes=64 passes column-major ViewProjection * WorldTransform at offset zero;
+    // Vulkan clip-space Y conversion is applied by the executor.
     // zero means the shader does not consume a transform. Other ranges are rejected.
     void PrepareMaterial(NResources::ResourceLease<NGraphics::Material> material,
                          NGraphics::GraphicsPipelineDescriptor pipeline);

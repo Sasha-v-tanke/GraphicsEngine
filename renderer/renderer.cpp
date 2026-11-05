@@ -1,10 +1,12 @@
 #include "renderer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <new>
+#include <numbers>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -45,7 +47,37 @@ namespace {
     return views * objects;
 }
 
-[[nodiscard]] DrawCommandData PrepareItem(const RenderWorld& world, std::size_t index) noexcept {
+[[nodiscard]] NMath::Mat4 ViewProjection(const RenderView& view) {
+    const NMath::PerspectiveProjection& projection = view.Projection;
+    // A zero FOV preserves the original clip-space camera used by the R3/R4 samples.
+    if (projection.VerticalFovRadians == 0.0F) {
+        return NMath::Mat4::Identity();
+    }
+    const NMath::Transform& transform = view.WorldTransform;
+    const auto validPositive = [](float value) { return std::isfinite(value) && value > 0.0F; };
+    if (!validPositive(projection.VerticalFovRadians) || projection.VerticalFovRadians >= std::numbers::pi_v<float> ||
+        !validPositive(projection.AspectRatio) || !validPositive(projection.NearPlane) ||
+        !std::isfinite(projection.FarPlane) || projection.FarPlane <= projection.NearPlane ||
+        !validPositive(std::abs(transform.Scale.X)) || !validPositive(std::abs(transform.Scale.Y)) ||
+        !validPositive(std::abs(transform.Scale.Z))) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid perspective camera");
+    }
+    const NMath::Quat rotation = NMath::Normalize(transform.Rotation);
+    const NMath::Mat4 inverseScale = NMath::ComposeTransform(
+            {.Scale = {1.0F / transform.Scale.X, 1.0F / transform.Scale.Y, 1.0F / transform.Scale.Z}});
+    const NMath::Mat4 inverseRotation = NMath::ToMatrix({-rotation.X, -rotation.Y, -rotation.Z, rotation.W});
+    const NMath::Mat4 inverseTranslation = NMath::ComposeTransform(
+            {.Translation = {-transform.Translation.X, -transform.Translation.Y, -transform.Translation.Z}});
+    const NMath::Mat4 matrix = NMath::Perspective(projection) * inverseScale * inverseRotation * inverseTranslation;
+    for (float value: matrix.GetValues()) {
+        if (!std::isfinite(value)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Nonfinite camera transform");
+        }
+    }
+    return matrix;
+}
+
+[[nodiscard]] DrawCommandData PrepareItem(const RenderWorld& world, std::size_t index) {
     const auto& view = world.GetViews()[index / world.GetObjects().size()];
     const auto& object = world.GetObjects()[index % world.GetObjects().size()];
     return {view.Id,
@@ -54,7 +86,8 @@ namespace {
             object.Mesh.GetResource(),
             object.Mesh.GetVersion(),
             object.Material.GetResource(),
-            object.Material.GetVersion()};
+            object.Material.GetVersion(),
+            ViewProjection(view)};
 }
 
 [[nodiscard]] DrawCommandData* AllocateCommands(std::size_t count, std::pmr::memory_resource& memory) {

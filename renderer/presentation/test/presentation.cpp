@@ -5,6 +5,7 @@
 #include <lib/common/error/exception.h>
 #include <samples/sample_5_triangle/scenario.h>
 #include <samples/sample_6_textured/scenario.h>
+#include <samples/sample_7_model/scenario.h>
 #include <tests/common/test_error.h>
 
 namespace {
@@ -39,6 +40,34 @@ TEST(GraphPresentation, TexturedWorldGraphRetainsResourcesAcrossWorkerAndSlotMat
     } catch (const NCommon::Exception& error) {
         if (error.code() == NCommon::EError::UNSUPPORTED) {
             EXPECT_EQ(errors.load(), 0);
+            GTEST_SKIP() << error.GetMessage();
+        }
+        throw;
+    }
+    EXPECT_EQ(errors.load(), 0);
+}
+
+TEST(GraphPresentation, TexturedObjModelThroughPerspectiveCameraResizeAndSlotMatrix) {
+    std::atomic<int> errors{0};
+    const NGraphics::PresentationConfig config{
+            .RequireValidation = true,
+            .ValidationErrorHandler =
+                    [&](std::string_view message) {
+                        ++errors;
+                        std::cerr << message << '\n';
+                    },
+    };
+    try {
+        for (std::size_t workers: {1U, 3U}) {
+            for (std::size_t slots: {1U, 2U, 3U}) {
+                const auto result = NTriangle::Run<NModel::Scene>(slots, workers, 48, true, config);
+                EXPECT_EQ(result.Submitted, 48U);
+                EXPECT_EQ(result.Submitted, result.Completed);
+                EXPECT_EQ(result.Completed, result.Recycled);
+            }
+        }
+    } catch (const NCommon::Exception& error) {
+        if (error.code() == NCommon::EError::UNSUPPORTED && errors.load() == 0) {
             GTEST_SKIP() << error.GetMessage();
         }
         throw;

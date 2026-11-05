@@ -33,7 +33,7 @@ void ValidateColorExecution(
                 draw.MaterialVersion == 0) {
                 invalid("Invalid draw resource identity/version");
             }
-            const auto matrix = NMath::ComposeTransform(draw.WorldTransform);
+            const auto matrix = draw.ViewProjection * NMath::ComposeTransform(draw.WorldTransform);
             for (float value: matrix.GetValues()) {
                 if (!std::isfinite(value))
                     invalid("Nonfinite draw transform");

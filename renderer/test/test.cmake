@@ -2,6 +2,7 @@ TEST_SUITE(Renderer)
 
 SOURCES(
     execution_validation.cpp
+    model.cpp
     render_graph.cpp
     render_world_test.cpp
 )

@@ -32,6 +32,8 @@ struct DrawCommandData {
     std::uint64_t MeshVersion = 0;
     NResources::ResourceHandle<NGraphics::Material> Material;
     std::uint64_t MaterialVersion = 0;
+    // Immutable camera projection * inverse camera transform; identity for clip-space views.
+    NMath::Mat4 ViewProjection = NMath::Mat4::Identity();
 };
 
 // A contiguous run of compatible instances in the unchanged direct-command stream.

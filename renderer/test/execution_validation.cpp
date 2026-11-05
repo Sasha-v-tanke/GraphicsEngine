@@ -1,3 +1,4 @@
+#include <limits>
 #include <stdexcept>
 
 #include <graphics/material.h>
@@ -59,6 +60,11 @@ TEST_F(GraphExecutionTest, RejectsMalformedDrawAndIncompatiblePipelineBeforeReco
     Pipeline.ColorAttachmentFormats = {NGraphics::EPixelFormat::RGBA8_UNORM};
     NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { Validate(Build(Draw)); });
 }
+TEST_F(GraphExecutionTest, RejectsNonfiniteViewProjectionBeforeRecording) {
+    Draw.ViewProjection(0, 0) = std::numeric_limits<float>::infinity();
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { Validate(Build(Draw)); });
+}
+
 TEST_F(GraphExecutionTest, RejectsForeignFrameAndMissingPreparedVersions) {
     const auto graph = Build(Draw);
     auto other = Frame;
