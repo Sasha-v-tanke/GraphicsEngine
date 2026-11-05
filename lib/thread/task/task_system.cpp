@@ -628,14 +628,15 @@ void TaskSystem::ReadyScheduler::PublishReadyTask(TaskSystem& owner, std::shared
             std::lock_guard queueLock{queue.Mutex};
             CompactReadyQueueLocked(queue);
             queue.Tasks.push_back(std::move(state));
+            ReadyTaskCount.fetch_add(1, std::memory_order_release);
         }
     } else {
         std::lock_guard queueLock{InjectedQueue.Mutex};
         CompactReadyQueueLocked(InjectedQueue);
         InjectedQueue.Tasks.push_back(std::move(state));
+        ReadyTaskCount.fetch_add(1, std::memory_order_release);
     }
 
-    ReadyTaskCount.fetch_add(1, std::memory_order_release);
     Wakeups.release();
 }
 
@@ -1113,7 +1114,12 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
 
                 m_readyScheduler.Wakeups.acquire();
 
-                state = m_readyScheduler.TryPopReadyTask(workerIndex);
+                // A concurrent publisher can add work to a queue already visited by this scan,
+                // while another worker consumes its permit and claims an older task. Keep the
+                // acquired search obligation until a pop succeeds or all ready work is gone.
+                do {
+                    state = m_readyScheduler.TryPopReadyTask(workerIndex);
+                } while (state == nullptr && m_readyScheduler.HasReadyTasks());
 
                 if (state && TaskLifetime::TryClaimReadyTask(state, task, function)) {
                     break;
