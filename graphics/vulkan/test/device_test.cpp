@@ -1080,7 +1080,7 @@ TEST(VulkanAsyncResourcesChild, DISABLED_DecodesAndUploadsMeshBeforeReady) {
         NResources::ResourceManager resources;
         NCommon::TaskSystem tasks{1};
         const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
-        NResources::AsyncResourceLoader loader{resources, tasks, {}, [&](const auto&, auto, auto) {
+        NResources::AsyncResourceLoader loader{resources, tasks, {}, [&](const auto&, const auto&, auto) {
                                                    auto bytes = std::as_bytes(std::span{obj});
                                                    return NResources::ResourceIoBytes{bytes.begin(), bytes.end()};
                                                }};
@@ -1090,7 +1090,7 @@ TEST(VulkanAsyncResourcesChild, DISABLED_DecodesAndUploadsMeshBeforeReady) {
         std::shared_ptr<NVulkan::VulkanBufferAllocation> destination;
         NVulkan::VulkanQueueCompletion completion;
         const auto owner = std::this_thread::get_id();
-        const auto handle = loader.LoadMesh({"mesh", "async-triangle"}, "triangle.obj", [&](auto mesh) {
+        const auto handle = loader.LoadMesh({"mesh", "async-triangle"}, "triangle.obj", [&](const auto& mesh) {
             EXPECT_EQ(std::this_thread::get_id(), owner);
             const auto bytes = std::as_bytes(std::span{mesh->GetVertices()});
             destination = std::make_shared<NVulkan::VulkanBufferAllocation>(NVulkan::CreateVulkanBuffer(

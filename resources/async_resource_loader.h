@@ -61,7 +61,7 @@ public:
                     },
                     [this, op = *operation, decode = std::move(decode), upload = std::move(upload)](
                             std::span<const std::byte> bytes,
-                            std::stop_token stop) -> std::function<ResourceUpload()> {
+                            const std::stop_token& stop) -> std::function<ResourceUpload()> {
                         auto cpu = decode(bytes, stop);
                         if (!cpu) {
                             throw std::invalid_argument("Resource decoder returned null");
