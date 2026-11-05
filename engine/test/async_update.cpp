@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -10,6 +11,7 @@
 #include <engine/runtime/frame_runtime.h>
 #include <engine/runtime/world_update.h>
 #include <gtest/gtest.h>
+#include <tests/common/test_error.h>
 
 namespace {
 using namespace std::chrono_literals;
@@ -62,6 +64,125 @@ bool Eventually(NEngine::Engine& engine, Predicate predicate) {
         engine.WaitForProgress(version, 1ms);
     }
     return false;
+}
+
+class CheckpointRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    using Completion = std::shared_ptr<NEngine::NRuntime::UpdateCompletion>;
+    static constexpr std::size_t FRAME_COUNT = 12;
+
+    CheckpointRuntime() {
+        for (std::size_t index = 0; index < FRAME_COUNT; ++index) {
+            GpuCompletions[index] = GpuSignals[index].get_future().share();
+        }
+    }
+
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ADD_FAILURE() << "Async update hook was bypassed";
+    }
+
+    void
+    ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame, NCommon::TaskSystem&, Completion completion) override {
+        const auto index = static_cast<std::size_t>(frame.GetFrame().GetFrameIndex());
+        struct Probe {
+            explicit Probe(std::atomic<int>& retired)
+                : Retired(retired) {
+            }
+            ~Probe() {
+                ++Retired;
+            }
+            std::atomic<int>& Retired;
+        };
+        static_cast<void>(frame.GetStorage().Emplace<Probe>(Retired.at(index)));
+        completion->BindCancellation([weak = std::weak_ptr{completion}] {
+            if (const auto owned = weak.lock()) {
+                owned->Finish({.Status = NEngine::NRuntime::EUpdateStatus::CANCELLED});
+            }
+        });
+        ++Updates;
+        UpdateReady.at(index).set_value(std::move(completion));
+    }
+
+    void Extract(const NEngine::NRuntime::FrameContext&) override {
+        ++Extracts;
+    }
+
+    void Draw(const NEngine::NRuntime::FrameContext& frame) override {
+        const auto index = static_cast<std::size_t>(frame.GetFrame().GetFrameIndex());
+        frame.RegisterGpuCompletion(GpuCompletions.at(index));
+        ++Draws;
+        DrawReady.at(index).set_value();
+    }
+
+    void FinishGpu() noexcept {
+        for (auto& signal: GpuSignals) {
+            try {
+                signal.set_value();
+            } catch (const std::future_error&) {
+            }
+        }
+    }
+
+    std::array<std::promise<Completion>, FRAME_COUNT> UpdateReady;
+    std::array<std::promise<void>, FRAME_COUNT> DrawReady;
+    std::array<std::promise<void>, FRAME_COUNT> GpuSignals;
+    std::array<std::shared_future<void>, FRAME_COUNT> GpuCompletions;
+    std::array<std::atomic<int>, FRAME_COUNT> Retired{};
+    std::atomic<int> Updates{0};
+    std::atomic<int> Extracts{0};
+    std::atomic<int> Draws{0};
+};
+
+TEST(EngineAsyncUpdate, AcceptedDrawIntentBackpressuresLegacyUpdateUntilSemanticAndSlotCompletion) {
+    for (std::size_t slots: {1U, 2U, 3U}) {
+        for (std::size_t workers: {1U, 2U, 8U}) {
+            SCOPED_TRACE(::testing::Message{} << "slots=" << slots << " workers=" << workers);
+            auto runtime = std::make_unique<CheckpointRuntime>();
+            auto& observed = *runtime;
+            auto engine = NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = slots, .WorkerCount = workers},
+                                                                   std::move(runtime));
+            struct FinishGuard {
+                CheckpointRuntime& Runtime;
+                ~FinishGuard() {
+                    Runtime.FinishGpu();
+                }
+            } guard{observed};
+            engine->Start();
+            NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)engine->Draw(); });
+            for (std::size_t frame = 0; frame < CheckpointRuntime::FRAME_COUNT; ++frame) {
+                if (frame >= slots) {
+                    EXPECT_FALSE(engine->Update());
+                    EXPECT_EQ(observed.Retired[frame - slots].load(), 0);
+                    observed.GpuSignals[frame - slots].set_value();
+                }
+                ASSERT_TRUE(Eventually(*engine, [&] { return engine->Update(); }));
+                auto update = observed.UpdateReady[frame].get_future();
+                ASSERT_EQ(update.wait_for(2s), std::future_status::ready);
+                auto completion = update.get();
+                NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)engine->Update(); });
+                ASSERT_TRUE(engine->Draw());
+                NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)engine->Draw(); });
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    EXPECT_NO_THROW(EXPECT_FALSE(engine->Update()));
+                }
+                EXPECT_EQ(observed.Updates.load(), frame + 1);
+                EXPECT_EQ(observed.Extracts.load(), frame);
+                EXPECT_EQ(observed.Draws.load(), frame);
+                completion->Finish({.Status = NEngine::NRuntime::EUpdateStatus::COMPLETED});
+                auto drawn = observed.DrawReady[frame].get_future();
+                ASSERT_EQ(drawn.wait_for(2s), std::future_status::ready);
+            }
+            observed.FinishGpu();
+            engine->Stop();
+            EXPECT_EQ(observed.Updates.load(), CheckpointRuntime::FRAME_COUNT);
+            EXPECT_EQ(observed.Extracts.load(), CheckpointRuntime::FRAME_COUNT);
+            EXPECT_EQ(observed.Draws.load(), CheckpointRuntime::FRAME_COUNT);
+            for (const auto& retired: observed.Retired) {
+                EXPECT_EQ(retired.load(), 1);
+            }
+            EXPECT_FALSE(engine->GetLastError());
+        }
+    }
 }
 
 TEST(EngineAsyncUpdate, SystemsCompleteBeforeDrawAndNextMutableUpdateAcrossWorkerAndSlotMatrix) {

@@ -107,6 +107,8 @@ public:
     // Capture version before attempting admission to avoid lost notifications.
     void WaitForProgress(std::uint64_t version, std::chrono::milliseconds timeout) const;
 
+    // Legacy alternating checkpoints. After an accepted Draw, false means admission/slot
+    // backpressure, including pending semantic Update or extraction. Two Updates without Draw throw.
     bool Update();
 
     bool Draw();
