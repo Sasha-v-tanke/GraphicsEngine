@@ -37,7 +37,7 @@ public:
                                  NCommon::TaskSystem& tasks,
                                  ResourceIoConfig config = {},
                                  ResourceIo::ReadFunction reader = {});
-    ~AsyncResourceLoader();
+    ~AsyncResourceLoader() noexcept;
 
     // Nonblocking admission, safe for concurrent callers. Same identity/type implies the same source/decoder.
     // The first admitted request wins; errors become FAILED and may be retried by another Load.
@@ -49,17 +49,58 @@ public:
         if (!operation) {
             return handle;
         }
+        EnqueueOperation(*operation, std::move(path), std::move(decode), std::move(upload));
+        return handle;
+    }
+
+    ResourceHandle<ImageData>
+    LoadImage(ResourceIdentity identity, std::filesystem::path path, Uploader<ImageData> upload = {});
+    ResourceHandle<MeshData>
+    LoadMesh(ResourceIdentity identity, std::filesystem::path path, Uploader<MeshData> upload = {});
+    ResourceHandle<ShaderArtifact> LoadShaderArtifact(ResourceIdentity identity,
+                                                      std::filesystem::path path,
+                                                      EShaderStage stage,
+                                                      Uploader<ShaderArtifact> upload = {});
+
+    // Cancellation is generation-specific and permits immediate retry. Already submitted GPU work is retained.
+    template<typename T>
+    void Cancel(ResourceHandle<T> handle) {
+        if (const auto operation = m_resources.TryCancelLoading(handle)) {
+            CancelMatching({handle.GetSlotIndex(), handle.GetGeneration(), operation->GetGeneration()});
+        }
+    }
+
+    // Host/backend owner tick: submits CPU_READY work and polls GPU completion; never waits.
+    void PumpUploads();
+    // Host only: cancels I/O/decode, joins owned tasks, drains exact GPU completions. Call before executor shutdown.
+    void Shutdown();
+
+private:
+    struct OperationKey {
+        std::size_t SlotIndex = 0;
+        std::uint64_t HandleGeneration = 0;
+        std::uint64_t OperationGeneration = 0;
+        friend bool operator==(const OperationKey&, const OperationKey&) = default;
+    };
+
+    template<typename T>
+    void EnqueueOperation(ResourceOperation<T> operation,
+                          std::filesystem::path path,
+                          Decoder<T> decode,
+                          Uploader<T> upload) {
+        const auto handle = operation.GetResource();
         try {
             Enqueue(
+                    {handle.GetSlotIndex(), handle.GetGeneration(), operation.GetGeneration()},
                     m_resources.GetIdentity(handle),
                     std::move(path),
-                    [this, op = *operation] { return m_resources.IsOperationCurrent(op); },
-                    [this, op = *operation](NCommon::ErrorInfo error) { m_resources.TryFail(op, std::move(error)); },
-                    [this, op = *operation] { m_resources.TryCancel(op); },
-                    [this, op = *operation] {
+                    [this, op = operation] { return m_resources.IsOperationCurrent(op); },
+                    [this, op = operation](NCommon::ErrorInfo error) { m_resources.TryFail(op, std::move(error)); },
+                    [this, op = operation] { m_resources.TryCancel(op); },
+                    [this, op = operation] {
                         return m_resources.TryAdvance(op, EResourceState::QUEUED, EResourceState::LOADING);
                     },
-                    [this, op = *operation, decode = std::move(decode), upload = std::move(upload)](
+                    [this, op = operation, decode = std::move(decode), upload = std::move(upload)](
                             std::span<const std::byte> bytes,
                             const std::stop_token& stop) -> std::function<ResourceUpload()> {
                         auto cpu = decode(bytes, stop);
@@ -85,7 +126,7 @@ public:
                             return result;
                         };
                     },
-                    [this, op = *operation](std::shared_ptr<const void> gpu) {
+                    [this, op = operation](std::shared_ptr<const void> gpu) {
                         if (!m_resources.IsOperationCurrent(op)) {
                             return;
                         }
@@ -97,35 +138,16 @@ public:
                                                std::move(gpu));
                     });
         } catch (const std::exception& error) {
-            m_resources.TryFail(*operation, {.Code = NCommon::EError::IO_ERROR, .Message = error.what()});
+            m_resources.TryFail(operation, {.Code = NCommon::EError::IO_ERROR, .Message = error.what()});
         }
-        return handle;
     }
 
-    ResourceHandle<ImageData>
-    LoadImage(ResourceIdentity identity, std::filesystem::path path, Uploader<ImageData> upload = {});
-    ResourceHandle<MeshData>
-    LoadMesh(ResourceIdentity identity, std::filesystem::path path, Uploader<MeshData> upload = {});
-    ResourceHandle<ShaderArtifact> LoadShaderArtifact(ResourceIdentity identity,
-                                                      std::filesystem::path path,
-                                                      EShaderStage stage,
-                                                      Uploader<ShaderArtifact> upload = {});
+    friend struct AsyncResourceLoaderTestAccess;
 
-    // Cancellation is generation-specific and permits immediate retry. Already submitted GPU work is retained.
-    template<typename T>
-    void Cancel(ResourceHandle<T> handle) {
-        CancelMatching(m_resources.GetIdentity(handle));
-    }
-
-    // Host/backend owner tick: submits CPU_READY work and polls GPU completion; never waits.
-    void PumpUploads();
-    // Host only: cancels I/O/decode, joins owned tasks, drains exact GPU completions. Call before executor shutdown.
-    void Shutdown();
-
-private:
     struct Work;
     struct Impl;
-    void Enqueue(ResourceIdentity identity,
+    void Enqueue(OperationKey key,
+                 ResourceIdentity identity,
                  std::filesystem::path path,
                  std::function<bool()> current,
                  std::function<void(NCommon::ErrorInfo)> fail,
@@ -133,7 +155,7 @@ private:
                  std::function<bool()> start,
                  std::function<std::function<ResourceUpload()>(std::span<const std::byte>, std::stop_token)> decode,
                  std::function<void(std::shared_ptr<const void>)> ready);
-    void CancelMatching(const ResourceIdentity& identity);
+    void CancelMatching(OperationKey key);
     ResourceManager& m_resources;
     std::unique_ptr<Impl> m_impl;
 };

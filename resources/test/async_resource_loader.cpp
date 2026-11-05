@@ -12,6 +12,19 @@
 #include <resources/image_loader.h>
 #include <resources/mesh_loader.h>
 
+namespace NResources {
+
+// Splits the same production admission/registration sequence at a deterministic host barrier.
+struct AsyncResourceLoaderTestAccess {
+    template<typename T>
+    static void
+    Resume(AsyncResourceLoader& loader, ResourceOperation<T> operation, AsyncResourceLoader::Decoder<T> decode) {
+        loader.EnqueueOperation(operation, "file", std::move(decode), {});
+    }
+};
+
+} // namespace NResources
+
 namespace {
 
 using NResources::AsyncResourceLoader;
@@ -374,6 +387,96 @@ TEST_F(AsyncResources, BuiltinImageAndShaderDecodeOnAsyncPipeline) {
     }));
     EXPECT_EQ(Resources.GetCpuResource(texture)->GetPixels(), (std::vector<std::uint8_t>{0x11, 0x22, 0x33, 0xff}));
     EXPECT_TRUE(Resources.TryAcquire(shader));
+}
+
+TEST_F(AsyncResources, CancelBetweenAdmissionAndRegistrationPreventsReadAndAllowsRetry) {
+    AsyncResourceLoader loader{Resources, Tasks, {}, Reader()};
+    const auto handle = Resources.Request<int>({"test", "admission-race"});
+    std::promise<void> admitted;
+    std::promise<void> resume;
+    auto release = resume.get_future();
+    std::jthread caller{[&] {
+        const auto operation = Resources.TryQueueLoading(handle);
+        admitted.set_value();
+        release.wait();
+        NResources::AsyncResourceLoaderTestAccess::Resume(loader, *operation, Decoder());
+    }};
+    admitted.get_future().wait();
+    EXPECT_EQ(Resources.GetState(handle), EResourceState::QUEUED);
+    loader.Cancel(handle);
+    EXPECT_EQ(Resources.GetState(handle), EResourceState::UNLOADED);
+    resume.set_value();
+    caller.join();
+    loader.PumpUploads();
+    EXPECT_EQ(Reads, 0);
+    EXPECT_EQ(Decodes, 0);
+    EXPECT_EQ(Resources.GetState(handle), EResourceState::UNLOADED);
+    EXPECT_EQ(loader.Load<int>({"test", "admission-race"}, "file", Decoder()), handle);
+    ASSERT_TRUE(Until([&] {
+        loader.PumpUploads();
+        return Resources.GetState(handle) == EResourceState::READY;
+    }));
+    EXPECT_EQ(Reads, 1);
+    EXPECT_EQ(Decodes, 1);
+}
+
+TEST_F(AsyncResources, DelayedRegistrationAfterForgetDoesNotCancelOrPublishReplacement) {
+    AsyncResourceLoader loader{Resources, Tasks, {}, Reader()};
+    const auto handle = Resources.Request<int>({"test", "reused"});
+    const auto operation = Resources.TryQueueLoading(handle);
+    loader.Cancel(handle);
+    Resources.Forget(handle);
+    const auto replacement = loader.Load<int>({"test", "reused"}, "new-file", Decoder());
+    EXPECT_NE(replacement.GetGeneration(), handle.GetGeneration());
+    NResources::AsyncResourceLoaderTestAccess::Resume(loader, *operation, Decoder());
+    ASSERT_TRUE(Until([&] {
+        loader.PumpUploads();
+        return Resources.GetState(replacement) == EResourceState::READY;
+    }));
+    EXPECT_EQ(Reads, 1);
+}
+
+TEST_F(AsyncResources, ExplicitShutdownReportsDrainFailureAfterDrainingEveryUpload) {
+    AsyncResourceLoader loader{Resources, Tasks, {}, Reader()};
+    int drains = 0;
+    auto uploader = [&](const auto&) {
+        return ResourceUpload{std::make_shared<int>(0),
+                              [] { return false; },
+                              [&] {
+                                  ++drains;
+                                  throw std::runtime_error("terminal backend failure after safe cleanup");
+                              }};
+    };
+    const auto first = loader.Load<int>({"test", "drain-one"}, "file", Decoder(), uploader);
+    const auto second = loader.Load<int>({"test", "drain-two"}, "file", Decoder(), uploader);
+    ASSERT_TRUE(Until([&] {
+        loader.PumpUploads();
+        return Resources.GetState(first) == EResourceState::UPLOADING &&
+               Resources.GetState(second) == EResourceState::UPLOADING;
+    }));
+    EXPECT_THROW(loader.Shutdown(), std::runtime_error);
+    EXPECT_EQ(drains, 2);
+    EXPECT_NO_THROW(loader.Shutdown());
+}
+
+TEST_F(AsyncResources, DestructorContainsTerminalGpuDrainException) {
+    int drains = 0;
+    {
+        AsyncResourceLoader loader{Resources, Tasks, {}, Reader()};
+        const auto handle = loader.Load<int>({"test", "destructor-drain"}, "file", Decoder(), [&](const auto&) {
+            return ResourceUpload{std::make_shared<int>(0),
+                                  [] { return false; },
+                                  [&] {
+                                      ++drains;
+                                      throw std::runtime_error("terminal backend failure after safe cleanup");
+                                  }};
+        });
+        ASSERT_TRUE(Until([&] {
+            loader.PumpUploads();
+            return Resources.GetState(handle) == EResourceState::UPLOADING;
+        }));
+    }
+    EXPECT_EQ(drains, 1);
 }
 
 } // namespace
