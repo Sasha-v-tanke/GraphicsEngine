@@ -306,7 +306,8 @@ public:
         m_stateManager.RequireRunning("update");
         const FrameRuntimeRecord& pending =
                 m_frameRecords[static_cast<std::size_t>(m_nextDrawFrameIndex % m_frameScheduler->GetMaxActiveFrames())];
-        if (pending.HasReservation && !pending.HasDrawTask && pending.HasUpdateTask) {
+        // Draw intent advances the legacy checkpoint before semantic Update can schedule its draw task.
+        if (pending.HasReservation && !pending.HasDrawTask && pending.HasUpdateTask && !pending.DrawRequested) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application update checkpoint is out of order");
         }
         const std::optional<FrameKey> key = TryBeginFrameLocked();

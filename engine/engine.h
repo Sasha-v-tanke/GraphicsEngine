@@ -107,6 +107,9 @@ public:
     // Capture version before attempting admission to avoid lost notifications.
     void WaitForProgress(std::uint64_t version, std::chrono::milliseconds timeout) const;
 
+    // Legacy checkpoints: Update -> Draw intent. False means closed World admission or no free slot.
+    // After accepted Draw, retries remain backpressure until semantic Update/Extract and slot gates permit progress.
+    // Calling Update twice without Draw is INVALID_STATE; accepted Draw does not imply semantic completion.
     bool Update();
 
     bool Draw();
