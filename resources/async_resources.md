@@ -12,7 +12,7 @@ MaxPendingReads ограничивает также число записей pi
 
 ## Отмена и версии
 
-Cancel(handle) запрашивает cooperative stop у принятых операций этой identity, отменяет ResourceIo и переводит только совпадающие активные поколения в UNLOADED. Можно сразу повторить Load. RequestUnload/CompleteUnload остаются поддержанными напрямую: все последующие стадии проверяют operation generation; эти вызовы не прерывают уже начатый системный вызов или сторонний decoder. Forget/reuse slot также запрещает stale-публикацию.
+Cancel(handle) атомарно отменяет текущее поколение в ResourceManager, включая QUEUED до регистрации работы в pipeline. Регистрация повторно проверяет актуальность под admission lock, а stop/ResourceIo cancellation сопоставляются с полными slot/handle/operation generations. Поздняя регистрация отменённой операции не запускает I/O и не затрагивает retry или новый handle после Forget. Можно сразу повторить Load. RequestUnload/CompleteUnload остаются поддержанными напрямую: все последующие стадии проверяют operation generation; эти вызовы не прерывают уже начатый системный вызов или сторонний decoder. Forget/reuse slot также запрещает stale-публикацию.
 
 Отменённый upload остаётся удержанным до exact completion, даже при retry. Завершение старой операции не изменяет новую. Cancel после READY не выгружает готовую версию; используйте RequestUnload/CompleteUnload. CPU payload и representation объединяются в immutable owning version; lease.GetGpuRepresentation() возвращает backend token, а GetUseRecord сохраняет обе части для существующего механизма completion/lifetime.
 
@@ -27,3 +27,5 @@ Uploader обязан возвращать валидный representation и о
 ## Завершение
 
 Остановите производителей запросов, затем вызовите Shutdown на constructor thread, до остановки TaskSystem и уничтожения backend. Shutdown запрещает admission, отменяет I/O/decode, присоединяет ResourceIo callbacks, ждёт только собственные задачи (включая retirement execution captures), затем drains уже отправленные uploads. Незавершённые CPU стадии становятся UNLOADED; опубликованные READY сохраняются. Shutdown может ждать внешнего системного вызова, cooperative decoder или GPU. PumpUploads/Shutdown не вызываются из decoder/uploader/completion callbacks и не перекрываются. Деструктор выполняет Shutdown; lifetime уничтожения с конкурентными публичными вызовами требует внешней координации.
+
+Явный Shutdown сообщает исключение terminal GPU drain после обработки всех tickets. При device loss backend должен завершить безопасный cleanup до исключения; деструктор подавляет такое исключение, сохраняя noexcept. Для наблюдения ошибки используйте явный Shutdown.

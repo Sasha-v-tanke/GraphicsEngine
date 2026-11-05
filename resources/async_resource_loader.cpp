@@ -15,6 +15,7 @@
 namespace NResources {
 
 struct AsyncResourceLoader::Work {
+    OperationKey Key;
     ResourceIdentity Identity;
     std::filesystem::path Path;
     std::stop_source Stop;
@@ -82,8 +83,13 @@ AsyncResourceLoader::AsyncResourceLoader(ResourceManager& resources,
     , m_impl(std::make_unique<Impl>(tasks, config, std::move(reader))) {
 }
 
-AsyncResourceLoader::~AsyncResourceLoader() {
-    Shutdown();
+AsyncResourceLoader::~AsyncResourceLoader() noexcept {
+    m_impl->CheckOwner();
+    try {
+        Shutdown();
+    } catch (...) {
+        // Backend drain errors are reported by explicit Shutdown. All tickets have already been drained.
+    }
 }
 
 ResourceHandle<ImageData>
@@ -116,6 +122,7 @@ ResourceHandle<ShaderArtifact> AsyncResourceLoader::LoadShaderArtifact(ResourceI
 }
 
 void AsyncResourceLoader::Enqueue(
+        OperationKey key,
         ResourceIdentity identity,
         std::filesystem::path path,
         std::function<bool()> current,
@@ -125,6 +132,7 @@ void AsyncResourceLoader::Enqueue(
         std::function<std::function<ResourceUpload()>(std::span<const std::byte>, std::stop_token)> decode,
         std::function<void(std::shared_ptr<const void>)> ready) {
     auto work = std::make_shared<Work>();
+    work->Key = key;
     work->Identity = std::move(identity);
     work->Path = std::move(path);
     work->Current = std::move(current);
@@ -137,6 +145,9 @@ void AsyncResourceLoader::Enqueue(
     std::unique_lock admission{m_impl->Mutex};
     if (m_impl->Stopping || m_impl->WorkItems.size() >= m_impl->Limit) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Resource pipeline stopped or full");
+    }
+    if (!work->Current()) {
+        return;
     }
     m_impl->WorkItems.push_back(work);
     try {
@@ -191,14 +202,14 @@ void AsyncResourceLoader::Enqueue(
     }
 }
 
-void AsyncResourceLoader::CancelMatching(const ResourceIdentity& identity) {
+void AsyncResourceLoader::CancelMatching(OperationKey key) {
     std::vector<std::shared_ptr<Work>> items;
     {
         std::lock_guard lock{m_impl->Mutex};
         items = m_impl->WorkItems;
     }
     for (const auto& work: items) {
-        if (work->Identity == identity) {
+        if (work->Key == key) {
             work->Cancel();
             work->Stop.request_stop();
             ResourceIoRequest request;

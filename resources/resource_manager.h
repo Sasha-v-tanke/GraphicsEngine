@@ -121,6 +121,24 @@ public:
         return true;
     }
 
+    // Cancels admission even when its pipeline work record has not been registered yet.
+    template<typename T>
+    [[nodiscard]] std::optional<ResourceOperation<T>> TryCancelLoading(ResourceHandle<T> handle) {
+        std::shared_ptr<const void> retired;
+        std::unique_lock lock{m_mutex};
+        Entry& entry = Validate(handle, std::type_index{typeid(T)});
+        if (!IsLoadingState(entry.State)) {
+            return std::nullopt;
+        }
+        const ResourceOperation<T> operation{handle, entry.OperationGeneration};
+        entry.CancelledOperationGeneration = entry.OperationGeneration;
+        retired.swap(entry.CpuResource);
+        entry.Failure.reset();
+        entry.State = EResourceState::UNLOADED;
+        lock.unlock();
+        return operation;
+    }
+
     template<typename T>
     bool TryCancel(ResourceOperation<T> operation) {
         std::shared_ptr<const void> retired;
