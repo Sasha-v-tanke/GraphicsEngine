@@ -28,6 +28,7 @@ static_assert(NCommon::FrameOrigin{3, 99}.FrameSequence == 99);
 static_assert(!std::is_copy_constructible_v<NRenderer::GraphPresentation>);
 #endif
 #include <GraphicsEngine/renderer/renderer.h>
+#include <GraphicsEngine/resources/async_resource_loader.h>
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>
 #include <GraphicsEngine/resources/mesh_loader.h>
@@ -60,6 +61,14 @@ private:
 };
 
 int main() {
+    {
+        NResources::ResourceManager resources;
+        NCommon::TaskSystem tasks{1};
+        NResources::AsyncResourceLoader loader{resources, tasks};
+        loader.PumpUploads();
+        loader.Shutdown();
+    }
+
     NRenderer::RenderGraphBuilder graphBuilder{{.Generation = 1}};
     const NRenderer::CompiledGraph graph = graphBuilder.Compile();
     graph.ValidateResources({.Generation = 1});
