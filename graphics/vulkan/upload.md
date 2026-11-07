@@ -1,6 +1,6 @@
 # Пакетные загрузки
 
-`VulkanUploadManager` — внутренний backend-механизм FEATURE-0069. Он использует существующие `VulkanSubmissionManager` и resource-state transactions. Graphics queue является рабочим baseline; dedicated transfer queue остаётся необязательной оптимизацией. Публичные Resources/Renderer contracts не получают Vulkan/VMA types.
+`VulkanUploadManager` — внутренний механизм пакетных загрузок Vulkan. Он использует существующие `VulkanSubmissionManager` и resource-state transactions. Graphics queue является рабочим baseline; dedicated transfer queue остаётся необязательной оптимизацией. Публичные Resources/Renderer contracts не получают Vulkan/VMA types.
 
 `UploadBatch(buffers, images)` копирует bytes во время вызова, записывает buffers, затем images, сохраняя порядок внутри каждого span, и возвращает один exact completion для всех операций. Destination pointers нужны во время вызова; внутренние retention tokens сохраняют allocations до completion. CPU spans после возврата можно освобождать. Повторные/перекрывающиеся назначения записываются последовательно через state tracker. Изображения сохраняют subset single-mip/layer 2D sampled color.
 
@@ -10,7 +10,7 @@ Idle-арены и их command buffers переиспользуются. Баз
 
 Validate/record/flush/submit failure не публикует completion; state tracker откатывается, destinations освобождаются, idle-арена остаётся доступна для следующей попытки. Retention и память подготавливаются до submit; после успешной отправки нет throwing allocations. Владелец сериализует manager с другими операциями над тем же tracker/graphics resource state. Device, allocator, submission manager и tracker должны пережить upload manager. Shutdown ждёт его exact completions, не frame count или present.
 
-`GetStatistics()` возвращает число/байты pending uploads и batches, staging bytes, staging/pending high-water, total submitted bytes/uploads/submissions и число созданных арен. Pending означает «completion ещё не обработан ReleaseCompleted», даже если GPU уже закончил. Прикладная публикация GPU READY относится к IMPROVE-0025: caller проверяет exact returned completion и только затем публикует ресурс для будущих consumers. Возврат из UploadBatch не означает GPU READY.
+`GetStatistics()` возвращает число/байты pending uploads и batches, staging bytes, staging/pending high-water, total submitted bytes/uploads/submissions и число созданных арен. Pending означает «completion ещё не обработан ReleaseCompleted», даже если GPU уже закончил. Для публикации ресурса как GPU READY вызывающий код проверяет точное завершение возвращённой операции и только затем делает ресурс доступным будущим потребителям. Возврат из UploadBatch не означает GPU READY.
 
 ## Проверки и измерение
 
