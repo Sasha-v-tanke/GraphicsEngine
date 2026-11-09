@@ -19,6 +19,8 @@ thread_local std::ptrdiff_t AllocationBudget = -1;
 thread_local bool FailEveryAllocation = false;
 thread_local bool CountAllocations = false;
 thread_local std::size_t Allocations = 0;
+thread_local std::size_t AllocationFailSize = 0;
+thread_local std::size_t FailedAllocationSize = 0;
 
 } // namespace
 
@@ -28,6 +30,10 @@ thread_local std::size_t Allocations = 0;
 void* operator new(std::size_t size) {
     if (CountAllocations) {
         ++Allocations;
+    }
+    if (AllocationFailSize != 0 && size == AllocationFailSize) {
+        FailedAllocationSize = std::exchange(AllocationFailSize, 0);
+        throw std::bad_alloc{};
     }
     if (AllocationBudget == 0) {
         if (!FailEveryAllocation) {
@@ -535,6 +541,48 @@ TEST(DependencyValidationFault, ScratchAllocationFailurePreservesRegistryAndNext
         pool.Wait(child);
         pool.WaitIdle();
         EXPECT_EQ(pool.GetStatus(child), NCommon::ETaskStatus::COMPLETED);
+    }
+}
+
+TEST(DependencyValidationFault, PublicSubmitScratchFailurePreservesTransactionAndDestroysCapture) {
+    NCommon::TaskSystem pool{1};
+    std::vector<NCommon::TaskHandle> parents;
+    parents.reserve(10000);
+    for (std::size_t index = 0; index < 10000; ++index) {
+        const auto task = pool.Submit([](NCommon::TaskContext&) {});
+        pool.Wait(task);
+        parents.push_back(task);
+    }
+    pool.WaitIdle();
+    for (const std::size_t count: {17U, 128U, 1024U, 4096U, 10000U}) {
+        std::size_t destroyed = 0;
+        auto probe = std::make_shared<RollbackProbe>();
+        probe->Pool = &pool;
+        probe->Destroyed = &destroyed;
+        const auto snapshot = NCommon::TaskSystemTestAccess::Snapshot(pool);
+        FailedAllocationSize = 0;
+        // Target the ID scratch buffer, rather than the earlier stable DependencyEdge array.
+        AllocationFailSize = count * sizeof(std::uint64_t);
+        bool failed = false;
+        try {
+            pool.Submit([probe = std::move(probe)](NCommon::TaskContext&) {}, std::span{parents.data(), count});
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        AllocationFailSize = 0;
+        pool.WaitIdle();
+        EXPECT_TRUE(failed);
+        EXPECT_EQ(FailedAllocationSize, count * sizeof(std::uint64_t));
+        EXPECT_EQ(destroyed, 1U);
+        // The rejected Submit spends no ID; the reentrant capture destructor deliberately
+        // submits exactly one successful task, proving cleanup runs outside the registry lock.
+        auto expected = snapshot;
+        ++expected[0];
+        EXPECT_EQ(NCommon::TaskSystemTestAccess::Snapshot(pool), expected);
+        const auto reused = pool.Submit([](NCommon::TaskContext&) {}, std::span{parents.data(), count});
+        pool.Wait(reused);
+        pool.WaitIdle();
+        EXPECT_EQ(pool.GetStatus(reused), NCommon::ETaskStatus::COMPLETED);
     }
 }
 
