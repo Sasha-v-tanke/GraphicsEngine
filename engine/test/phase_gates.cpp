@@ -37,7 +37,7 @@ public:
         }
         IFrameRuntime::ScheduleUpdate(frame, tasks, std::move(completion));
     }
-    bool HasPostUpdate() const noexcept override {
+    [[nodiscard]] bool HasPostUpdate() const noexcept override {
         return true;
     }
     NCommon::TaskHandle SchedulePostUpdate(const NEngine::NRuntime::FrameContext& frame,
