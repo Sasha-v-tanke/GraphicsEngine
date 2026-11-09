@@ -60,6 +60,10 @@ public:
                 dependencies);
     }
     void FinalizePostUpdate(const NEngine::NRuntime::FrameContext& frame) override {
+        if (HoldCommit) {
+            CommitEntered.set_value();
+            CommitRelease.acquire();
+        }
         Trace(3, frame);
     }
     NCommon::TaskHandle ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,
@@ -89,6 +93,9 @@ public:
     std::atomic<int> Draws{0};
     std::promise<void> Entered;
     std::binary_semaphore Release{0};
+    bool HoldCommit = false;
+    std::promise<void> CommitEntered;
+    std::binary_semaphore CommitRelease{0};
     bool HoldExtraction = false;
     std::promise<void> ExtractionEntered;
     std::binary_semaphore ExtractionRelease{0};
@@ -250,6 +257,32 @@ TEST(EnginePhaseGates, PostFailureCancelsCommitAndExtraction) {
     EXPECT_EQ(engine->GetLastError()->Message, "post-update failure");
     EXPECT_EQ(observed.Draws.load(), 0);
     EXPECT_EQ(observed.Events, (std::vector<int>{1, 2}));
+}
+
+TEST(EnginePhaseGates, StopDuringCommitSkipsExtractionAfterWritesRetire) {
+    auto runtime = std::make_unique<PhaseRuntime>();
+    auto& observed = *runtime;
+    observed.HoldCommit = true;
+    auto entered = observed.CommitEntered.get_future();
+    auto engine = NEngine::NRuntime::EngineFactory::Create({.WorkerCount = 1}, std::move(runtime));
+    struct ReleaseGuard {
+        PhaseRuntime& Runtime;
+        ~ReleaseGuard() {
+            Runtime.CommitRelease.release();
+        }
+    } guard{observed};
+    engine->Start();
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_EQ(entered.wait_for(2s), std::future_status::ready);
+    auto stopped = std::async(std::launch::async, [&] { engine->Stop(); });
+    EXPECT_TRUE(Progress(*engine, [&] { return engine->GetState() == NEngine::EEngineState::STOPPING; }));
+    EXPECT_EQ(stopped.wait_for(5ms), std::future_status::timeout);
+    observed.CommitRelease.release();
+    ASSERT_EQ(stopped.wait_for(2s), std::future_status::ready);
+    EXPECT_FALSE(engine->GetLastError());
+    EXPECT_EQ(observed.Events, (std::vector<int>{1, 2, 3}));
+    EXPECT_EQ(observed.Draws.load(), 0);
 }
 
 TEST(EnginePhaseGates, StopDrainsRunningPostAndSkipsCommitAndExtraction) {

@@ -636,6 +636,12 @@ private:
                 }
                 const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame), m_phaseStop};
                 frameRuntime->FinalizePostUpdate(context);
+                // Stop can arrive while the commit hook is retiring its writes.
+                std::lock_guard lock{m_mutex};
+                if (m_stateManager.GetState() != EEngineState::RUNNING) {
+                    GetFrameRecordLocked(frame).PhaseSkipped = true;
+                    return;
+                }
             }
             frameScheduler->BeginFinalize(frame);
 
