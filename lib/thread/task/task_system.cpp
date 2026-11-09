@@ -122,17 +122,62 @@ std::shared_ptr<TaskHandle::State> TaskSystem::TaskRegistry::AllocateStateLocked
 }
 
 void TaskSystem::TaskRegistry::ValidateDependenciesLocked(std::span<const TaskHandle> dependencies) const {
-    for (std::size_t index = 0; index < dependencies.size(); ++index) {
-        const TaskHandle& dependency = dependencies[index];
+    ValidateDependenciesImplLocked<false>(dependencies, nullptr);
+}
 
+void TaskSystem::TaskRegistry::ValidateDependenciesMeasuredLocked(std::span<const TaskHandle> dependencies,
+                                                                  std::size_t& comparisons) const {
+    comparisons = 0;
+    ValidateDependenciesImplLocked<true>(dependencies, &comparisons);
+}
+
+template<bool Measure>
+void TaskSystem::TaskRegistry::ValidateDependenciesImplLocked(std::span<const TaskHandle> dependencies,
+                                                              std::size_t* comparisons) const {
+    constexpr std::size_t linearLimit = 16;
+    if (dependencies.size() <= linearLimit) {
+        for (std::size_t index = 0; index < dependencies.size(); ++index) {
+            const TaskHandle& dependency = dependencies[index];
+            ValidateHandleOwner(dependency);
+            const auto previousEnd = dependencies.begin() + static_cast<std::ptrdiff_t>(index);
+            if (std::find_if(dependencies.begin(), previousEnd, [&](const TaskHandle& previous) {
+                    if constexpr (Measure) {
+                        ++*comparisons;
+                    }
+                    return previous == dependency;
+                }) != previousEnd) {
+                GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT,
+                                      "Task {} is specified more than once as a dependency",
+                                      dependency.GetId());
+            }
+        }
+        return;
+    }
+
+    // Validate ownership before comparing IDs: equal IDs from different pools are not duplicates.
+    // This scratch storage belongs to Submit preparation, before any ID, edge or credit is committed.
+    for (const TaskHandle& dependency: dependencies) {
         ValidateHandleOwner(dependency);
-
-        if (std::ranges::find(dependencies.begin(),
-                              dependencies.begin() + static_cast<std::ptrdiff_t>(index),
-                              dependency) != dependencies.begin() + static_cast<std::ptrdiff_t>(index)) {
+    }
+    std::vector<std::uint64_t> ids;
+    ids.reserve(dependencies.size());
+    for (const TaskHandle& dependency: dependencies) {
+        ids.push_back(dependency.GetId());
+    }
+    std::ranges::sort(ids, [&](std::uint64_t left, std::uint64_t right) {
+        if constexpr (Measure) {
+            ++*comparisons;
+        }
+        return left < right;
+    });
+    for (std::size_t index = 1; index < ids.size(); ++index) {
+        if constexpr (Measure) {
+            ++*comparisons;
+        }
+        if (ids[index - 1] == ids[index]) {
             GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT,
                                   "Task {} is specified more than once as a dependency",
-                                  dependency.GetId());
+                                  ids[index]);
         }
     }
 }

@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
@@ -16,6 +17,8 @@ namespace {
 
 thread_local std::ptrdiff_t AllocationBudget = -1;
 thread_local bool FailEveryAllocation = false;
+thread_local bool CountAllocations = false;
+thread_local std::size_t Allocations = 0;
 
 } // namespace
 
@@ -23,6 +26,9 @@ thread_local bool FailEveryAllocation = false;
 // thread, so the capture's reentrant Submit can allocate normally while unwinding.
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
 void* operator new(std::size_t size) {
+    if (CountAllocations) {
+        ++Allocations;
+    }
     if (AllocationBudget == 0) {
         if (!FailEveryAllocation) {
             AllocationBudget = -1;
@@ -76,6 +82,18 @@ namespace NCommon {
 
 // Test-only access to the private Q-pop/S-claim boundary, without a production callback hook.
 struct TaskSystemTestAccess {
+    static void ValidateDependencies(TaskSystem& pool, std::span<const TaskHandle> dependencies) {
+        std::lock_guard lock{pool.m_mutex};
+        pool.m_registry.ValidateDependenciesLocked(dependencies);
+    }
+    static auto Snapshot(TaskSystem& pool) {
+        std::lock_guard lock{pool.m_mutex};
+        return std::array<std::uint64_t, 4>{pool.m_registry.NextTaskId,
+                                            pool.m_registry.ActiveTasks.size(),
+                                            pool.m_lifetime.OutstandingTasks.load(),
+                                            pool.m_readyScheduler.ReadyTaskCount.load()};
+    }
+
     static auto Pop(TaskSystem& pool) {
         return pool.m_readyScheduler.TryPopReadyTask(WorkerIndex{0});
     }
@@ -478,6 +496,45 @@ TEST(TaskTerminalFault, ConcurrentInvocationFailureAndCancelRetireSharedDescenda
             EXPECT_EQ(pool.GetStatus(joined), NCommon::ETaskStatus::CANCELLED);
             EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(pool));
         }
+    }
+}
+
+TEST(DependencyValidationFault, ScratchAllocationFailurePreservesRegistryAndNextId) {
+    NCommon::TaskSystem pool{1};
+    std::vector<NCommon::TaskHandle> parents;
+    parents.reserve(10000);
+    for (std::size_t index = 0; index < 10000; ++index) {
+        const auto task = pool.Submit([](NCommon::TaskContext&) {});
+        pool.Wait(task);
+        parents.push_back(task);
+    }
+    pool.WaitIdle();
+    for (const std::size_t count: {0U, 1U, 4U, 16U, 17U, 128U, 1024U, 4096U, 10000U}) {
+        const auto snapshot = NCommon::TaskSystemTestAccess::Snapshot(pool);
+        const std::span dependencies{parents.data(), count};
+        bool failed = false;
+        Allocations = 0;
+        CountAllocations = true;
+        AllocationBudget = 0;
+        try {
+            NCommon::TaskSystemTestAccess::ValidateDependencies(pool, dependencies);
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        AllocationBudget = -1;
+        CountAllocations = false;
+        EXPECT_EQ(failed, count > 16);
+        EXPECT_EQ(Allocations, count > 16 ? 1U : 0U);
+        EXPECT_EQ(NCommon::TaskSystemTestAccess::Snapshot(pool), snapshot);
+        Allocations = 0;
+        CountAllocations = true;
+        NCommon::TaskSystemTestAccess::ValidateDependencies(pool, dependencies);
+        CountAllocations = false;
+        EXPECT_EQ(Allocations, count > 16 ? 1U : 0U);
+        const auto child = pool.Submit([](NCommon::TaskContext&) {}, dependencies);
+        pool.Wait(child);
+        pool.WaitIdle();
+        EXPECT_EQ(pool.GetStatus(child), NCommon::ETaskStatus::COMPLETED);
     }
 }
 

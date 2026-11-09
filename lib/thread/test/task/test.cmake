@@ -3,6 +3,7 @@ TEST(Task)
 SOURCES(
     task_system_test.cpp
     task_group.cpp
+    dependency_validation.cpp
 )
 
 set(taskSystemStressTests
