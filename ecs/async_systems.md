@@ -10,4 +10,4 @@ DeferredStructuralCommandBuffer получает ticket до передачи п
 
 Terminal означает завершение всех nodes/tickets, deterministic merge, structural commit либо discard, очистку temporary payloads и снятие World guard/lease. Cleanup/destructors и completion sink исполняются вне coordination locks. Cancellation не откатывает in-place component writes и не прерывает running callback. Ошибка выбирается после quiescence: publication error, затем первая system error в graph.Order, затем cancellation. Commit/cleanup failure даёт FAILED; World после неуспешного commit/cleanup закрыт для нового execution до teardown. Ошибки cleanup не должны давать ложный COMPLETED.
 
-TaskSystem terminal allocation/cancellation defects остаются отдельными FIX-0002/FIX-0004. Этот adapter не меняет generic executor protocol и не гарантирует безопасное принудительное завершение не возвращающегося пользовательского кода.
+Гарантии терминальных переходов `TaskSystem` определяются самим исполнителем, а не ECS-адаптером. Этот adapter не меняет generic executor protocol и не гарантирует безопасное принудительное завершение не возвращающегося пользовательского кода.
