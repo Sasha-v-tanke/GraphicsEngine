@@ -1,4 +1,3 @@
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
@@ -311,6 +310,11 @@ TEST(TaskTerminalFault, SuccessFanOutAndReadyPublicationCannotAllocate) {
 }
 
 TEST(TaskTerminalFault, ErrorInfoAllocationFailureStillPublishesOneFailure) {
+#if defined(GRAPHICS_ENGINE_TASK_FAULT_ASAN) && defined(__APPLE__)
+    // macOS ASan interposes libc++'s dylib allocations before this executable's operator new.
+    // Debug and unsanitized Release exercise this fail index; do not report a false ASan pass.
+    GTEST_SKIP() << "macOS ASan bypasses the test allocator for libc++ string allocation";
+#endif
     const auto failure = std::make_exception_ptr(std::runtime_error(std::string(1024, 'x')));
     for (const std::size_t workers: {1U, 2U, 8U}) {
         std::binary_semaphore entered{0};
@@ -381,6 +385,65 @@ TEST(TaskTerminalFault, ThousandsOfCancelledReadyTasksLeaveNoMembershipOrWakeCre
     pool.Wait(fresh);
     pool.WaitIdle();
     EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(pool));
+}
+
+TEST(TaskTerminalFault, EmptyRegistrySubmitFailsCleanlyAtEveryPrepareIndex) {
+    bool failed = false;
+    for (std::ptrdiff_t failureIndex = 0; failureIndex < 128; ++failureIndex) {
+        NCommon::TaskSystem pool{1};
+        NCommon::TaskHandle task;
+        AllocationBudget = failureIndex;
+        try {
+            task = pool.Submit([](NCommon::TaskContext&) {});
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        AllocationBudget = -1;
+        pool.WaitIdle();
+        EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(pool));
+        const auto reused = pool.Submit([](NCommon::TaskContext&) {});
+        pool.Wait(reused);
+        if (task.IsValid()) {
+            EXPECT_TRUE(failed);
+            EXPECT_EQ(pool.GetStatus(task), NCommon::ETaskStatus::COMPLETED);
+            return;
+        }
+    }
+    FAIL() << "No successful Submit after all allocation prefixes";
+}
+
+struct StopRelease {
+    std::counting_semaphore<>* Resume = nullptr;
+    ~StopRelease() {
+        Resume->release();
+    }
+};
+
+TEST(TaskTerminalFault, StopDrainsPendingPayloadsWithoutAllocating) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        std::counting_semaphore<> entered{0};
+        std::counting_semaphore<> resume{0};
+        auto pool = std::make_unique<NCommon::TaskSystem>(workers);
+        for (std::size_t index = 0; index < workers; ++index) {
+            pool->Submit([&](NCommon::TaskContext&) {
+                entered.release();
+                resume.acquire();
+            });
+        }
+        for (std::size_t index = 0; index < workers; ++index) {
+            entered.acquire();
+            auto release = std::make_shared<StopRelease>();
+            release->Resume = &resume;
+            pool->Submit([release = std::move(release)](NCommon::TaskContext&) {});
+        }
+        AllocationBudget = 0;
+        FailEveryAllocation = true;
+        pool.reset();
+        const bool allocated = AllocationBudget != 0;
+        FailEveryAllocation = false;
+        AllocationBudget = -1;
+        EXPECT_FALSE(allocated);
+    }
 }
 
 } // namespace

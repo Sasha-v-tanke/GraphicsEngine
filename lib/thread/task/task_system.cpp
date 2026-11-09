@@ -674,14 +674,12 @@ bool TaskSystem::TaskLifetime::TryClaimReadyTask(const std::shared_ptr<TaskHandl
     std::lock_guard taskLock{state->Mutex};
 
     if (state->Task.Status != ETaskStatus::READY || state->Task.Finalizing) {
-        state->Condition.notify_all();
         return false;
     }
 
     state->Task.Status = ETaskStatus::RUNNING;
     task = TaskHandle{state->Id, state};
     function.swap(state->Task.Function);
-    state->Condition.notify_all();
     return true;
 }
 
