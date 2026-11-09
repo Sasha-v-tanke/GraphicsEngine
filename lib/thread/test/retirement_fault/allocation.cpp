@@ -446,4 +446,39 @@ TEST(TaskTerminalFault, StopDrainsPendingPayloadsWithoutAllocating) {
     }
 }
 
+TEST(TaskTerminalFault, ConcurrentInvocationFailureAndCancelRetireSharedDescendantsOnce) {
+    const auto failure = std::make_exception_ptr(std::runtime_error("callback failure"));
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        NCommon::TaskSystem pool{workers};
+        for (std::size_t iteration = 0; iteration < 50; ++iteration) {
+            std::binary_semaphore entered{0};
+            std::binary_semaphore resume{0};
+            const auto root = pool.Submit([&](NCommon::TaskContext&) {
+                entered.release();
+                resume.acquire();
+                FailEveryAllocation = true;
+                AllocationBudget = 0;
+                std::rethrow_exception(failure);
+            });
+            entered.acquire();
+            const auto left = pool.Submit([](NCommon::TaskContext&) {}, std::span{&root, 1});
+            const NCommon::TaskHandle parents[]{root, left};
+            const auto joined = pool.Submit([](NCommon::TaskContext&) {}, parents);
+            resume.release();
+            AllocationBudget = 0;
+            FailEveryAllocation = true;
+            pool.Cancel(left);
+            const bool allocated = AllocationBudget != 0;
+            FailEveryAllocation = false;
+            AllocationBudget = -1;
+            pool.WaitIdle();
+            EXPECT_FALSE(allocated);
+            EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::FAILED);
+            EXPECT_EQ(pool.GetStatus(left), NCommon::ETaskStatus::CANCELLED);
+            EXPECT_EQ(pool.GetStatus(joined), NCommon::ETaskStatus::CANCELLED);
+            EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(pool));
+        }
+    }
+}
+
 } // namespace
