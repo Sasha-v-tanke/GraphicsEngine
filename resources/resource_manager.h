@@ -8,6 +8,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <stdexcept>
+#include <stop_token>
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
@@ -57,6 +58,13 @@ public:
     [[nodiscard]] bool IsOperationCurrent(ResourceOperation<T> operation) const {
         std::shared_lock lock{m_mutex};
         return FindOperation(operation) != nullptr;
+    }
+
+    template<typename T>
+    [[nodiscard]] std::stop_token GetCancellationToken(ResourceOperation<T> operation) const {
+        std::shared_lock lock{m_mutex};
+        const Entry* entry = FindOperation(operation);
+        return entry ? entry->Cancellation.get_token() : std::stop_token{};
     }
 
     template<typename T>
@@ -135,7 +143,9 @@ public:
         retired.swap(entry.CpuResource);
         entry.Failure.reset();
         entry.State = EResourceState::UNLOADED;
+        auto cancellation = entry.Cancellation;
         lock.unlock();
+        cancellation.request_stop();
         return operation;
     }
 
@@ -151,7 +161,9 @@ public:
         retired.swap(entry->CpuResource);
         entry->Failure.reset();
         entry->State = EResourceState::UNLOADED;
+        auto cancellation = entry->Cancellation;
         lock.unlock();
+        cancellation.request_stop();
         return true;
     }
 
@@ -178,7 +190,9 @@ public:
         Entry& entry = Validate(handle, std::type_index{typeid(T)});
         RequestUnload(entry);
         retired.swap(entry.CpuResource);
+        auto cancellation = entry.Cancellation;
         lock.unlock();
+        cancellation.request_stop();
     }
 
     template<typename T>
@@ -263,6 +277,7 @@ private:
         std::uint64_t OperationGeneration = 0;
         std::uint64_t CancelledOperationGeneration = 0;
         std::uint64_t PublishedVersion = 0;
+        std::stop_source Cancellation{std::nostopstate};
         std::shared_ptr<const void> CpuResource;
         std::weak_ptr<const void> GpuResource;
         std::optional<NCommon::ErrorInfo> Failure;

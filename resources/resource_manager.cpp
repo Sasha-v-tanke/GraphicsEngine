@@ -101,7 +101,9 @@ std::uint64_t ResourceManager::BeginLoading(Entry& entry) {
                               entry.Identity.GetKey());
     }
 
+    std::stop_source cancellation;
     ++entry.OperationGeneration;
+    entry.Cancellation = std::move(cancellation);
     entry.CancelledOperationGeneration = 0;
     entry.State = EResourceState::LOADING;
     entry.CpuResource.reset();

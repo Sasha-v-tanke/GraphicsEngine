@@ -65,9 +65,7 @@ public:
     // Cancellation is generation-specific and permits immediate retry. Already submitted GPU work is retained.
     template<typename T>
     void Cancel(ResourceHandle<T> handle) {
-        if (const auto operation = m_resources.TryCancelLoading(handle)) {
-            CancelMatching({handle.GetSlotIndex(), handle.GetGeneration(), operation->GetGeneration()});
-        }
+        static_cast<void>(m_resources.TryCancelLoading(handle));
     }
 
     // Host/backend owner tick: submits CPU_READY work and polls GPU completion; never waits.
@@ -76,13 +74,6 @@ public:
     void Shutdown();
 
 private:
-    struct OperationKey {
-        std::size_t SlotIndex = 0;
-        std::uint64_t HandleGeneration = 0;
-        std::uint64_t OperationGeneration = 0;
-        friend bool operator==(const OperationKey&, const OperationKey&) = default;
-    };
-
     template<typename T>
     void EnqueueOperation(ResourceOperation<T> operation,
                           std::filesystem::path path,
@@ -91,7 +82,7 @@ private:
         const auto handle = operation.GetResource();
         try {
             Enqueue(
-                    {handle.GetSlotIndex(), handle.GetGeneration(), operation.GetGeneration()},
+                    m_resources.GetCancellationToken(operation),
                     m_resources.GetIdentity(handle),
                     std::move(path),
                     [this, op = operation] { return m_resources.IsOperationCurrent(op); },
@@ -146,7 +137,7 @@ private:
 
     struct Work;
     struct Impl;
-    void Enqueue(OperationKey key,
+    void Enqueue(std::stop_token cancellation,
                  ResourceIdentity identity,
                  std::filesystem::path path,
                  std::function<bool()> current,
@@ -155,7 +146,6 @@ private:
                  std::function<bool()> start,
                  std::function<std::function<ResourceUpload()>(std::span<const std::byte>, std::stop_token)> decode,
                  std::function<void(std::shared_ptr<const void>)> ready);
-    void CancelMatching(OperationKey key);
     ResourceManager& m_resources;
     std::unique_ptr<Impl> m_impl;
 };

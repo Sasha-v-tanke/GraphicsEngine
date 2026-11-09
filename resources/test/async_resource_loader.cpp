@@ -479,4 +479,62 @@ TEST_F(AsyncResources, DestructorContainsTerminalGpuDrainException) {
     EXPECT_EQ(drains, 1);
 }
 
+TEST_F(AsyncResources, CoalescedLoaderCancellationStopsOwnerIoAndRetryWithOneSlot) {
+    std::atomic_bool entered = false;
+    std::atomic_bool stopped = false;
+    std::atomic_int reads = 0;
+    Gate gate;
+    AsyncResourceLoader owner{Resources,
+                              Tasks,
+                              {.WorkerCount = 1, .MaxPendingReads = 1},
+                              [&](const auto&, const std::stop_token& stop, auto) {
+                                  if (++reads == 1) {
+                                      entered = true;
+                                      gate.Wait(stop);
+                                      stopped = stop.stop_requested();
+                                  }
+                                  return NResources::ResourceIoBytes{std::byte{42}};
+                              }};
+    AsyncResourceLoader other{Resources, Tasks, {}, Reader()};
+    const auto handle = owner.Load<int>({"test", "shared-io"}, "file", Decoder());
+    ASSERT_TRUE(Until([&] { return entered.load(); }));
+    EXPECT_EQ(other.Load<int>({"test", "shared-io"}, "file", Decoder()), handle);
+    other.Cancel(handle);
+    EXPECT_EQ(Resources.GetState(handle), EResourceState::UNLOADED);
+    ASSERT_TRUE(Until([&] { return stopped.load(); }));
+    EXPECT_EQ(Decodes, 0);
+    ASSERT_TRUE(Until([&] {
+        owner.PumpUploads();
+        const auto state = Resources.GetState(handle);
+        if (state == EResourceState::UNLOADED || state == EResourceState::FAILED) {
+            EXPECT_EQ(owner.Load<int>({"test", "shared-io"}, "file", Decoder()), handle);
+        }
+        return Resources.GetState(handle) == EResourceState::READY;
+    }));
+    EXPECT_EQ(reads, 2);
+    EXPECT_EQ(Decodes, 1);
+}
+
+TEST_F(AsyncResources, CoalescedLoaderCancellationStopsOwnerDecode) {
+    DelayDecode = true;
+    AsyncResourceLoader owner{Resources, Tasks, {}, Reader()};
+    AsyncResourceLoader other{Resources, Tasks, {}, Reader()};
+    const auto handle = owner.Load<int>({"test", "shared-decode"}, "file", Decoder());
+    ASSERT_TRUE(Until([&] { return DecodeGate.Entered.load(); }));
+    EXPECT_EQ(other.Load<int>({"test", "shared-decode"}, "file", Decoder()), handle);
+    other.Cancel(handle);
+    // A queued task on the sole worker can progress only after the cooperative decoder has stopped.
+    std::promise<void> progress;
+    const auto task = Tasks.Submit([&](NCommon::TaskContext&) { progress.set_value(); });
+    const auto status = progress.get_future().wait_for(std::chrono::seconds{2});
+    EXPECT_EQ(status, std::future_status::ready);
+    if (status != std::future_status::ready) {
+        owner.Shutdown();
+    }
+    Tasks.Wait(task);
+    owner.PumpUploads();
+    EXPECT_EQ(Resources.GetState(handle), EResourceState::UNLOADED);
+    EXPECT_FALSE(Resources.TryAcquire(handle));
+}
+
 } // namespace

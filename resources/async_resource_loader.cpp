@@ -15,7 +15,7 @@
 namespace NResources {
 
 struct AsyncResourceLoader::Work {
-    OperationKey Key;
+    std::unique_ptr<std::stop_callback<std::function<void()>>> Cancellation;
     ResourceIdentity Identity;
     std::filesystem::path Path;
     std::stop_source Stop;
@@ -33,6 +33,16 @@ struct AsyncResourceLoader::Work {
     std::atomic_bool CallbackDone = false;
     bool Decoded = false;
     bool Finished = false;
+
+    void RequestStop() {
+        Stop.request_stop();
+        ResourceIoRequest request;
+        {
+            std::lock_guard lock{Mutex};
+            request = Io;
+        }
+        request.Cancel();
+    }
 
     void Failure(const std::exception& error) const {
         Fail({.Code = NCommon::EError::IO_ERROR,
@@ -122,7 +132,7 @@ ResourceHandle<ShaderArtifact> AsyncResourceLoader::LoadShaderArtifact(ResourceI
 }
 
 void AsyncResourceLoader::Enqueue(
-        OperationKey key,
+        std::stop_token cancellation,
         ResourceIdentity identity,
         std::filesystem::path path,
         std::function<bool()> current,
@@ -132,7 +142,6 @@ void AsyncResourceLoader::Enqueue(
         std::function<std::function<ResourceUpload()>(std::span<const std::byte>, std::stop_token)> decode,
         std::function<void(std::shared_ptr<const void>)> ready) {
     auto work = std::make_shared<Work>();
-    work->Key = key;
     work->Identity = std::move(identity);
     work->Path = std::move(path);
     work->Current = std::move(current);
@@ -141,6 +150,15 @@ void AsyncResourceLoader::Enqueue(
     work->Start = std::move(start);
     work->Decode = std::move(decode);
     work->Ready = std::move(ready);
+    // Manager cancellation is shared across every loader that coalesced this operation.
+    // Registration after a concurrent request_stop invokes the callback immediately.
+    work->Cancellation =
+            std::make_unique<std::stop_callback<std::function<void()>>>(std::move(cancellation),
+                                                                        [weak = std::weak_ptr<Work>{work}] {
+                                                                            if (auto item = weak.lock()) {
+                                                                                item->RequestStop();
+                                                                            }
+                                                                        });
     // Keep admission and Read registration atomic with respect to Shutdown.
     std::unique_lock admission{m_impl->Mutex};
     if (m_impl->Stopping || m_impl->WorkItems.size() >= m_impl->Limit) {
@@ -151,6 +169,13 @@ void AsyncResourceLoader::Enqueue(
     }
     m_impl->WorkItems.push_back(work);
     try {
+        // Bind I/O under the same work lock used by cancellation. A stop before binding skips the read;
+        // a concurrent stop waits until its request is available and cancels that exact request.
+        std::lock_guard binding{work->Mutex};
+        if (work->Stop.stop_requested()) {
+            work->CallbackDone = true;
+            return;
+        }
         auto request = m_impl->Io.Read(work->Path, [this, work](const auto& result) {
             struct CompletionGuard {
                 Work& Item;
@@ -194,36 +219,10 @@ void AsyncResourceLoader::Enqueue(
                 work->Failure(error);
             }
         });
-        std::lock_guard lock{work->Mutex};
         work->Io = std::move(request);
     } catch (...) {
         m_impl->WorkItems.pop_back();
         throw;
-    }
-}
-
-void AsyncResourceLoader::CancelMatching(OperationKey key) {
-    std::vector<std::shared_ptr<Work>> items;
-    {
-        std::lock_guard lock{m_impl->Mutex};
-        items = m_impl->WorkItems;
-    }
-    for (const auto& work: items) {
-        if (work->Key == key) {
-            work->Cancel();
-            work->Stop.request_stop();
-            ResourceIoRequest request;
-            NCommon::TaskHandle task;
-            {
-                std::lock_guard lock{work->Mutex};
-                request = work->Io;
-                task = work->Task;
-            }
-            request.Cancel();
-            if (task.IsValid()) {
-                m_impl->CancelQueued(task);
-            }
-        }
     }
 }
 
