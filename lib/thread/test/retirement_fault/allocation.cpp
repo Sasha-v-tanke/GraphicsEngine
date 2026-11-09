@@ -1,9 +1,14 @@
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <new>
 #include <semaphore>
+#include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <lib/thread/task/task_system.h>
@@ -11,6 +16,7 @@
 namespace {
 
 thread_local std::ptrdiff_t AllocationBudget = -1;
+thread_local bool FailEveryAllocation = false;
 
 } // namespace
 
@@ -19,7 +25,9 @@ thread_local std::ptrdiff_t AllocationBudget = -1;
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
 void* operator new(std::size_t size) {
     if (AllocationBudget == 0) {
-        AllocationBudget = -1;
+        if (!FailEveryAllocation) {
+            AllocationBudget = -1;
+        }
         throw std::bad_alloc{};
     }
     if (AllocationBudget > 0) {
@@ -64,6 +72,27 @@ void operator delete(void* memory, const std::nothrow_t&) noexcept {
     ::operator delete(memory);
 }
 #endif
+
+namespace NCommon {
+
+// Test-only access to the private Q-pop/S-claim boundary, without a production callback hook.
+struct TaskSystemTestAccess {
+    static auto Pop(TaskSystem& pool) {
+        return pool.m_readyScheduler.TryPopReadyTask(WorkerIndex{0});
+    }
+    static bool Claim(const auto& state) {
+        TaskHandle handle;
+        TaskSystem::TaskFunction function;
+        return TaskSystem::TaskLifetime::TryClaimReadyTask(state, handle, function);
+    }
+    static bool IsDrained(TaskSystem& pool) {
+        std::lock_guard lock{pool.m_mutex};
+        return pool.m_registry.ActiveTasks.empty() && pool.m_lifetime.OutstandingTasks.load() == 0 &&
+               pool.m_readyScheduler.ReadyTaskCount.load() == 0;
+    }
+};
+
+} // namespace NCommon
 
 namespace {
 
@@ -242,6 +271,116 @@ TEST(TaskDagFault, CancellationDetachesSharedEdgesWithoutAllocating) {
     EXPECT_EQ(pool.GetStatus(unaffected), NCommon::ETaskStatus::READY);
     resume.release();
     pool.WaitIdle();
+}
+
+TEST(TaskTerminalFault, SuccessFanOutAndReadyPublicationCannotAllocate) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        std::binary_semaphore entered{0};
+        std::binary_semaphore resume{0};
+        NCommon::TaskSystem pool{workers};
+        const auto root = pool.Submit([&](NCommon::TaskContext&) {
+            entered.release();
+            resume.acquire();
+            FailEveryAllocation = true;
+            AllocationBudget = 0;
+        });
+        entered.acquire();
+        std::atomic_size_t invoked = 0;
+        std::vector<NCommon::TaskHandle> children;
+        children.reserve(128);
+        for (std::size_t index = 0; index < 128; ++index) {
+            children.push_back(pool.Submit(
+                    [&](NCommon::TaskContext&) {
+                        FailEveryAllocation = true;
+                        AllocationBudget = 0;
+                        invoked.fetch_add(1);
+                    },
+                    std::span{&root, 1}));
+        }
+        const auto joined = pool.Submit([](NCommon::TaskContext&) {}, children);
+        resume.release();
+        pool.Wait(joined);
+        pool.WaitIdle();
+        EXPECT_EQ(invoked.load(), 128U);
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::COMPLETED);
+        EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(pool));
+        // Reuse workers that may still reject every allocation on their own thread.
+        const auto reused = pool.Submit([](NCommon::TaskContext&) {});
+        pool.Wait(reused);
+    }
+}
+
+TEST(TaskTerminalFault, ErrorInfoAllocationFailureStillPublishesOneFailure) {
+    const auto failure = std::make_exception_ptr(std::runtime_error(std::string(1024, 'x')));
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        std::binary_semaphore entered{0};
+        std::binary_semaphore resume{0};
+        NCommon::TaskSystem pool{workers};
+        const auto root = pool.Submit([&](NCommon::TaskContext&) {
+            entered.release();
+            resume.acquire();
+            FailEveryAllocation = true;
+            AllocationBudget = 0;
+            std::rethrow_exception(failure);
+        });
+        entered.acquire();
+        const auto dependent = pool.Submit([](NCommon::TaskContext&) {}, std::span{&root, 1});
+        resume.release();
+        pool.WaitIdle();
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::FAILED);
+        ASSERT_TRUE(pool.GetError(root).has_value());
+        EXPECT_EQ(pool.GetError(root)->Code, NCommon::make_error_code(NCommon::EError::OUT_OF_MEMORY));
+        EXPECT_TRUE(pool.GetError(root)->Message.empty());
+        EXPECT_EQ(pool.GetStatus(dependent), NCommon::ETaskStatus::CANCELLED);
+        EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(pool));
+    }
+}
+
+TEST(TaskTerminalFault, PoppedLeaseSurvivesCancelRetirementAndPoolDestruction) {
+    std::binary_semaphore entered{0};
+    std::binary_semaphore resume{0};
+    auto pool = std::make_unique<NCommon::TaskSystem>(1);
+    pool->Submit([&](NCommon::TaskContext&) {
+        entered.release();
+        resume.acquire();
+    });
+    entered.acquire();
+    auto task = pool->Submit([](NCommon::TaskContext&) {});
+    auto popped = NCommon::TaskSystemTestAccess::Pop(*pool);
+    ASSERT_NE(popped, nullptr);
+    pool->Cancel(task);
+    task = {};
+    resume.release();
+    pool->WaitIdle();
+    EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(*pool));
+    pool.reset();
+    EXPECT_FALSE(NCommon::TaskSystemTestAccess::Claim(popped));
+}
+
+TEST(TaskTerminalFault, ThousandsOfCancelledReadyTasksLeaveNoMembershipOrWakeCredits) {
+    std::binary_semaphore entered{0};
+    std::binary_semaphore resume{0};
+    NCommon::TaskSystem pool{1};
+    pool.Submit([&](NCommon::TaskContext&) {
+        entered.release();
+        resume.acquire();
+    });
+    entered.acquire();
+    for (std::size_t index = 0; index < 4096; ++index) {
+        const auto task = pool.Submit([](NCommon::TaskContext&) {});
+        AllocationBudget = 0;
+        FailEveryAllocation = true;
+        pool.Cancel(task);
+        const bool allocated = AllocationBudget != 0;
+        FailEveryAllocation = false;
+        AllocationBudget = -1;
+        EXPECT_FALSE(allocated);
+    }
+    const auto fresh = pool.Submit([](NCommon::TaskContext&) {});
+    resume.release();
+    pool.Wait(fresh);
+    pool.WaitIdle();
+    EXPECT_TRUE(NCommon::TaskSystemTestAccess::IsDrained(pool));
 }
 
 } // namespace
