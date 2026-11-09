@@ -174,7 +174,7 @@ struct Run: std::enable_shared_from_this<Run<Result>> {
             }
         }
     }
-    double GetTarget() const {
+    [[nodiscard]] double GetTarget() const {
         const double rate = std::max(1.0, LiveRate.load());
         const double overhead = History ? History->SchedulingNanoseconds.load() : 0;
         return std::max(
