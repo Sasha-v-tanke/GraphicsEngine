@@ -7,6 +7,7 @@
 #include <semaphore>
 #include <utility>
 
+#include <ecs/internal/adaptive_traversal.h>
 #include <ecs/internal/scoped_batch.h>
 #include <ecs/internal/system_run.h>
 #include <ecs/world.h>
@@ -218,5 +219,73 @@ TEST(EcsRunFault, ScopedPublicationFailureRetiresReservationsAndLeases) {
     }
     EXPECT_GT(failures, 0);
     EXPECT_GT(successes, 0);
+}
+
+TEST(EcsRunFault, TraversalAdmissionFailuresReleaseTopologyAndCloseGroups) {
+    int failures = 0;
+    int successes = 0;
+    NCommon::TaskSystem tasks{1};
+    NEcs::NInternal::AdaptiveBatchPlanner planner{tasks};
+    for (std::ptrdiff_t budget = 0; budget < 160; ++budget) {
+        NEcs::World world;
+        const auto root = world.GetEntityReference(world.CreateEntity());
+        const std::vector roots{root};
+        NEcs::NInternal::TraversalOperation<int> operation{
+                .Visit = [](auto) { return 7; },
+                .Output = std::make_shared<NEcs::NInternal::TraversalOutput<int>>(),
+        };
+        std::optional<NCommon::TaskGroupHandle> group;
+        AllocationBudget = budget;
+        try {
+            group = planner.ScheduleTraversal(world.AcquireTopologySnapshot(),
+                                              roots,
+                                              NEcs::NInternal::ETraversalMode::TOP_DOWN,
+                                              std::move(operation));
+            AllocationBudget = -1;
+            ++successes;
+        } catch (const std::bad_alloc&) {
+            AllocationBudget = -1;
+            ++failures;
+        }
+        if (group) {
+            tasks.WaitGroup(*group);
+        }
+        tasks.WaitIdle();
+        EXPECT_NO_THROW(world.DestroyEntity(root.Identity));
+    }
+    EXPECT_GT(failures, 0);
+    EXPECT_GT(successes, 0);
+}
+
+TEST(EcsRunFault, TraversalDynamicSpawnFailureDoesNotPublishResultsOrLeakLease) {
+    NCommon::TaskSystem tasks{2};
+    NEcs::NInternal::AdaptiveBatchPlanner planner{tasks};
+    NEcs::World world;
+    const auto root = world.GetEntityReference(world.CreateEntity());
+    for (int index = 0; index < 8; ++index) {
+        world.DeferReparent(world.GetEntityReference(world.CreateEntity()), root);
+    }
+    world.ApplyDeferredStructuralChanges();
+    NEcs::NInternal::TraversalOperation<int> operation{
+            .Visit =
+                    [root](auto input) {
+                        if (input.Entity == root) {
+                            AllocationBudget = 0;
+                        }
+                        return 7;
+                    },
+            .Output = std::make_shared<NEcs::NInternal::TraversalOutput<int>>(),
+    };
+    const auto output = operation.Output;
+    const auto group =
+            planner.ScheduleTraversal(world.AcquireTopologySnapshot(),
+                                      std::vector{root},
+                                      NEcs::NInternal::ETraversalMode::TOP_DOWN,
+                                      std::move(operation),
+                                      NEcs::NInternal::BatchPolicy{.MinimumPacketTime = std::chrono::nanoseconds{0}});
+    tasks.WaitGroup(group);
+    EXPECT_EQ(tasks.GetGroupStatus(group), NCommon::ETaskGroupStatus::FAILED);
+    EXPECT_FALSE(output->TryAcquire(tasks));
+    EXPECT_NO_THROW(world.CreateEntity());
 }
 } // namespace

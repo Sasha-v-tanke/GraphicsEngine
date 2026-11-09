@@ -24,6 +24,7 @@ enum class EReparentMode {
 namespace NInternal {
 struct TopologyState;
 struct TopologyLease;
+class TraversalTopologyAccess;
 } // namespace NInternal
 
 class World;
@@ -73,6 +74,7 @@ public:
 
 private:
     friend class World;
+    friend class NInternal::TraversalTopologyAccess;
     explicit TopologySnapshot(std::shared_ptr<const NInternal::TopologyLease> lease);
     std::shared_ptr<const NInternal::TopologyLease> m_lease;
 };
