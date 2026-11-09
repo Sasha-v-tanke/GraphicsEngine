@@ -41,6 +41,7 @@ extern char** environ;
 #include <graphics/vulkan/upload_manager.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <resources/async_resource_loader.h>
 #include <resources/resource_manager.h>
 #include <tests/common/test_error.h>
 #include <window/window.h>
@@ -1052,6 +1053,99 @@ TEST(VulkanUploadManagerChild, DISABLED_RetainsStagingUntilTimelineCompletion) {
 
         throw;
     }
+}
+
+TEST(VulkanAsyncResourcesChild, DISABLED_DecodesAndUploadsMeshBeforeReady) {
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{MakeWindowConfig()};
+        std::vector<std::string> errors;
+        NVulkan::VulkanInstanceConfig config;
+        config.RequiredExtensions = NVulkan::NGlfw::GetRequiredInstanceExtensions();
+        config.ValidationMode = NVulkan::EValidationMode::Required;
+        config.EnableDebugUtils = true;
+        config.DebugMessageHandler = [&](const auto& message) {
+            if ((message.Severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                errors.push_back(message.Message);
+            }
+        };
+        NVulkan::VulkanInstance instance{config};
+        const NVulkan::NGlfw::VulkanSurface surface{instance, window};
+        const auto physical = NVulkan::SelectVulkanPhysicalDevice(instance, surface.GetHandle());
+        const NVulkan::VulkanDevice device{physical};
+        NVulkan::VulkanResourceStateTracker states;
+        NVulkan::VulkanMemoryAllocator memory{instance.GetHandle(), physical.Handle, device, states};
+        NVulkan::VulkanSubmissionManager submissions{device};
+        NVulkan::VulkanUploadManager uploads{device, memory, submissions, states};
+        NResources::ResourceManager resources;
+        NCommon::TaskSystem tasks{1};
+        const std::string obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        NResources::AsyncResourceLoader loader{resources, tasks, {}, [&](const auto&, const auto&, auto) {
+                                                   auto bytes = std::as_bytes(std::span{obj});
+                                                   return NResources::ResourceIoBytes{bytes.begin(), bytes.end()};
+                                               }};
+        UploadProbe probe;
+        UploadProbe::CompletionLimit = 0;
+        // The backend retains native allocations on its owner thread; generic leases may release anywhere.
+        std::shared_ptr<NVulkan::VulkanBufferAllocation> destination;
+        NVulkan::VulkanQueueCompletion completion;
+        const auto owner = std::this_thread::get_id();
+        const auto handle = loader.LoadMesh({"mesh", "async-triangle"}, "triangle.obj", [&](const auto& mesh) {
+            EXPECT_EQ(std::this_thread::get_id(), owner);
+            const auto bytes = std::as_bytes(std::span{mesh->GetVertices()});
+            destination = std::make_shared<NVulkan::VulkanBufferAllocation>(NVulkan::CreateVulkanBuffer(
+                    memory,
+                    {
+                            .SizeBytes = bytes.size(),
+                            .Usage = NGraphics::EBufferUsage::TransferDestination | NGraphics::EBufferUsage::Vertex,
+                            .Access = NGraphics::BufferAccess(NGraphics::EBufferAccess::CpuRead),
+                    }));
+            completion = uploads.UploadBuffer(*destination, bytes);
+            return NResources::ResourceUpload{destination,
+                                              [&, token = completion] { return submissions.IsCompleted(token); },
+                                              [&, token = completion] { submissions.Wait(token, 5'000'000'000); }};
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (resources.GetState(handle) != NResources::EResourceState::UPLOADING &&
+               std::chrono::steady_clock::now() < deadline) {
+            loader.PumpUploads();
+            std::this_thread::yield();
+        }
+        ASSERT_EQ(resources.GetState(handle), NResources::EResourceState::UPLOADING);
+        EXPECT_FALSE(resources.TryAcquire(handle));
+        EXPECT_EQ(UploadProbe::SubmitCalls, 1U);
+        submissions.Wait(completion, 5'000'000'000);
+        loader.PumpUploads();
+        EXPECT_FALSE(resources.TryAcquire(handle));
+        UploadProbe::CompletionLimit = completion.Value;
+        loader.PumpUploads();
+        auto lease = resources.TryAcquire(handle);
+        ASSERT_TRUE(lease);
+        EXPECT_EQ(lease->GetGpuRepresentation().get(), destination.get());
+        const auto expected = std::as_bytes(std::span{(*lease)->GetVertices()});
+        void* mapped = destination->Map();
+        destination->Invalidate(0, expected.size());
+        EXPECT_EQ(std::memcmp(mapped, expected.data(), expected.size()), 0);
+        destination->Unmap();
+        resources.RequestUnload(handle);
+        resources.CompleteUnload(handle);
+        EXPECT_EQ((*lease)->GetVertices().size(), 3U);
+        loader.Shutdown();
+        uploads.ReleaseCompleted();
+        lease.reset();
+        destination.reset();
+        EXPECT_EQ(UploadProbe::IdleCalls, 0U);
+        EXPECT_TRUE(errors.empty()) << (errors.empty() ? "" : errors.front());
+    } catch (const NCommon::Exception& error) {
+        if (IsEnvironmentFailure(error)) {
+            GTEST_SKIP() << error.GetMessage();
+        }
+        throw;
+    }
+}
+
+TEST(VulkanAsyncResources, DecodesAndUploadsMeshBeforeReady) {
+    RunSpawnedSmoke("VulkanAsyncResourcesChild.DISABLED_DecodesAndUploadsMeshBeforeReady");
 }
 
 TEST(VulkanUploadManager, RetainsStagingUntilTimelineCompletion) {

@@ -8,6 +8,9 @@ enum class EResourceState {
     READY,
     FAILED,
     UNLOADING,
+    QUEUED,
+    CPU_READY,
+    UPLOADING,
 };
 
 } // namespace NResources

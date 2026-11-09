@@ -236,6 +236,7 @@ set(
     "GraphicsEngine/math/quaternion.h"
     "GraphicsEngine/math/transform.h"
     "GraphicsEngine/math/vector.h"
+    "GraphicsEngine/resources/async_resource_loader.h"
     "GraphicsEngine/resources/image_data.h"
     "GraphicsEngine/resources/image_loader.h"
     "GraphicsEngine/resources/mesh_data.h"
