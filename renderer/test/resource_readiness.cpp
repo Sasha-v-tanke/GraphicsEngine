@@ -247,6 +247,41 @@ TEST_P(ResourceReadiness, FailedRetryAndUnloadPreserveSnapshotDiagnosticsAndLeas
     EXPECT_EQ(ready->GetObjects()[0].Mesh->GetVertices().size(), 3U);
 }
 
+TEST_P(ResourceReadiness, MaterialFailureHasOwnContextAndRetryOnlyAffectsFutureFrame) {
+    NCommon::TaskSystem tasks{GetParam()};
+    const auto mesh = Resources.Request<MeshData>({"mesh", "ready"});
+    Resources.PublishReady(Resources.BeginLoading(mesh), NResources::DecodeMesh(Bytes()));
+    World.GetComponent<NRenderer::RenderableComponent>(Object).Mesh = mesh;
+    Resources.RequestUnload(Material);
+    Resources.CompleteUnload(Material);
+    Resources.Fail(Resources.BeginLoading(Material),
+                   {.Code = NCommon::EError::IO_ERROR, .Message = "/assets/material.json: parse failed"});
+    const auto first = Begin();
+    const auto* unavailable = Extract(first, tasks);
+    ASSERT_NE(unavailable, nullptr);
+    ASSERT_EQ(unavailable->GetResourceDiagnostics().size(), 1U);
+    const auto& diagnostic = unavailable->GetResourceDiagnostics()[0];
+    EXPECT_EQ(diagnostic.Role, ERenderResourceRole::MATERIAL);
+    EXPECT_EQ(diagnostic.ResourceSlot, Material.GetSlotIndex());
+    EXPECT_EQ(diagnostic.ResourceGeneration, Material.GetGeneration());
+    ASSERT_TRUE(diagnostic.Source.Identity);
+    EXPECT_EQ(diagnostic.Source.Identity->GetResourceClass(), "material");
+    ASSERT_TRUE(diagnostic.Source.Failure);
+    EXPECT_EQ(diagnostic.Source.Failure->Message, "/assets/material.json: parse failed");
+    EXPECT_TRUE(unavailable->GetObjects().empty());
+    EXPECT_TRUE(unavailable->GetResourceUseRecords().empty());
+    Resources.PublishReady(Resources.BeginLoading(Material),
+                           std::make_shared<NGraphics::Material>(NResources::ResourceIdentity{"pipeline", "retry"}));
+    const auto second = Begin();
+    const auto* ready = Extract(second, tasks);
+    ASSERT_NE(ready, nullptr);
+    ASSERT_EQ(ready->GetObjects().size(), 1U);
+    EXPECT_EQ(ready->GetObjects()[0].Material.GetVersion(), 2U);
+    EXPECT_EQ(CommandCount(*unavailable, first), 0U);
+    EXPECT_EQ(CommandCount(*ready, second), 1U);
+    EXPECT_EQ(diagnostic.Source.State, EResourceState::FAILED);
+}
+
 TEST_P(ResourceReadiness, ParallelDecisionIsLatchedBeforeChunkExecution) {
     NCommon::TaskSystem tasks{GetParam()};
     const auto mesh = Resources.Request<MeshData>({"mesh", "late-ready"});
