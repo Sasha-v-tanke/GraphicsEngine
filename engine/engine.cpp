@@ -122,6 +122,7 @@ public:
         try {
             m_stateManager.ValidateNextGeneration();
             m_runLifetime = std::make_shared<bool>(true);
+            m_phaseStop = std::make_shared<std::atomic_bool>(false);
             m_taskSystem = std::make_unique<NCommon::TaskSystem>(m_config.WorkerCount);
             m_frameScheduler = std::make_unique<NController::FrameScheduler>(m_config);
             m_frameRecords = std::make_unique<FrameRuntimeRecord[]>(m_frameScheduler->GetMaxActiveFrames());
@@ -373,6 +374,9 @@ public:
 
 private:
     void EnterStoppingLocked() noexcept {
+        if (m_phaseStop) {
+            m_phaseStop->store(true);
+        }
         if (m_userJobs) {
             m_userJobs->CloseAdmission();
         }
@@ -393,6 +397,7 @@ private:
         bool HasUpdateTask = false;
         bool HasDrawTask = false;
         bool DrawRequested = false;
+        bool PhaseSkipped = false;
         bool UpdateSucceeded = false;
         std::shared_ptr<NRuntime::UpdateCompletion> Completion;
         NCommon::TaskSystem* Executor = nullptr;
@@ -532,7 +537,7 @@ private:
                    const std::shared_ptr<NRuntime::UpdateCompletion>& completion) {
         try {
             m_frameScheduler->BeginUpdate(frame);
-            const NRuntime::FrameContext context{frame, m_frameScheduler->GetFrameStorage(frame)};
+            const NRuntime::FrameContext context{frame, m_frameScheduler->GetFrameStorage(frame), m_phaseStop};
             m_frameRuntime->ScheduleUpdate(context, tasks, completion);
         } catch (...) {
             completion->Finish({.Status = NRuntime::EUpdateStatus::FAILED, .Error = std::current_exception()});
@@ -589,9 +594,52 @@ private:
                 frameRuntime = m_frameRuntime.get();
             }
 
+            if (frameRuntime->HasPostUpdate()) {
+                {
+                    std::lock_guard lock{m_mutex};
+                    if (m_stateManager.GetState() != EEngineState::RUNNING) {
+                        GetFrameRecordLocked(frame).PhaseSkipped = true;
+                        return;
+                    }
+                }
+                const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame), m_phaseStop};
+                const auto postUpdate = frameRuntime->SchedulePostUpdate(context, task);
+                if (postUpdate.IsValid()) {
+                    const NCommon::TaskHandle dependencies[] = {postUpdate};
+                    const auto finish =
+                            task.Spawn([this, frame](NCommon::TaskContext& next) { RunExtraction(frame, next); },
+                                       dependencies);
+                    std::lock_guard lock{m_mutex};
+                    GetFrameRecordLocked(frame).AsyncTask = postUpdate;
+                    GetFrameRecordLocked(frame).DrawTask = finish;
+                    return;
+                }
+            }
+            RunExtraction(frame, task);
+        } catch (...) {
+            LatchRuntimeFailure(frame, std::current_exception());
+            throw;
+        }
+    }
+
+    void RunExtraction(NController::FrameHandle frame, NCommon::TaskContext& task) {
+        try {
+            NController::FrameScheduler* frameScheduler = m_frameScheduler.get();
+            NRuntime::IFrameRuntime* frameRuntime = m_frameRuntime.get();
+            if (frameRuntime->HasPostUpdate()) {
+                {
+                    std::lock_guard lock{m_mutex};
+                    if (m_stateManager.GetState() != EEngineState::RUNNING) {
+                        GetFrameRecordLocked(frame).PhaseSkipped = true;
+                        return;
+                    }
+                }
+                const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame), m_phaseStop};
+                frameRuntime->FinalizePostUpdate(context);
+            }
             frameScheduler->BeginFinalize(frame);
 
-            const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame)};
+            const NRuntime::FrameContext context{frame, frameScheduler->GetFrameStorage(frame), m_phaseStop};
             const auto extraction = frameRuntime->ScheduleExtract(context, task);
             if (extraction.IsValid()) {
                 const NCommon::TaskHandle dependencies[] = {extraction};
@@ -723,6 +771,11 @@ private:
                 continue;
             }
 
+            if (record.PhaseSkipped) {
+                m_frameScheduler->AbortFrame(record.Frame);
+                record = {};
+                continue;
+            }
             bool failed = status != NCommon::ETaskStatus::COMPLETED;
             if (failed) {
                 if (!m_lastError.has_value()) {
@@ -804,6 +857,7 @@ private:
     const EngineConfig m_config;
     std::function<void()> m_wakeup;
     std::shared_ptr<bool> m_runLifetime;
+    std::shared_ptr<std::atomic_bool> m_phaseStop;
     std::unique_ptr<NRuntime::IFrameRuntime> m_frameRuntime;
 
     std::unique_ptr<NRuntime::UserJobScope> m_userJobs;
