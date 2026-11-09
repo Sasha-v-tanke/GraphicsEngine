@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <iterator>
 #include <memory>
 #include <memory_resource>
 #include <new>
@@ -10,8 +11,10 @@
 #include <utility>
 #include <vector>
 
+#include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
+#include <GraphicsEngine/resources/mesh_data.h>
 
 namespace NRenderer::NInternal {
 
@@ -24,6 +27,75 @@ namespace {
     };
 }
 
+struct CapturedResources {
+    NResources::ResourceHandle<NResources::MeshData> MeshHandle;
+    NResources::ResourceHandle<NGraphics::Material> MaterialHandle;
+    EResourceReadinessPolicy Policy = EResourceReadinessPolicy::SKIP_OBJECT;
+    NResources::ResourceObservation<NResources::MeshData> Mesh;
+    NResources::ResourceObservation<NGraphics::Material> Material;
+};
+
+CapturedResources CaptureResources(const NResources::ResourceManager& resources, const RenderableComponent& input) {
+    return {input.Mesh,
+            input.Material,
+            input.ReadinessPolicy,
+            resources.Observe(input.Mesh),
+            resources.Observe(input.Material)};
+}
+
+template<typename T>
+void ValidateReference(RenderObjectId object,
+                       const char* role,
+                       NResources::ResourceHandle<T> handle,
+                       const NResources::ResourceStatus& status) {
+    using NResources::EResourceReferenceStatus;
+    if (status.Reference == EResourceReferenceStatus::VALID || status.Reference == EResourceReferenceStatus::EMPTY) {
+        return;
+    }
+    const auto error = status.Reference == EResourceReferenceStatus::STALE ? NCommon::EError::INVALID_STATE
+                                                                           : NCommon::EError::INVALID_ARGUMENT;
+    GRAPHICS_ENGINE_THROW(error,
+                          "Render object {}:{} has invalid {} resource reference (status {}, slot {}, generation {})",
+                          object.Index,
+                          object.Generation,
+                          role,
+                          static_cast<int>(status.Reference),
+                          handle.GetSlotIndex(),
+                          handle.GetGeneration());
+}
+
+template<typename ObjectContainer, typename DiagnosticContainer>
+void AppendObject(RenderObjectId id,
+                  const NMath::Transform& transform,
+                  CapturedResources& captured,
+                  ObjectContainer& objects,
+                  DiagnosticContainer& diagnostics) {
+    if (captured.Policy != EResourceReadinessPolicy::SKIP_OBJECT) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unsupported resource readiness policy");
+    }
+    ValidateReference(id, "mesh", captured.MeshHandle, captured.Mesh.Status);
+    ValidateReference(id, "material", captured.MaterialHandle, captured.Material.Status);
+    if (!captured.Mesh.Lease) {
+        diagnostics.push_back({id,
+                               ERenderResourceRole::MESH,
+                               captured.Policy,
+                               captured.MeshHandle.GetSlotIndex(),
+                               captured.MeshHandle.GetGeneration(),
+                               std::move(captured.Mesh.Status)});
+    }
+    if (!captured.Material.Lease) {
+        diagnostics.push_back({id,
+                               ERenderResourceRole::MATERIAL,
+                               captured.Policy,
+                               captured.MaterialHandle.GetSlotIndex(),
+                               captured.MaterialHandle.GetGeneration(),
+                               std::move(captured.Material.Status)});
+    }
+    if (captured.Mesh.Lease && captured.Material.Lease) {
+        objects.push_back({id, transform, std::move(*captured.Mesh.Lease), std::move(*captured.Material.Lease)});
+    }
+}
+
 } // namespace
 
 class RenderWorldBuilder final {
@@ -33,7 +105,8 @@ public:
           RenderFrameIdentity frame,
           const std::pmr::vector<RenderView>& views,
           const std::pmr::vector<RenderObject>& objects,
-          const std::pmr::vector<NCommon::ResourceUseRecord>& resourceUseRecords) {
+          const std::pmr::vector<NCommon::ResourceUseRecord>& resourceUseRecords,
+          const std::pmr::vector<ResourceReadinessDiagnostic>& diagnostics) {
         void* storage = memory.allocate(sizeof(RenderWorld), alignof(RenderWorld));
 
         return *::new (storage) RenderWorld{frame,
@@ -42,7 +115,8 @@ public:
                                             objects.data(),
                                             objects.size(),
                                             resourceUseRecords.data(),
-                                            resourceUseRecords.size()};
+                                            resourceUseRecords.size(),
+                                            diagnostics};
     }
 };
 
@@ -67,6 +141,7 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
     auto& views = storage.Emplace<std::pmr::vector<RenderView>>(&memory);
     auto& objects = storage.Emplace<std::pmr::vector<RenderObject>>(&memory);
     auto& resourceUseRecords = storage.Emplace<std::pmr::vector<NCommon::ResourceUseRecord>>(&memory);
+    auto& diagnostics = storage.Emplace<std::pmr::vector<ResourceReadinessDiagnostic>>(&memory);
 
     views.reserve(viewCount);
     objects.reserve(objectCount);
@@ -83,19 +158,12 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
 
     world.Query<TransformComponent, RenderableComponent>(
             [&](NEcs::Entity entity, const TransformComponent& transform, const RenderableComponent& renderable) {
-                auto mesh = resources.TryAcquire(renderable.Mesh);
-                auto material = resources.TryAcquire(renderable.Material);
-
-                if (!mesh.has_value() || !material.has_value()) {
+                auto captured = CaptureResources(resources, renderable);
+                const auto previous = objects.size();
+                AppendObject(MakeRenderObjectId(entity), transform.Value, captured, objects, diagnostics);
+                if (objects.size() == previous) {
                     return;
                 }
-
-                objects.push_back(RenderObject{
-                        .Id = MakeRenderObjectId(entity),
-                        .WorldTransform = transform.Value,
-                        .Mesh = std::move(*mesh),
-                        .Material = std::move(*material),
-                });
 
                 const RenderObject& object = objects.back();
                 resourceUseRecords.push_back(object.Mesh.GetUseRecord());
@@ -113,7 +181,8 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
                                      },
                                      views,
                                      objects,
-                                     resourceUseRecords);
+                                     resourceUseRecords,
+                                     diagnostics);
 }
 
 NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
@@ -137,11 +206,12 @@ NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
     struct ObjectInput {
         NEcs::Entity Entity;
         const TransformComponent* Transform;
-        const RenderableComponent* Renderable;
+        CapturedResources Resources;
     };
     struct Chunk {
         std::vector<RenderView> Views;
         std::vector<RenderObject> Objects;
+        std::vector<ResourceReadinessDiagnostic> Diagnostics;
         std::exception_ptr Error;
     };
     struct Extraction {
@@ -157,7 +227,8 @@ NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
             });
     world.Query<TransformComponent, RenderableComponent>(
             [&](NEcs::Entity entity, const TransformComponent& transform, const RenderableComponent& renderable) {
-                extraction->Objects.push_back({entity, &transform, &renderable});
+                // Latch readiness/versions before scheduling; chunks never resample Resources.
+                extraction->Objects.push_back({entity, &transform, CaptureResources(resources, renderable)});
             });
 
     const std::size_t count = std::max(extraction->Views.size(), extraction->Objects.size());
@@ -172,7 +243,7 @@ NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
 
     for (std::size_t index = 0; index < chunkCount; ++index) {
         dependencies.push_back(task.Spawn(
-                [extraction, &resources, index, chunkSize, count](NCommon::TaskContext&) {
+                [extraction, index, chunkSize, count](NCommon::TaskContext&) {
                     Chunk& chunk = extraction->Chunks[index];
                     try {
                         const std::size_t begin = index * chunkSize;
@@ -185,15 +256,12 @@ NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
                                                        input.Camera->Projection});
                             }
                             if (item < extraction->Objects.size()) {
-                                const ObjectInput& input = extraction->Objects[item];
-                                auto mesh = resources.TryAcquire(input.Renderable->Mesh);
-                                auto material = resources.TryAcquire(input.Renderable->Material);
-                                if (mesh.has_value() && material.has_value()) {
-                                    chunk.Objects.push_back({MakeRenderObjectId(input.Entity),
-                                                             input.Transform->Value,
-                                                             std::move(*mesh),
-                                                             std::move(*material)});
-                                }
+                                ObjectInput& input = extraction->Objects[item];
+                                AppendObject(MakeRenderObjectId(input.Entity),
+                                             input.Transform->Value,
+                                             input.Resources,
+                                             chunk.Objects,
+                                             chunk.Diagnostics);
                             }
                         }
                     } catch (...) {
@@ -215,10 +283,14 @@ NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
                 auto& views = storage.Emplace<std::pmr::vector<RenderView>>(&memory);
                 auto& objects = storage.Emplace<std::pmr::vector<RenderObject>>(&memory);
                 auto& records = storage.Emplace<std::pmr::vector<NCommon::ResourceUseRecord>>(&memory);
+                auto& diagnostics = storage.Emplace<std::pmr::vector<ResourceReadinessDiagnostic>>(&memory);
                 views.reserve(extraction->Views.size());
                 objects.reserve(extraction->Objects.size());
                 for (Chunk& chunk: extraction->Chunks) {
                     views.insert(views.end(), chunk.Views.begin(), chunk.Views.end());
+                    diagnostics.insert(diagnostics.end(),
+                                       std::make_move_iterator(chunk.Diagnostics.begin()),
+                                       std::make_move_iterator(chunk.Diagnostics.end()));
                     for (RenderObject& object: chunk.Objects) {
                         records.push_back(object.Mesh.GetUseRecord());
                         records.push_back(object.Material.GetUseRecord());
@@ -233,7 +305,8 @@ NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
                                                       frame.GetGeneration()},
                                                      views,
                                                      objects,
-                                                     records));
+                                                     records,
+                                                     diagnostics));
             },
             dependencies);
 }
