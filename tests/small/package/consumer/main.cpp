@@ -34,6 +34,7 @@ static_assert(!std::is_copy_constructible_v<NRenderer::GraphPresentation>);
 #include <GraphicsEngine/resources/mesh_loader.h>
 #include <GraphicsEngine/resources/resource_io.h>
 #include <GraphicsEngine/resources/resource_manager.h>
+#include <GraphicsEngine/resources/resource_observation.h>
 #include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
 #include <GraphicsEngine/scene/scene_manager.h>
@@ -63,6 +64,11 @@ private:
 int main() {
     {
         NResources::ResourceManager resources;
+        const auto resource = resources.Request<int>({"package", "observation"});
+        const auto observation = resources.Observe(resource);
+        if (observation.Status.State != NResources::EResourceState::UNLOADED || observation.Lease) {
+            return 1;
+        }
         NCommon::TaskSystem tasks{1};
         NResources::AsyncResourceLoader loader{resources, tasks};
         loader.PumpUploads();

@@ -15,7 +15,8 @@ namespace NRenderer::NInternal {
                                                     const NEngine::NController::FrameStorage& storage);
 
 // The caller task gates all chunks. The returned join publishes the snapshot and invokes completion.
-// World and Resources must outlive the join; World stays read-only until it completes.
+// Readiness and leases are captured before scheduling chunks; subsequent resource transitions
+// affect future extractions only. World and Resources outlive the join; World stays read-only.
 [[nodiscard]] NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
                                                                 const NResources::ResourceManager& resources,
                                                                 const NEngine::NController::FrameStorage& storage,

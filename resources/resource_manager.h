@@ -18,6 +18,7 @@
 #include <GraphicsEngine/resources/resource_handle.h>
 #include <GraphicsEngine/resources/resource_identity.h>
 #include <GraphicsEngine/resources/resource_lease.h>
+#include <GraphicsEngine/resources/resource_observation.h>
 #include <GraphicsEngine/resources/resource_state.h>
 
 namespace NResources {
@@ -251,6 +252,42 @@ public:
                 std::static_pointer_cast<const T>(entry.CpuResource),
                 entry.GpuResource.lock(),
         };
+    }
+
+    // Captures readiness, diagnostics and the exact READY version under one metadata lock.
+    // Invalid references are described without reading another generation's identity or payload.
+    template<typename T>
+    [[nodiscard]] ResourceObservation<T> Observe(ResourceHandle<T> handle) const {
+        ResourceObservation<T> observation;
+        if (!handle.IsValid()) {
+            return observation;
+        }
+        std::shared_lock lock{m_mutex};
+        if (handle.m_ownerId != m_ownerId) {
+            observation.Status.Reference = EResourceReferenceStatus::FOREIGN;
+            return observation;
+        }
+        if (handle.m_slotIndex >= m_entries.size()) {
+            observation.Status.Reference = EResourceReferenceStatus::STALE;
+            return observation;
+        }
+        const Entry& entry = m_entries[handle.m_slotIndex];
+        if (!entry.Occupied || entry.Generation != handle.m_generation) {
+            observation.Status.Reference = EResourceReferenceStatus::STALE;
+            return observation;
+        }
+        if (entry.Type != std::type_index{typeid(T)}) {
+            observation.Status.Reference = EResourceReferenceStatus::TYPE_MISMATCH;
+            return observation;
+        }
+        observation.Status = {EResourceReferenceStatus::VALID, entry.Identity, entry.State, entry.Failure};
+        if (entry.State == EResourceState::READY && entry.CpuResource) {
+            observation.Lease = ResourceLease<T>{handle,
+                                                 entry.PublishedVersion,
+                                                 std::static_pointer_cast<const T>(entry.CpuResource),
+                                                 entry.GpuResource.lock()};
+        }
+        return observation;
     }
 
     template<typename T>

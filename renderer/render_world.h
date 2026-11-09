@@ -8,7 +8,9 @@
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/math/camera.h>
 #include <GraphicsEngine/math/transform.h>
+#include <GraphicsEngine/renderer/render_components.h>
 #include <GraphicsEngine/resources/resource_lease.h>
+#include <GraphicsEngine/resources/resource_observation.h>
 
 namespace NGraphics {
 
@@ -66,6 +68,21 @@ struct RenderObject {
     NResources::ResourceLease<NGraphics::Material> Material;
 };
 
+enum class ERenderResourceRole {
+    MESH,
+    MATERIAL,
+};
+
+// Owned by the frame alongside RenderWorld; source state/failure never changes with a retry.
+struct ResourceReadinessDiagnostic {
+    RenderObjectId Object;
+    ERenderResourceRole Role = ERenderResourceRole::MESH;
+    EResourceReadinessPolicy Policy = EResourceReadinessPolicy::SKIP_OBJECT;
+    std::size_t ResourceSlot = 0;
+    std::uint64_t ResourceGeneration = 0;
+    NResources::ResourceStatus Source;
+};
+
 class RenderWorld final {
 public:
     [[nodiscard]] RenderFrameIdentity GetFrame() const noexcept {
@@ -84,6 +101,10 @@ public:
         return m_resourceUseRecords;
     }
 
+    [[nodiscard]] std::span<const ResourceReadinessDiagnostic> GetResourceDiagnostics() const noexcept {
+        return m_resourceDiagnostics;
+    }
+
 private:
     RenderWorld(RenderFrameIdentity frame,
                 const RenderView* views,
@@ -91,11 +112,13 @@ private:
                 const RenderObject* objects,
                 std::size_t objectCount,
                 const NCommon::ResourceUseRecord* resourceUseRecords,
-                std::size_t resourceUseRecordCount) noexcept
+                std::size_t resourceUseRecordCount,
+                std::span<const ResourceReadinessDiagnostic> resourceDiagnostics) noexcept
         : m_frame(frame)
         , m_views(views, viewCount)
         , m_objects(objects, objectCount)
-        , m_resourceUseRecords(resourceUseRecords, resourceUseRecordCount) {
+        , m_resourceUseRecords(resourceUseRecords, resourceUseRecordCount)
+        , m_resourceDiagnostics(resourceDiagnostics) {
     }
 
 private:
@@ -103,6 +126,7 @@ private:
     std::span<const RenderView> m_views;
     std::span<const RenderObject> m_objects;
     std::span<const NCommon::ResourceUseRecord> m_resourceUseRecords;
+    std::span<const ResourceReadinessDiagnostic> m_resourceDiagnostics;
 
     friend class NInternal::RenderWorldBuilder;
 };
