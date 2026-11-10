@@ -67,7 +67,9 @@ swapchain, resize и present сохраняются. Это частный ко�
 `GraphicsEngineWindowFocusTests` проверяет видимость и отсутствие фокуса при создании нескольких
 окон, show, resize, закрытии и повторной инициализации GLFW. Проверка намеренно меняет глобальные
 focus hints перед созданием следующего окна. SKIP при первой инициализации разрешён только для
-известных диагностик подключения X11/Wayland к display с `GLFW_PLATFORM_ERROR`. Ошибки allocation,
+известных диагностик подключения X11/Wayland к display с `GLFW_PLATFORM_ERROR` или
+`GLFW_PLATFORM_UNAVAILABLE`. На Linux отсутствие обоих `DISPLAY` и `WAYLAND_DISPLAY` проверяется
+до создания оконной среды и означает SKIP. Ошибки allocation,
 Cocoa delegate, прочие отказы инициализации и все последующие ошибки приводят к FAIL.
 Классификатор проверяется отдельно без создания окна.
 
