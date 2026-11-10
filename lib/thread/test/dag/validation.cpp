@@ -1,6 +1,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <semaphore>
 #include <string>
 #include <utility>
@@ -179,7 +180,7 @@ TEST(DebugDag, FullAndLocalChecksRejectCorruptionAndRestoreTheGraph) {
                             Fault::IDENTITY}) {
         ASSERT_EQ(Access::Full(pool), nullptr);
         const auto [full, local] = Access::Probe(pool, child, fault);
-        EXPECT_NE(full, nullptr) << static_cast<int>(fault);
+        ASSERT_NE(full, nullptr) << static_cast<int>(fault);
         if (fault == Fault::REMAINING || fault == Fault::INCOMING_HEAD || fault == Fault::INCOMING_PREVIOUS ||
             fault == Fault::DEGREE || fault == Fault::IDENTITY || fault == Fault::STATUS) {
             EXPECT_NE(local, nullptr) << static_cast<int>(fault);
@@ -208,6 +209,68 @@ TEST(DebugDag, ExplicitAuditAcceptsSharedDiamondsAndConcurrentCompletion) {
         pool.WaitIdle();
         NCommon::TaskSystemTestAccess::Audit(pool);
     }
+}
+
+struct PausedDestruction {
+    std::binary_semaphore* Entered = nullptr;
+    std::binary_semaphore* Resume = nullptr;
+    ~PausedDestruction() {
+        Entered->release();
+        Resume->acquire();
+    }
+};
+
+TEST(DebugDag, ExplicitAuditAcceptsFinalizingSuccessFailureAndGroupGates) {
+    for (const bool fail: {false, true}) {
+        std::binary_semaphore start{0};
+        std::binary_semaphore entered{0};
+        std::binary_semaphore resume{0};
+        NCommon::TaskSystem pool{2};
+        auto probe = std::make_shared<PausedDestruction>();
+        probe->Entered = &entered;
+        probe->Resume = &resume;
+        const auto root = pool.Submit([probe = std::move(probe), &start, fail](NCommon::TaskContext&) {
+            start.acquire();
+            if (fail) {
+                throw 48;
+            }
+        });
+        const auto first = pool.Submit([](NCommon::TaskContext&) {}, std::span{&root, 1});
+        start.release();
+        entered.acquire();
+        // Ensure even an unexpected audit allocation exception cannot strand the paused destructor.
+        struct ResumeOnExit {
+            std::binary_semaphore& Resume;
+            bool Released = false;
+            void Release() {
+                if (!Released) {
+                    Released = true;
+                    Resume.release();
+                }
+            }
+            ~ResumeOnExit() {
+                Release();
+            }
+        } release{resume};
+        NCommon::TaskSystemTestAccess::Audit(pool);
+        const auto late = pool.Submit([](NCommon::TaskContext&) {}, std::span{&root, 1});
+        NCommon::TaskSystemTestAccess::Audit(pool);
+        EXPECT_EQ(pool.GetStatus(root), NCommon::ETaskStatus::RUNNING);
+        release.Release();
+        pool.WaitIdle();
+        NCommon::TaskSystemTestAccess::Audit(pool);
+        EXPECT_EQ(pool.GetStatus(first), fail ? NCommon::ETaskStatus::CANCELLED : NCommon::ETaskStatus::COMPLETED);
+        EXPECT_EQ(pool.GetStatus(late), fail ? NCommon::ETaskStatus::CANCELLED : NCommon::ETaskStatus::COMPLETED);
+    }
+    NCommon::TaskSystem pool{2};
+    const auto group = pool.CreateTaskGroup();
+    const auto continuation = pool.SubmitAfterGroup(group, [](NCommon::TaskContext&) {});
+    NCommon::TaskSystemTestAccess::Audit(pool);
+    pool.SealGroup(group);
+    NCommon::TaskSystemTestAccess::Audit(pool);
+    pool.WaitIdle();
+    EXPECT_EQ(pool.GetStatus(continuation), NCommon::ETaskStatus::COMPLETED);
+    NCommon::TaskSystemTestAccess::Audit(pool);
 }
 
 TEST(DebugDag, MutationVisitsStayLinearForChainsFanInAndFanOut) {
