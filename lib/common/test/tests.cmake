@@ -1,5 +1,7 @@
 TEST_SUITE(Common)
 
+SOURCES(change_tracker.cpp)
+
 PRIVATE_DEPENDS(
     Common
 )

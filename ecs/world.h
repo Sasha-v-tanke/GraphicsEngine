@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -21,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include <GraphicsEngine/lib/common/change_tracker.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
 
@@ -31,6 +33,7 @@ class TaskSystem;
 namespace NEcs::NInternal {
 class WorldExecutionAccess;
 class ScopedWorldAccess;
+class WorldChangeAccess;
 struct ScopedSystem;
 struct ResolvedBatch;
 } // namespace NEcs::NInternal
@@ -79,6 +82,7 @@ public:
         StructuralWriteGuard structuralGuard{*this};
         ValidateAlive(entity);
         auto& storage = GetOrCreateStorage<T>();
+        TrackComponentAccess(typeid(T));
         return storage.Emplace(entity.Index, std::forward<TArgs>(args)...);
     }
 
@@ -117,6 +121,7 @@ public:
             GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "ECS component does not exist");
         }
 
+        TrackComponentAccess(typeid(T));
         return storage->Get(entity.Index);
     }
 
@@ -143,6 +148,9 @@ public:
         }
 
         auto* storage = FindStorage<T>();
+        if (storage != nullptr && storage->Contains(entity.Index)) {
+            TrackComponentAccess(typeid(T));
+        }
         return storage != nullptr && storage->RemoveComponent(entity.Index);
     }
 
@@ -441,6 +449,9 @@ private:
     [[nodiscard]] SystemExecutionGraph BuildSystemExecutionGraph(bool requireSchedules) const;
     friend class NInternal::WorldExecutionAccess;
     friend class NInternal::ScopedWorldAccess;
+    friend class NInternal::WorldChangeAccess;
+    NCommon::ChangeDomainKey GetChangeDomain(std::type_index type, bool entityRevisions = false);
+    void TrackComponentAccess(std::type_index type);
     struct SystemRunState;
     std::shared_ptr<SystemRunState> ActiveSystemRun_;
     bool ExecutionPoisoned_ = false;
@@ -474,6 +485,11 @@ private:
     [[nodiscard]] std::uint32_t FindNextDeferredAppendIndex() const noexcept;
 
     std::shared_ptr<NInternal::TopologyState> m_topology;
+    NCommon::ChangeTracker m_changes;
+    std::map<std::type_index, NCommon::ChangeDomainKey> m_changeDomains;
+    std::set<std::type_index> m_entityRevisionTypes;
+    NCommon::DirtySummary m_pendingChanges;
+    std::vector<const NCommon::DirtySummary*> m_changeInputs;
     std::vector<EntityState> Entities_;
     std::vector<std::uint32_t> FreeEntityIndices_;
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> ComponentStorageByType_;

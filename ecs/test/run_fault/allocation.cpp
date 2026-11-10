@@ -10,6 +10,7 @@
 #include <ecs/internal/adaptive_traversal.h>
 #include <ecs/internal/scoped_batch.h>
 #include <ecs/internal/system_run.h>
+#include <ecs/internal/world_changes.h>
 #include <ecs/world.h>
 #include <gtest/gtest.h>
 #include <lib/thread/task/task_system.h>
@@ -72,6 +73,28 @@ void operator delete(void* memory, const std::nothrow_t&) noexcept {
 #endif
 
 namespace {
+TEST(EcsRunFault, TrackingPublicationAllocationFailurePreservesDirtyWrites) {
+    NEcs::World world;
+    const auto entity = world.CreateEntity();
+    world.AddComponent<int>(entity, 0);
+    const auto domain = NEcs::NInternal::WorldChangeAccess::Domain<int>(world);
+    static_cast<void>(NEcs::NInternal::WorldChangeAccess::PublishEpoch(world));
+    const auto cursor = NEcs::NInternal::WorldChangeAccess::CaptureSnapshot(world).GetCursor();
+    world.RegisterSystem({NEcs::Write<int>()}, [entity](NEcs::World& owner) {
+        ++owner.GetComponent<int>(entity);
+        AllocationBudget = 0;
+    });
+    // Failure in finalization must not strand the World run guard or discard dirty evidence.
+    EXPECT_NO_THROW(world.RunSystems());
+    AllocationBudget = -1;
+    const auto snapshot = NEcs::NInternal::WorldChangeAccess::CaptureSnapshot(world);
+    EXPECT_EQ(std::as_const(world).GetComponent<int>(entity), 1);
+    EXPECT_TRUE(snapshot.CaptureChanges(cursor, domain).FullDirty);
+    EXPECT_FALSE(snapshot.GetStorageVersion(domain).IsValid());
+    static_cast<void>(NEcs::NInternal::WorldChangeAccess::PublishEpoch(world));
+    EXPECT_TRUE(NEcs::NInternal::WorldChangeAccess::CaptureSnapshot(world).CaptureChanges(cursor, domain).FullDirty);
+}
+
 TEST(EcsRunFault, EveryPrepareAllocationFailureReleasesWorldGuard) {
     NCommon::TaskSystem tasks{1};
     int failures = 0;

@@ -14,6 +14,7 @@
 #include <GraphicsEngine/graphics/image.h>
 #include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/graphics/pipeline_key.h>
+#include <GraphicsEngine/lib/common/change_tracker.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/lib/thread/job.h>
@@ -62,6 +63,13 @@ private:
 };
 
 int main() {
+    NCommon::ChangeTracker changes;
+    const NCommon::ChangeDomainKey domain{1, 1, 1};
+    changes.RegisterDomain(domain);
+    static_cast<void>(changes.PublishEpoch());
+    if (!changes.CaptureChanges({}, domain).FullDirty) {
+        return 1;
+    }
     {
         NResources::ResourceManager resources;
         const auto resource = resources.Request<int>({"package", "observation"});
