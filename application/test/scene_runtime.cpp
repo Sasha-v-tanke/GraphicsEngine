@@ -35,7 +35,7 @@ struct ReadGate {
     std::atomic_bool Entered = false;
     bool Open = false;
 
-    NResources::ResourceIoBytes Read(std::stop_token stop) {
+    NResources::ResourceIoBytes Read(const std::stop_token& stop) {
         Entered = true;
         std::unique_lock lock{Mutex};
         Wake.wait(lock, stop, [&] { return Open; });
@@ -104,7 +104,7 @@ TEST_P(SceneSwitching, DelayedIoSwitchUnloadAndEmptyStateWithThreeActiveSlots) {
     NResources::ResourceManager resources;
     NCommon::TaskSystem ioTasks{GetParam()};
     ReadGate gate;
-    NResources::AsyncResourceLoader loader{resources, ioTasks, {}, [&](const auto&, auto stop, auto) {
+    NResources::AsyncResourceLoader loader{resources, ioTasks, {}, [&](const auto&, const auto& stop, auto) {
                                                return gate.Read(stop);
                                            }};
     const auto delayed = loader.LoadMesh({"mesh", "delayed"}, "delayed.obj");

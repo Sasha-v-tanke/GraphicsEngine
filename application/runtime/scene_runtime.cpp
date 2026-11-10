@@ -89,7 +89,7 @@ void SceneRuntime::ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
         return;
     }
     auto world = std::shared_ptr<NEcs::World>{binding->Source, &binding->Source->GetWorld()};
-    NEngine::NRuntime::ScheduleWorldUpdate(std::move(world), tasks, std::move(completion));
+    NEngine::NRuntime::ScheduleWorldUpdate(std::move(world), tasks, completion);
 }
 
 NCommon::TaskHandle SceneRuntime::ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,

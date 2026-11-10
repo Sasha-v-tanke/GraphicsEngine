@@ -48,7 +48,8 @@ struct DelayedFile {
     std::condition_variable_any Wake;
     bool Released = false;
 
-    NResources::ResourceIoBytes Read(const std::filesystem::path& path, std::stop_token stop, std::size_t limit) {
+    NResources::ResourceIoBytes
+    Read(const std::filesystem::path& path, const std::stop_token& stop, std::size_t limit) {
         {
             std::unique_lock lock{Mutex};
             Wake.wait(lock, stop, [&] { return Released; });
@@ -152,9 +153,16 @@ public:
                           << " slot=" << pending.Publication.Frame.GetSlotIndex()
                           << " scene=" << (pending.Publication.Scene ? pending.Publication.Name : "<empty>")
                           << " draws=" << pending.Plan->GetDrawCommands().size();
+                if (pending.Publication.Scene) {
+                    std::cout << " scene_slot=" << pending.Publication.Scene->GetSlotIndex()
+                              << " scene_generation=" << pending.Publication.Scene->GetGeneration();
+                }
                 for (const auto& diagnostic: pending.Snapshot->GetResourceDiagnostics()) {
-                    std::cout << " resource=" << diagnostic.Source.Identity->GetKey()
-                              << " state=" << StateName(diagnostic.Source.State) << " policy=skip";
+                    std::cout << " resource="
+                              << (diagnostic.Source.Identity ? diagnostic.Source.Identity->GetKey() : "<unresolved>")
+                              << " state="
+                              << (diagnostic.Source.State ? StateName(*diagnostic.Source.State) : "UNKNOWN")
+                              << " policy=skip";
                 }
                 std::cout << '\n';
             }
@@ -229,9 +237,11 @@ inline Result Run(std::size_t activeFrames,
     assets.Prepare(presentation);
     NCommon::TaskSystem resourceTasks{workers};
     DelayedFile file;
-    NResources::AsyncResourceLoader loader{assets.Resources, resourceTasks, {}, [&](auto& path, auto stop, auto limit) {
-                                               return file.Read(path, stop, limit);
-                                           }};
+    NResources::AsyncResourceLoader loader{
+            assets.Resources,
+            resourceTasks,
+            {},
+            [&](const auto& path, const auto& stop, auto limit) { return file.Read(path, stop, limit); }};
     const auto delayed =
             loader.LoadMesh({"mesh", "background-cube"},
                             std::filesystem::path{__FILE__}.parent_path() / "../sample_7_model/assets/cube.obj");
@@ -292,6 +302,9 @@ inline Result Run(std::size_t activeFrames,
                     // This backend uses host-visible mesh buffers: preparation performs no file I/O or GPU wait.
                     presentation.PrepareMesh(std::move(*lease));
                     prepared = true;
+                    if (verbose) {
+                        std::cout << "resource=background-cube state=READY\n";
+                    }
                 } else if (assets.Resources.GetState(delayed) == NResources::EResourceState::FAILED) {
                     throw std::runtime_error{assets.Resources.GetFailure(delayed)->Message};
                 }
