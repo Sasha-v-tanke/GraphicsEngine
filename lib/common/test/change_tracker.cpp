@@ -160,4 +160,37 @@ TEST(ChangeTracker, ConcurrentReadersAndInvalidationNeverLoseDirtyState) {
     EXPECT_TRUE(snapshot.CaptureChanges(snapshot.GetCursor(), TRACKED_DOMAIN).FullDirty);
     finished.store(true);
 }
+
+TEST(ChangeTracker, MergeIsIdempotentAndAllSparseLimitsFallBackConservatively) {
+    for (int limit = 0; limit < 3; ++limit) {
+        NCommon::ChangeTrackerConfig config;
+        config.MaxRangesPerDomain = limit == 0 ? 1 : 100;
+        config.MaxChunkVersionsPerDomain = limit == 1 ? 1 : 100;
+        config.MaxEntityVersionsPerDomain = limit == 2 ? 1 : 100;
+        config.ChunkSize = 1;
+        ChangeTracker tracker(config);
+        tracker.RegisterDomain(TRACKED_DOMAIN, true);
+        static_cast<void>(tracker.PublishEpoch());
+        const auto cursor = tracker.CaptureSnapshot().GetCursor();
+        DirtySummary dirty;
+        dirty.MarkEntity(TRACKED_DOMAIN, {1, 0});
+        dirty.MarkEntity(TRACKED_DOMAIN, {3, 0});
+        const std::array<const DirtySummary*, 2> duplicate{&dirty, &dirty};
+        static_cast<void>(tracker.PublishEpoch(duplicate));
+        const auto snapshot = tracker.CaptureSnapshot();
+        EXPECT_TRUE(snapshot.CaptureChanges(cursor, TRACKED_DOMAIN).FullDirty);
+        EXPECT_EQ(snapshot.GetStatistics().EntityVersions, 0U);
+        EXPECT_EQ(snapshot.GetStatistics().ChunkVersions, 0U);
+    }
+    ChangeTracker tracker;
+    tracker.RegisterDomain(TRACKED_DOMAIN);
+    static_cast<void>(tracker.PublishEpoch());
+    const auto cursor = tracker.CaptureSnapshot().GetCursor();
+    DirtySummary dirty;
+    dirty.MarkRange(TRACKED_DOMAIN, 1, 3);
+    dirty.MarkRange(TRACKED_DOMAIN, 2, 2);
+    const std::array<const DirtySummary*, 2> duplicate{&dirty, &dirty};
+    static_cast<void>(tracker.PublishEpoch(duplicate));
+    EXPECT_EQ(tracker.CaptureChanges(cursor, TRACKED_DOMAIN).Ranges, (std::vector<DirtyRange>{{1, 3}}));
+}
 } // namespace

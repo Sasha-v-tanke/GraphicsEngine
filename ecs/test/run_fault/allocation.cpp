@@ -95,6 +95,62 @@ TEST(EcsRunFault, TrackingPublicationAllocationFailurePreservesDirtyWrites) {
     EXPECT_TRUE(NEcs::NInternal::WorldChangeAccess::CaptureSnapshot(world).CaptureChanges(cursor, domain).FullDirty);
 }
 
+TEST(EcsRunFault, EveryTrackingPublicationAllocationFailureKeepsTheOldRoot) {
+    int failures = 0;
+    int successes = 0;
+    for (std::ptrdiff_t budget = 0; budget < 80; ++budget) {
+        NCommon::ChangeTracker tracker;
+        const NCommon::ChangeDomainKey domain{1, 1, 1};
+        tracker.RegisterDomain(domain, true);
+        static_cast<void>(tracker.PublishEpoch());
+        const auto before = tracker.CaptureSnapshot();
+        NCommon::DirtySummary dirty;
+        dirty.MarkEntity(domain, {7, 1});
+        const NCommon::DirtySummary* input = &dirty;
+        bool failed = false;
+        AllocationBudget = budget;
+        try {
+            static_cast<void>(tracker.PublishEpoch({&input, 1}));
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        AllocationBudget = -1;
+        const auto after = tracker.CaptureSnapshot();
+        if (failed) {
+            ++failures;
+            EXPECT_EQ(after.GetCursor(), before.GetCursor());
+            EXPECT_TRUE(after.CaptureChanges(before.GetCursor(), domain).FullDirty);
+            EXPECT_FALSE(after.GetStorageVersion(domain).IsValid());
+            static_cast<void>(tracker.PublishEpoch());
+            EXPECT_TRUE(tracker.CaptureChanges(before.GetCursor(), domain).FullDirty);
+        } else {
+            ++successes;
+            EXPECT_EQ(after.CaptureChanges(before.GetCursor(), domain).Ranges,
+                      (std::vector<NCommon::DirtyRange>{{7, 1}}));
+        }
+        EXPECT_FALSE(before.CaptureChanges(before.GetCursor(), domain).HasChanges());
+    }
+    EXPECT_GT(failures, 0);
+    EXPECT_GT(successes, 0);
+}
+
+TEST(EcsRunFault, DeclaredLegacyWritesNeedNoPerWriteMetadataAllocation) {
+    NEcs::World world;
+    const auto entity = world.CreateEntity();
+    world.AddComponent<int>(entity, 0);
+    world.RegisterSystem({NEcs::Write<int>()}, [entity](NEcs::World& owner) {
+        AllocationBudget = 0;
+        for (int index = 0; index < 1000; ++index) {
+            ++owner.GetComponent<int>(entity);
+        }
+        const auto remaining = AllocationBudget;
+        AllocationBudget = -1;
+        EXPECT_EQ(remaining, 0);
+    });
+    EXPECT_NO_THROW(world.RunSystems());
+    EXPECT_EQ(std::as_const(world).GetComponent<int>(entity), 1000);
+}
+
 TEST(EcsRunFault, EveryPrepareAllocationFailureReleasesWorldGuard) {
     NCommon::TaskSystem tasks{1};
     int failures = 0;
