@@ -3,6 +3,7 @@ TEST_SUITE(Engine)
 TEST(Engine)
 
 SOURCES(
+    phase_gates.cpp
     async_update.cpp
     legacy_checkpoints.cpp
     engine_test.cpp
