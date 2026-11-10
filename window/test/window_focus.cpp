@@ -1,6 +1,7 @@
 #include <glfw.h>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
@@ -11,6 +12,17 @@
 #include <window/window_runtime.h>
 
 namespace {
+
+bool IsDisplayUnavailable(std::string_view message) {
+    constexpr std::string_view prefix = "Failed to initialize GLFW: ";
+    if (!message.starts_with(prefix)) {
+        return false;
+    }
+    message.remove_prefix(prefix.size());
+    return message == "X11: The DISPLAY environment variable is missing (65544)" ||
+           (message.starts_with("X11: Failed to open display ") && message.ends_with(" (65544)")) ||
+           message == "Wayland: Failed to connect to display (65544)";
+}
 
 GLFWwindow* GetNativeWindow(NWindow::Window& window) {
     auto& engine =
@@ -39,6 +51,20 @@ void CheckWindow(NWindow::Window& window) {
 
 } // namespace
 
+TEST(WindowFocus, OnlyKnownDisplayConnectionFailuresAreUnavailable) {
+    EXPECT_TRUE(IsDisplayUnavailable(
+            "Failed to initialize GLFW: X11: The DISPLAY environment variable is missing (65544)"));
+    EXPECT_TRUE(IsDisplayUnavailable("Failed to initialize GLFW: X11: Failed to open display :99 (65544)"));
+    EXPECT_TRUE(IsDisplayUnavailable("Failed to initialize GLFW: Wayland: Failed to connect to display (65544)"));
+
+    EXPECT_FALSE(IsDisplayUnavailable("Failed to initialize GLFW"));
+    EXPECT_FALSE(
+            IsDisplayUnavailable("Failed to initialize GLFW: Cocoa: Failed to create application delegate (65544)"));
+    EXPECT_FALSE(IsDisplayUnavailable("Failed to initialize GLFW: Failed to allocate memory (65541)"));
+    EXPECT_FALSE(IsDisplayUnavailable("Failed to initialize GLFW: X11: Failed to open display :99 (65541)"));
+    EXPECT_FALSE(IsDisplayUnavailable("Failed to create GLFW window: Wayland: Failed to connect to display (65544)"));
+}
+
 TEST(WindowFocus, BootstrapPrecedesRuntimeAndEveryWindowStaysVisibleWithoutFocus) {
     ASSERT_TRUE(NWindow::NEngine::IsNonActivatingTestProcess());
     NWindow::WindowRuntime runtime;
@@ -51,7 +77,7 @@ TEST(WindowFocus, BootstrapPrecedesRuntimeAndEveryWindowStaysVisibleWithoutFocus
     try {
         first = std::make_unique<NWindow::Window>(config);
     } catch (const NCommon::Exception& exception) {
-        if (exception.GetMessage().find("Failed to initialize GLFW") != std::string::npos) {
+        if (IsDisplayUnavailable(exception.GetMessage())) {
             GTEST_SKIP() << exception.what();
         }
         throw;
