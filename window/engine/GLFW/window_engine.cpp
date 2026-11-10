@@ -17,6 +17,7 @@
 #include <window/engine/application_thread.h>
 #include <window/engine/event_queue.h>
 #include <window/engine/event_sink.h>
+#include <window/engine/test_process.h>
 
 namespace NWindow::NEngine::NGlfw {
 
@@ -78,6 +79,13 @@ private:
     GlfwRuntime()
         : m_threadId(std::this_thread::get_id()) {
         ValidateApplicationThread("glfwInit");
+
+#if defined(__APPLE__)
+        if (IsNonActivatingTestProcess()) {
+            // Avoid promoting an unbundled test process to a foreground Cocoa application.
+            glfwInitHint(GLFW_COCOA_MENUBAR, GLFW_FALSE);
+        }
+#endif
 
         if (glfwInit() == GLFW_FALSE) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
@@ -216,6 +224,10 @@ private:
         ValidateApplicationThread("GLFW window creation");
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        if (IsNonActivatingTestProcess()) {
+            glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+            glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+        }
 
         GLFWwindow* window = glfwCreateWindow(ClampSize(config.Size.Width),
                                               ClampSize(config.Size.Height),

@@ -15,3 +15,22 @@ TEST_LABELS(
     cpp
     window
 )
+
+if (GRAPHICS_ENGINE_BUILD_GLFW)
+    TEST_SUITE(WindowFocus)
+
+    SOURCES(
+        window_focus.cpp
+    )
+
+    PRIVATE_DEPENDS(
+        Window
+        GLFW
+    )
+
+    TEST_LABELS(
+        medium
+        cpp
+        window
+    )
+endif ()

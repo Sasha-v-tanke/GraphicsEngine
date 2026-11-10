@@ -20,6 +20,7 @@ macro(TEST_SUITE name)
 
     add_executable(
         ${testTarget}
+        "${PROJECT_SOURCE_DIR}/tests/common/process_bootstrap.cpp"
     )
 
     _GRAPHICS_ENGINE_APPLY_PROJECT_OPTIONS(
