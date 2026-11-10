@@ -220,6 +220,7 @@ set(
     "GraphicsEngine/graphics/image.h"
     "GraphicsEngine/graphics/material.h"
     "GraphicsEngine/graphics/presentation.h"
+    "GraphicsEngine/lib/common/change_tracker.h"
     "GraphicsEngine/lib/common/error/assert.h"
     "GraphicsEngine/lib/common/error/error.h"
     "GraphicsEngine/lib/common/error/exception.h"
