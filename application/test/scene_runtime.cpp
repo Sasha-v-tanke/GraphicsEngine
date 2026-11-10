@@ -222,9 +222,58 @@ TEST(SceneRuntime, RejectsForeignThreadAndUnboundFrames) {
     std::thread foreign{[&] { EXPECT_ANY_THROW((void)host->TryBeginFrame(*engine, scenes)); }};
     foreign.join();
     ASSERT_TRUE(engine->Update());
-    ASSERT_TRUE(engine->Draw());
     ASSERT_TRUE(Eventually([&] { return engine->GetLastError().has_value(); }));
     engine->Stop();
+}
+
+TEST(SceneRuntime, PublicationWaitsForPreviousWorldUpdate) {
+    NResources::ResourceManager resources;
+    NScene::SceneManager scenes;
+    const auto scene = scenes.CreateScene("updating");
+    std::atomic_bool entered = false;
+    std::promise<void> release;
+    const auto released = release.get_future().share();
+    scenes.Acquire(scene)->GetWorld().RegisterSystem(
+            {},
+            [&](NEcs::World&) {
+                entered = true;
+                EXPECT_EQ(released.wait_for(std::chrono::seconds{3}), std::future_status::ready);
+            },
+            NEcs::SystemSchedule{.Id = 1});
+    GpuConsumer gpu;
+    auto runtime = std::make_unique<NApplication::NRuntime::SceneRuntime>(
+            resources,
+            [&](const auto& frame, const auto& publication, const auto& snapshot, const auto& plan) {
+                gpu.Consume(frame, publication, snapshot, plan);
+            },
+            [&] { gpu.Drain(); });
+    auto* host = runtime.get();
+    auto engine = NEngine::NRuntime::EngineFactory::Create({3, 1}, std::move(runtime));
+    engine->Start();
+    const auto first = host->TryBeginFrame(*engine, scenes, [&](auto& registry) { registry.Activate(scene); });
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(engine->CompleteUserUpdate(*first));
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_TRUE(Eventually([&] { return entered.load(); }));
+    bool published = false;
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_FALSE(host->TryBeginFrame(*engine, scenes, [&](auto&) { published = true; }));
+    }
+    EXPECT_FALSE(published);
+    release.set_value();
+    ASSERT_TRUE(Eventually([&] { return gpu.Count() == 1; }));
+    std::optional<NEngine::FrameKey> second;
+    ASSERT_TRUE(Eventually([&] {
+        second = host->TryBeginFrame(*engine, scenes, [&](auto& registry) { registry.Unload(scene); });
+        return second.has_value();
+    }));
+    ASSERT_TRUE(engine->CompleteUserUpdate(*second));
+    ASSERT_TRUE(engine->Draw());
+    ASSERT_TRUE(Eventually([&] { return gpu.Count() == 2; }));
+    EXPECT_EQ(gpu.Get(0)->Publication.Scene, scene);
+    EXPECT_FALSE(gpu.Get(1)->Publication.Scene);
+    engine->Stop();
+    EXPECT_FALSE(engine->GetLastError());
 }
 
 TEST(SceneRuntime, ThrowingPublicationAbortsReservationAndStopDrainsBoundScene) {

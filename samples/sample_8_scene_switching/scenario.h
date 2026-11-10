@@ -1,13 +1,45 @@
 #pragma once
 
 #include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <filesystem>
 #include <fstream>
+#include <future>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <stop_token>
+#include <thread>
 
 #include <application/runtime/scene_runtime.h>
 #include <resources/async_resource_loader.h>
 #include <samples/sample_7_model/scenario.h>
 
 namespace NSceneSwitching {
+
+[[nodiscard]] inline const char* StateName(NResources::EResourceState state) {
+    switch (state) {
+    case NResources::EResourceState::UNLOADED:
+        return "UNLOADED";
+    case NResources::EResourceState::LOADING:
+        return "LOADING";
+    case NResources::EResourceState::READY:
+        return "READY";
+    case NResources::EResourceState::FAILED:
+        return "FAILED";
+    case NResources::EResourceState::UNLOADING:
+        return "UNLOADING";
+    case NResources::EResourceState::QUEUED:
+        return "QUEUED";
+    case NResources::EResourceState::CPU_READY:
+        return "CPU_READY";
+    case NResources::EResourceState::UPLOADING:
+        return "UPLOADING";
+    }
+    return "UNKNOWN";
+}
 
 // A controllably slow filesystem backend, used only on ResourceIo's dedicated threads.
 // Releasing after rendered frames makes the loading/skip path reproducible even on fast disks.
@@ -122,7 +154,7 @@ public:
                           << " draws=" << pending.Plan->GetDrawCommands().size();
                 for (const auto& diagnostic: pending.Snapshot->GetResourceDiagnostics()) {
                     std::cout << " resource=" << diagnostic.Source.Identity->GetKey()
-                              << " state=" << static_cast<int>(diagnostic.Source.State) << " policy=skip";
+                              << " state=" << StateName(diagnostic.Source.State) << " policy=skip";
                 }
                 std::cout << '\n';
             }
