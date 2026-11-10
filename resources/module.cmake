@@ -11,6 +11,7 @@ API(
     resource_identity.h
     resource_lease.h
     resource_manager.h
+    resource_observation.h
     resource_state.h
     resource_use_record.h
     shader_artifact.h

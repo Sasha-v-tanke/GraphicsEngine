@@ -125,6 +125,8 @@ find_package(GraphicsEngine REQUIRED CONFIG COMPONENTS Vulkan GLFW)
 
 ## Структура проекта и документация
 
+Пользовательская документация по сценариям и модулям: [оглавление](docs/README.md).
+
 | Каталог | Назначение |
 | --- | --- |
 | [`application/`](application/README.md) | Жизненный цикл приложения, основной цикл и пользовательские задачи |

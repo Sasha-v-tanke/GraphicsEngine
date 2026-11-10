@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <future>
 #include <memory>
 #include <memory_resource>
@@ -14,9 +15,16 @@ namespace NEngine::NRuntime {
 
 class FrameContext final {
 public:
-    FrameContext(NController::FrameHandle frame, NController::FrameStorage storage) noexcept
+    FrameContext(NController::FrameHandle frame,
+                 NController::FrameStorage storage,
+                 std::shared_ptr<const std::atomic_bool> stopRequested = {}) noexcept
         : m_frame(frame)
-        , m_storage(storage) {
+        , m_storage(storage)
+        , m_stopRequested(std::move(stopRequested)) {
+    }
+
+    [[nodiscard]] bool IsStopRequested() const noexcept {
+        return m_stopRequested && m_stopRequested->load();
     }
 
     [[nodiscard]] NController::FrameHandle GetFrame() const noexcept {
@@ -38,6 +46,7 @@ public:
 private:
     NController::FrameHandle m_frame;
     NController::FrameStorage m_storage;
+    std::shared_ptr<const std::atomic_bool> m_stopRequested;
 };
 
 class IFrameRuntime {
@@ -56,6 +65,22 @@ public:
         } catch (...) {
             ownedCompletion->Finish({.Status = EUpdateStatus::FAILED, .Error = std::current_exception()});
         }
+    }
+
+    // Optional internal worker phase. Application's public callback migration is separate.
+    [[nodiscard]] virtual bool HasPostUpdate() const noexcept {
+        return false;
+    }
+
+    // Same join contract as extraction: all writes/captures retire before success is published.
+    // Descendants depend on task.GetTask(); never wait for them on this worker.
+    // Check frame.IsStopRequested() before invoking a queued user callback; running work retires cooperatively.
+    [[nodiscard]] virtual NCommon::TaskHandle SchedulePostUpdate(const FrameContext&, NCommon::TaskContext&) {
+        return {};
+    }
+
+    // Controlled structural commit/publication after post-update quiescence, before any World reader.
+    virtual void FinalizePostUpdate(const FrameContext&) {
     }
 
     virtual void Extract(const FrameContext&) {

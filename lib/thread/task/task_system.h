@@ -281,6 +281,10 @@ private:
         void ValidateHandleOwner(const TaskHandle& task) const;
         [[nodiscard]] std::shared_ptr<TaskHandle::State> AllocateStateLocked();
         void ValidateDependenciesLocked(std::span<const TaskHandle> dependencies) const;
+        void ValidateDependenciesMeasuredLocked(std::span<const TaskHandle> dependencies,
+                                                std::size_t& comparisons) const;
+        template<bool Measure>
+        void ValidateDependenciesImplLocked(std::span<const TaskHandle> dependencies, std::size_t* comparisons) const;
         [[nodiscard]] static bool LinkDependencyEdgesLocked(TaskHandle::State& state,
                                                             std::span<const TaskHandle> dependencies) noexcept;
         [[nodiscard]] static std::shared_ptr<TaskHandle::State> PinStateLocked(TaskHandle::State& state) noexcept;

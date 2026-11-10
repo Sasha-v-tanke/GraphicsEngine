@@ -1,0 +1,13 @@
+# Внутренние gates кадра
+
+Engine владеет порядком `Reserve → UserUpdate → semantic EngineUpdate → PostUpdate → structural publish → Extract → immutable snapshot`. TaskSystem исполняет только READY-задачи; ни одна из этих фаз не ждёт дочернюю задачу на worker. Application обслуживает Window/MainExecutor во время backpressure. Публичный OnDraw пока остаётся прежним main-only checkpoint; переименование и подключение пользовательского OnPostUpdate относятся к IMPROVE-0050.
+
+Опциональный IFrameRuntime::HasPostUpdate фиксируется на весь Run. При false путь не создаёт дополнительной задачи. При true worker вызывает SchedulePostUpdate только после semantic success Update и принятого Draw intent. Возврат Engine::Update или окончание orchestration task недостаточны для допуска PostUpdate. SchedulePostUpdate возвращает настоящий join всех своих writers и capture retirement; invalid handle означает синхронное завершение. Порожденная работа зависит от переданного TaskContext::GetTask, включая failure-safe join. Нельзя отменять join, пока ещё живы зарегистрированные readers/writers.
+
+После успешного join Engine вызывает FinalizePostUpdate для controlled structural commit/publication и лишь затем ScheduleExtract. Runtime не дублирует commit уже завершённого ECS Update: hook применяет только изменения post-update фазы. Отсутствующий hook не добавляет фиктивных blocking jobs. Runtime не должен оставлять незарегистрированные writes после выхода из фазы.
+
+Join ScheduleExtract охватывает всех World readers. Только после него открывается m_updateAdmissionOpen; RenderPrepare/Draw/Submit могут ещё исполняться по immutable snapshot. Физический слот по-прежнему удерживается до всех CPU и зарегистрированных GPU consumers. FrameKey и arena lifetime не меняются.
+
+Post-update descendants получают FrameContext::IsStopRequested: queued callback проверяет его непосредственно перед пользовательским кодом; running callback завершает работу кооперативно. Это generation-owned shared flag, старый контекст не видит сброшенный флаг нового Run. Engine закрывает фазовый admission при Stop/error; после drain post-update join пропущенные фазы abort-ятся, не открывая commit/extraction или новый кадр. Failure join отменяет downstream continuation; reaping сохраняет исходную ошибку и останавливает admission. Frame storage освобождается лишь после quiescence.
+
+Проверки: матрица W=1/2/8 × N=1/2/3; управляемый semantic completion после возврата оркестратора; два extraction readers с удерживаемым последним; overlap следующего admitted Update с удерживаемым immutable Draw; post-update exception, Stop/drain и restart. Новый hook внутренний и не является публичным generic DAG.

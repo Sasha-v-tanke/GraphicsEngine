@@ -1,6 +1,7 @@
 TEST_SUITE(Renderer)
 
 SOURCES(
+    resource_readiness.cpp
     execution_validation.cpp
     model.cpp
     render_graph.cpp

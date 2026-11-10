@@ -10,7 +10,7 @@ Stop закрывает admission, запрашивает cancellation всех 
 
 Runtime обязан вызвать Finish либо передать completion адаптеру, гарантированно завершающему его после quiescence. Нельзя захватывать TaskContext& или frame arena pointers в незарегистрированную долгоживущую работу. Синхронный RunSystems(TaskSystem&) остаётся host-only.
 
-## Legacy checkpoints Update/Draw — FIX-0005
+## Контрольные точки Update/Draw
 
 `Engine::Update()` допускает следующий кадр через существующие World/slot gates. Принятый `Draw()` уже завершает application checkpoint текущего кадра и увеличивает `m_nextDrawFrameIndex`; `DrawRequested=true` может предшествовать `HasDrawTask=true`. В этом промежутке повторный `Update()` возвращает false через `TryBeginFrameLocked`, не бросает out-of-order и не запускает callback повторно. Draw/Extract по-прежнему требуют semantic Update success. После Extract открывается World gate, но физический слот ждёт всех CPU/GPU consumers. Два Update без принятого Draw, Draw до Update и повтор Draw остаются INVALID_STATE.
 

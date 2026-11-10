@@ -18,6 +18,12 @@ class MeshData;
 
 namespace NRenderer {
 
+// MVP policy: omit the entire object if any required logical resource is unavailable.
+// Fallback selection can extend this policy without changing Resources or backend APIs.
+enum class EResourceReadinessPolicy {
+    SKIP_OBJECT,
+};
+
 struct TransformComponent {
     NMath::Transform Value = {};
 };
@@ -31,6 +37,7 @@ struct CameraComponent {
 struct RenderableComponent {
     NResources::ResourceHandle<NResources::MeshData> Mesh;
     NResources::ResourceHandle<NGraphics::Material> Material;
+    EResourceReadinessPolicy ReadinessPolicy = EResourceReadinessPolicy::SKIP_OBJECT;
 };
 
 } // namespace NRenderer
