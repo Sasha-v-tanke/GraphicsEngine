@@ -80,7 +80,7 @@ PID frontmost application каждую миллисекунду от запус�
 
 ```bash
 build/cmake/GraphicsEngineCheckWindowFocus build/cmake/GraphicsEngineWindowFocusTests
-build/cmake/GraphicsEngineCheckWindowFocus build/cmake/GraphicsEngineWindowFocusTests --gtest_filter=WindowFocus.* --gtest_repeat=5
+build/cmake/GraphicsEngineCheckWindowFocus build/cmake/GraphicsEngineWindowFocusTests '--gtest_filter=WindowFocus.*' --gtest_repeat=5
 build/cmake/GraphicsEngineCheckWindowFocus ctest --test-dir build/cmake -L heavy --output-on-failure
 ctest --test-dir build/cmake -R 'Window(FocusTests|FrontmostProcess)' --output-on-failure
 ```
