@@ -1,3 +1,4 @@
+#include "internal/task_state.h"
 #include "task_system.h"
 
 #include <algorithm>
@@ -11,6 +12,8 @@
 #ifndef NDEBUG
     #include <unordered_set>
 #endif
+#include "internal/task_state.h"
+
 #include <utility>
 
 #include <lib/common/error/exception.h>
@@ -68,21 +71,10 @@ thread_local WorkerThreadContext CurrentWorker;
 
 } // namespace
 
-struct TaskSystem::OwnerToken {};
-
-struct TaskHandle::State: std::enable_shared_from_this<TaskHandle::State> {
-    mutable std::mutex Mutex;
-    std::condition_variable Condition;
-    std::shared_ptr<const TaskSystem::OwnerToken> Owner;
-    std::atomic<TaskHandle::State*> RetiredNext = nullptr;
-    std::atomic_bool RetirementQueued = false;
-    std::uint64_t Id = 0;
-    std::shared_ptr<State> FinalizationNext;
-    State* CancellationNext = nullptr;
-    std::atomic<TaskSystem::ReadyQueue*> Queue = nullptr;
-    State* ReadyPrevious = nullptr;
-    State* ReadyNext = nullptr;
-    TaskSystem::Task Task;
+struct TaskSystem::OwnerToken {
+#ifndef NDEBUG
+    mutable DagValidationStats ValidationStats;
+#endif
 };
 
 struct TaskGroupHandle::State {
@@ -219,6 +211,11 @@ bool TaskSystem::TaskRegistry::LinkDependencyEdgesLocked(TaskHandle::State& stat
         }
         prerequisite.Task.Outgoing = &edge;
         task.RemainingDependencies.fetch_add(1, std::memory_order_relaxed);
+#ifndef NDEBUG
+        ++task.DebugIncomingCount;
+        ++prerequisite.Task.DebugOutgoingCount;
+#endif
+        ValidateEdgeLocked(edge);
     }
     return false;
 }
@@ -235,6 +232,14 @@ void TaskSystem::TaskRegistry::UnlinkEdgeLocked(DependencyEdge& edge) noexcept {
     if (edge.Prerequisite == nullptr) {
         return;
     }
+    ValidateEdgeLocked(edge);
+#ifndef NDEBUG
+    if (edge.Dependent->Task.DebugIncomingCount == 0 || edge.Prerequisite->Task.DebugOutgoingCount == 0) {
+        FailDagInvariantLocked("DAG debug degree underflow");
+    }
+    --edge.Dependent->Task.DebugIncomingCount;
+    --edge.Prerequisite->Task.DebugOutgoingCount;
+#endif
     if (edge.PreviousIncoming != nullptr) {
         edge.PreviousIncoming->NextIncoming = edge.NextIncoming;
     } else {
@@ -323,6 +328,7 @@ TaskGroupHandle TaskSystem::CreateTaskGroup() {
         throw;
     }
     m_lifetime.OutstandingTasks.fetch_add(1, std::memory_order_release);
+    ValidateMutationLocked(*state);
     return TaskGroupHandle{state->Id, std::move(group)};
 }
 
@@ -500,9 +506,6 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function,
 
     // The registry insertion is the last throwing preparation. Nothing can observe it while G
     // is held; state/callable owners declared before the lock survive any insertion failure.
-#ifndef NDEBUG
-    ValidateDagLocked();
-#endif
     submitted.State->Task = std::move(submitted.Task);
     m_registry.CommitActiveTaskLocked(submitted.Id, submitted.State);
 
@@ -522,6 +525,7 @@ TaskHandle TaskSystem::SubmitImpl(TaskFunction& function,
     } else if (submitted.State->Task.Status == ETaskStatus::READY) {
         m_readyScheduler.PublishReadyTask(*this, submitted.State);
     }
+    ValidateMutationLocked(*submitted.State);
     lock.unlock();
     m_readyScheduler.WakeAll();
     return TaskHandle{submitted.Id, submitted.State};
@@ -841,6 +845,7 @@ void TaskSystem::DrainFinalizations(FinalizationBatch& batch) noexcept {
                 TaskLifetime::ReleaseDependencyPayloadLocked(state->Task);
                 state->Task.Status = state->Task.PendingStatus;
             }
+            ValidateMutationLocked(*state);
             RetireGroupMemberLocked(state, batch);
             m_lifetime.RetireTask(*state);
             m_lifetime.ReleaseOutstandingTask();
@@ -872,6 +877,7 @@ void TaskSystem::PublishSuccessLocked(TaskHandle::State& state) noexcept {
                 ready = true;
             }
         }
+        ValidateMutationLocked(*dependent);
         if (ready) {
             m_readyScheduler.PublishReadyTask(*this, dependent);
         }
@@ -912,6 +918,7 @@ void TaskSystem::CompleteState(const std::shared_ptr<TaskHandle::State>& state,
             std::lock_guard taskLock{state->Mutex};
             TaskLifetime::ReleaseDependencyPayloadLocked(state->Task);
         }
+        ValidateMutationLocked(*state);
         RetireGroupMemberLocked(state, finalizations);
         m_lifetime.RetireTask(*state);
         m_lifetime.ReleaseOutstandingTask();
@@ -953,6 +960,7 @@ void TaskSystem::PrepareCancellationsLocked(FinalizationBatch& batch) noexcept {
         TaskRegistry::UnlinkDependencyEdgesLocked(state->Task);
         state->Task.RemainingDependencies.store(0, std::memory_order_relaxed);
         PropagateCancellationLocked(state->Task, batch);
+        ValidateMutationLocked(*state);
     }
 }
 
@@ -980,52 +988,167 @@ void TaskSystem::TaskLifetime::ReleaseDependencyPayloadLocked(Task& task) noexce
     std::terminate();
 }
 
+void TaskSystem::ValidateEdgeLocked(const DependencyEdge& edge) noexcept {
 #ifndef NDEBUG
-void TaskSystem::ValidateDagLocked() const {
-    for (const auto& [taskId, state]: m_registry.ActiveTasks) {
-        ETaskStatus status;
-        {
-            std::lock_guard taskLock{state->Mutex};
-            if (state->Task.Finalizing || TaskLifetime::IsTerminalLocked(state->Task)) {
-                continue;
-            }
-            status = state->Task.Status;
+    if (edge.Prerequisite == nullptr || edge.Dependent == nullptr ||
+        edge.Prerequisite->Owner != edge.Dependent->Owner || edge.Prerequisite->Id >= edge.Dependent->Id) {
+        FailDagInvariantLocked("Invalid DAG edge endpoints");
+    }
+    ++edge.Dependent->Owner->ValidationStats.MutationEdges;
+    if ((edge.PreviousIncoming == nullptr && edge.Dependent->Task.Incoming != &edge) ||
+        (edge.PreviousIncoming != nullptr && edge.PreviousIncoming->NextIncoming != &edge) ||
+        (edge.NextIncoming != nullptr && edge.NextIncoming->PreviousIncoming != &edge) ||
+        (edge.PreviousOutgoing == nullptr && edge.Prerequisite->Task.Outgoing != &edge) ||
+        (edge.PreviousOutgoing != nullptr && edge.PreviousOutgoing->NextOutgoing != &edge) ||
+        (edge.NextOutgoing != nullptr && edge.NextOutgoing->PreviousOutgoing != &edge)) {
+        FailDagInvariantLocked("Invalid DAG edge backlinks");
+    }
+#else
+    static_cast<void>(edge);
+#endif
+}
+
+void TaskSystem::ValidateMutationLocked(const TaskHandle::State& state) noexcept {
+#ifndef NDEBUG
+    if (state.Owner == nullptr) {
+        FailDagInvariantLocked("Invalid DAG state owner");
+    }
+    ++state.Owner->ValidationStats.MutationStates;
+    if (const char* error = FindMutationViolationLocked(state)) {
+        FailDagInvariantLocked(error);
+    }
+#else
+    static_cast<void>(state);
+#endif
+}
+
+#ifndef NDEBUG
+const char* TaskSystem::FindMutationViolationLocked(const TaskHandle::State& state) noexcept {
+    std::lock_guard taskLock{state.Mutex};
+    const Task& task = state.Task;
+    if (state.Id == 0 || state.Owner == nullptr) {
+        return "Invalid DAG state identity";
+    }
+    if (task.Status < ETaskStatus::WAITING || task.Status > ETaskStatus::CANCELLED) {
+        return "Invalid published DAG task state";
+    }
+    if ((task.Incoming == nullptr) != (task.DebugIncomingCount == 0) ||
+        (task.Outgoing == nullptr) != (task.DebugOutgoingCount == 0)) {
+        return "DAG head and degree disagree";
+    }
+    if (task.RemainingDependencies.load(std::memory_order_relaxed) != task.DebugIncomingCount) {
+        return "Task remaining dependency counter is inconsistent";
+    }
+    if ((task.Incoming != nullptr &&
+         (task.Incoming->Dependent != &state || task.Incoming->PreviousIncoming != nullptr)) ||
+        (task.Outgoing != nullptr &&
+         (task.Outgoing->Prerequisite != &state || task.Outgoing->PreviousOutgoing != nullptr))) {
+        return "Invalid DAG list head";
+    }
+    if (TaskLifetime::IsTerminalLocked(task) && (task.Incoming != nullptr || task.Outgoing != nullptr)) {
+        return "Terminal task retains DAG edges";
+    }
+    if ((task.Status == ETaskStatus::READY || task.Status == ETaskStatus::RUNNING) && task.Incoming != nullptr) {
+        return "Runnable task retains prerequisites";
+    }
+    if (task.Status == ETaskStatus::WAITING && !task.Finalizing && task.GroupGateId == 0 && task.Incoming == nullptr) {
+        return "Waiting task has no prerequisites";
+    }
+    return nullptr;
+}
+
+TaskSystem::DagValidationStats TaskSystem::GetDagValidationStatsLocked() const noexcept {
+    return m_registry.Owner->ValidationStats;
+}
+
+const char* TaskSystem::FindDagViolationFullLocked() const {
+    // Only explicit diagnostics allocate. Establish address membership before dereferencing any
+    // graph pointer, including list neighbours and endpoints; malformed/dangling hooks fail closed.
+    std::unordered_set<const TaskHandle::State*> states;
+    std::unordered_map<const DependencyEdge*, const TaskHandle::State*> storage;
+    for (const auto& [id, state]: m_registry.ActiveTasks) {
+        ++m_registry.Owner->ValidationStats.FullStates;
+        if (state == nullptr || state->Owner != m_registry.Owner || state->Id != id ||
+            !states.insert(state.get()).second) {
+            return "Invalid DAG registry owner or identity";
         }
-        const Task& task = state->Task;
-        std::unordered_set<std::uint64_t> uniqueDependencies;
-        std::size_t unfinishedDependencies = 0;
+        for (const DependencyEdge& edge: state->Task.Dependencies) {
+            if (!storage.emplace(&edge, state.get()).second) {
+                return "Aliased DAG edge storage";
+            }
+        }
+    }
+    std::unordered_set<const DependencyEdge*> incoming;
+    std::unordered_set<const DependencyEdge*> outgoing;
+    for (const auto& [id, state]: m_registry.ActiveTasks) {
+        static_cast<void>(id);
+        std::unordered_set<std::uint64_t> uniqueParents;
         const DependencyEdge* previous = nullptr;
-        for (const DependencyEdge* edge = task.Incoming; edge != nullptr; edge = edge->NextIncoming) {
-            if (edge->Dependent != state.get() || edge->Prerequisite == nullptr || edge->PreviousIncoming != previous ||
-                !uniqueDependencies.insert(edge->Prerequisite->Id).second) {
-                FailDagInvariantLocked("Invalid incoming dependency edge");
+        std::size_t incomingCount = 0;
+        for (const DependencyEdge* edge = state->Task.Incoming; edge != nullptr; edge = edge->NextIncoming) {
+            ++m_registry.Owner->ValidationStats.FullEdges;
+            const auto entry = storage.find(edge);
+            if (entry == storage.end() || entry->second != state.get() || !incoming.insert(edge).second) {
+                return "Invalid incoming edge storage or cycle";
             }
-            if ((edge->PreviousOutgoing == nullptr && edge->Prerequisite->Task.Outgoing != edge) ||
-                (edge->PreviousOutgoing != nullptr && edge->PreviousOutgoing->NextOutgoing != edge) ||
-                (edge->NextOutgoing != nullptr && edge->NextOutgoing->PreviousOutgoing != edge)) {
-                FailDagInvariantLocked("Dependency edge does not link back from prerequisite");
+            if (edge->Dependent != state.get() || !states.contains(edge->Prerequisite) ||
+                edge->PreviousIncoming != previous || edge->Prerequisite->Id >= state->Id ||
+                !uniqueParents.insert(edge->Prerequisite->Id).second) {
+                return "Invalid incoming endpoint, order or duplicate";
             }
-            ++unfinishedDependencies;
+            ++incomingCount;
             previous = edge;
         }
-        if (status == ETaskStatus::WAITING &&
-            task.RemainingDependencies.load(std::memory_order_relaxed) != unfinishedDependencies) {
-            FailDagInvariantLocked("Task remaining dependency counter is inconsistent");
-        }
-        std::unordered_set<std::uint64_t> uniqueDependents;
+        std::unordered_set<std::uint64_t> uniqueChildren;
         previous = nullptr;
-        for (const DependencyEdge* edge = task.Outgoing; edge != nullptr; edge = edge->NextOutgoing) {
-            if (edge->Prerequisite != state.get() || edge->Dependent == nullptr || edge->PreviousOutgoing != previous ||
-                !uniqueDependents.insert(edge->Dependent->Id).second) {
-                FailDagInvariantLocked("Invalid outgoing dependency edge");
+        std::size_t outgoingCount = 0;
+        for (const DependencyEdge* edge = state->Task.Outgoing; edge != nullptr; edge = edge->NextOutgoing) {
+            ++m_registry.Owner->ValidationStats.FullEdges;
+            const auto entry = storage.find(edge);
+            if (entry == storage.end() || !outgoing.insert(edge).second) {
+                return "Invalid outgoing edge storage or cycle";
             }
-            if ((edge->PreviousIncoming == nullptr && edge->Dependent->Task.Incoming != edge) ||
-                (edge->PreviousIncoming != nullptr && edge->PreviousIncoming->NextIncoming != edge) ||
-                (edge->NextIncoming != nullptr && edge->NextIncoming->PreviousIncoming != edge)) {
-                FailDagInvariantLocked("Dependency edge does not link back from dependent");
+            if (edge->Prerequisite != state.get() || !states.contains(edge->Dependent) ||
+                entry->second != edge->Dependent || edge->PreviousOutgoing != previous ||
+                state->Id >= edge->Dependent->Id || !uniqueChildren.insert(edge->Dependent->Id).second) {
+                return "Invalid outgoing endpoint, order or duplicate";
             }
+            ++outgoingCount;
             previous = edge;
         }
+        if (incomingCount != state->Task.DebugIncomingCount || outgoingCount != state->Task.DebugOutgoingCount) {
+            return "DAG cached degree is inconsistent";
+        }
+    }
+    // Every live edge must be represented once in both lists. This also detects a completely
+    // dropped list head, even if the corrupted cached degree was made to agree with that head.
+    for (const auto& [edge, dependent]: storage) {
+        static_cast<void>(dependent);
+        const bool linked = incoming.contains(edge) && outgoing.contains(edge);
+        if (edge->Prerequisite != nullptr) {
+            if (!linked) {
+                return "DAG edge is missing a backlink";
+            }
+        } else if (incoming.contains(edge) || outgoing.contains(edge) || edge->Dependent != nullptr ||
+                   edge->PreviousIncoming != nullptr || edge->NextIncoming != nullptr ||
+                   edge->PreviousOutgoing != nullptr || edge->NextOutgoing != nullptr) {
+            return "Unlinked DAG edge retains hooks";
+        }
+    }
+    // Heads are now known to be valid storage addresses; local status/remaining checks may
+    // inspect them safely. Only one State mutex is held at a time, always under G.
+    for (const auto& [id, state]: m_registry.ActiveTasks) {
+        static_cast<void>(id);
+        if (const char* error = FindMutationViolationLocked(*state)) {
+            return error;
+        }
+    }
+    return nullptr;
+}
+
+void TaskSystem::ValidateDagFullLocked() const {
+    if (const char* error = FindDagViolationFullLocked()) {
+        FailDagInvariantLocked(error);
     }
 }
 #endif

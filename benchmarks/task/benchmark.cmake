@@ -3,6 +3,7 @@ BENCHMARK(Task)
 SOURCES(
     task_system.cpp
     dependency_validation.cpp
+    dag_validation.cpp
 )
 
 PRIVATE_DEPENDS(

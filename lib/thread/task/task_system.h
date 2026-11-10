@@ -77,6 +77,7 @@ private:
 
     friend class TaskSystem;
     friend class TaskContext;
+    friend struct TaskSystemTestAccess;
 };
 
 enum class ETaskGroupStatus {
@@ -221,6 +222,10 @@ private:
             , Error(std::move(other.Error))
             , Group(std::move(other.Group))
             , GroupGateId(other.GroupGateId) {
+#ifndef NDEBUG
+            DebugIncomingCount = std::exchange(other.DebugIncomingCount, 0);
+            DebugOutgoingCount = std::exchange(other.DebugOutgoingCount, 0);
+#endif
             Function.swap(other.Function);
         }
         Task& operator=(Task&& other) noexcept {
@@ -240,6 +245,10 @@ private:
             Error = std::move(other.Error);
             Group = std::move(other.Group);
             GroupGateId = other.GroupGateId;
+#ifndef NDEBUG
+            DebugIncomingCount = std::exchange(other.DebugIncomingCount, 0);
+            DebugOutgoingCount = std::exchange(other.DebugOutgoingCount, 0);
+#endif
             return *this;
         }
 
@@ -257,6 +266,10 @@ private:
         std::optional<ErrorInfo> Error;
         std::shared_ptr<TaskGroupHandle::State> Group;
         std::uint64_t GroupGateId = 0;
+#ifndef NDEBUG
+        std::size_t DebugIncomingCount = 0;
+        std::size_t DebugOutgoingCount = 0;
+#endif
     };
 
     struct ReadyQueue {
@@ -367,8 +380,19 @@ private:
     void CancelPendingTasksLocked(FinalizationBatch& batch) noexcept;
     void DrainFinalizations(FinalizationBatch& batch) noexcept;
     [[noreturn]] static void FailDagInvariantLocked(const char* message) noexcept;
+    static void ValidateMutationLocked(const TaskHandle::State& state) noexcept;
+    static void ValidateEdgeLocked(const DependencyEdge& edge) noexcept;
 #ifndef NDEBUG
-    void ValidateDagLocked() const;
+    struct DagValidationStats {
+        std::size_t MutationStates = 0;
+        std::size_t MutationEdges = 0;
+        std::size_t FullStates = 0;
+        std::size_t FullEdges = 0;
+    };
+    [[nodiscard]] static const char* FindMutationViolationLocked(const TaskHandle::State& state) noexcept;
+    [[nodiscard]] const char* FindDagViolationFullLocked() const;
+    void ValidateDagFullLocked() const;
+    [[nodiscard]] DagValidationStats GetDagValidationStatsLocked() const noexcept;
 #endif
     void StopWorkers() noexcept;
     void WorkerLoop(WorkerIndex workerIndex) noexcept;

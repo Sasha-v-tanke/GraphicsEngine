@@ -239,9 +239,6 @@ TEST(TaskDag, ShutdownDuringFailureCascade) {
 }
 
 TEST(TaskDag, DeepChain200k) {
-#ifndef NDEBUG
-    GTEST_SKIP() << "200k admission requires Release: full Debug DAG audit belongs to IMPROVE-0048";
-#else
     for (const std::size_t workers: {1U, 2U, 8U}) {
         std::atomic_size_t destroyed{0};
         std::atomic_size_t invoked{0};
@@ -265,13 +262,9 @@ TEST(TaskDag, DeepChain200k) {
         EXPECT_EQ(destroyed.load(), tasks.size());
         EXPECT_EQ(invoked.load(), 0U);
     }
-#endif
 }
 
 TEST(TaskDag, WideFanIn100k) {
-#ifndef NDEBUG
-    GTEST_SKIP() << "100k admission requires Release: full Debug DAG audit belongs to IMPROVE-0048";
-#else
     std::atomic_size_t destroyed{0};
     std::atomic_size_t invoked{0};
     NCommon::TaskSystem pool{8};
@@ -291,7 +284,6 @@ TEST(TaskDag, WideFanIn100k) {
     EXPECT_EQ(pool.GetStatus(unaffected), NCommon::ETaskStatus::READY);
     EXPECT_EQ(destroyed.load(), joins.size());
     EXPECT_EQ(invoked.load(), 0U);
-#endif
 }
 
 } // namespace
