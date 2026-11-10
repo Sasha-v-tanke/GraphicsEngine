@@ -7,6 +7,7 @@ SOURCES(
     application_test.cpp
     runtime_mvp_test.cpp
     presentation_runtime.cpp
+    scene_runtime.cpp
 )
 
 PRIVATE_DEPENDS(
