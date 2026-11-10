@@ -5,6 +5,7 @@ RECURSE(
     smoke
     task
     renderer
+    traversal
 )
 
 if (GRAPHICS_ENGINE_BUILD_VULKAN AND GRAPHICS_ENGINE_BUILD_GLFW)
