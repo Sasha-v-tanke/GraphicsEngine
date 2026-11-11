@@ -89,6 +89,7 @@ struct TaskSystemTestAccess {
             break;
         case EFault::OUTGOING_HEAD:
             left.Outgoing = nullptr;
+            left.DebugOutgoingCount = 0;
             inspectLocal = false;
             break;
         case EFault::INCOMING_PREVIOUS:
@@ -185,6 +186,9 @@ TEST(DebugDag, FullAndLocalChecksRejectCorruptionAndRestoreTheGraph) {
         if (fault == Fault::REMAINING || fault == Fault::INCOMING_HEAD || fault == Fault::INCOMING_PREVIOUS ||
             fault == Fault::DEGREE || fault == Fault::IDENTITY || fault == Fault::STATUS) {
             EXPECT_NE(local, nullptr) << static_cast<int>(fault);
+        }
+        if (fault == Fault::OUTGOING_HEAD) {
+            EXPECT_NE(std::string(full).find("backlink"), std::string::npos);
         }
         if (fault == Fault::DUPLICATE_PARENT) {
             EXPECT_NE(std::string(full).find("duplicate"), std::string::npos);
