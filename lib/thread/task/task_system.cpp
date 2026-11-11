@@ -12,8 +12,6 @@
 #ifndef NDEBUG
     #include <unordered_set>
 #endif
-#include "internal/task_state.h"
-
 #include <utility>
 
 #include <lib/common/error/exception.h>
@@ -997,11 +995,13 @@ void TaskSystem::ValidateEdgeLocked(const DependencyEdge& edge) noexcept {
     ++edge.Dependent->Owner->ValidationStats.MutationEdges;
     if ((edge.PreviousIncoming == nullptr && edge.Dependent->Task.Incoming != &edge) ||
         (edge.PreviousIncoming != nullptr && edge.PreviousIncoming->NextIncoming != &edge) ||
-        (edge.NextIncoming != nullptr && edge.NextIncoming->PreviousIncoming != &edge) ||
-        (edge.PreviousOutgoing == nullptr && edge.Prerequisite->Task.Outgoing != &edge) ||
+        (edge.NextIncoming != nullptr && edge.NextIncoming->PreviousIncoming != &edge)) {
+        FailDagInvariantLocked("Invalid DAG incoming edge backlinks");
+    }
+    if ((edge.PreviousOutgoing == nullptr && edge.Prerequisite->Task.Outgoing != &edge) ||
         (edge.PreviousOutgoing != nullptr && edge.PreviousOutgoing->NextOutgoing != &edge) ||
         (edge.NextOutgoing != nullptr && edge.NextOutgoing->PreviousOutgoing != &edge)) {
-        FailDagInvariantLocked("Invalid DAG edge backlinks");
+        FailDagInvariantLocked("Invalid DAG outgoing edge backlinks");
     }
 #else
     static_cast<void>(edge);
