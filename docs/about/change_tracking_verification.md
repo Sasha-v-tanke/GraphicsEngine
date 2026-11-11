@@ -11,7 +11,7 @@ squash commit `d87826581f37450adcff37edc4ade546d4fdde35`.
 intercepts actual normal C++ allocation/deallocation requests on the publisher thread.
 It includes map/vector/deque storage and shared ownership control blocks. A fixed
 stack table tracks live pointers, requested sizes and peak bytes without allocating
-inside the probe; overflow fails the test. These are allocated-request bytes, not
+inside the probe; overflow fails the test. These are allocation-request bytes, not
 logical record counts or process RSS. Allocator bookkeeping/rounding and OS runtime
 allocations are outside this metric.
 
@@ -46,7 +46,7 @@ cmake --build /private/tmp/tracking-memory --target GraphicsEngineEcsRunFaultTes
 ## TSan execution
 
 Homebrew Clang 23.1.1, macOS arm64; ThreadSanitizer instrumentation enabled for both
-the libraries and test executables. The following commands completed with exit 0:
+the libraries and test executables. Both instrumented test runs exited 0; reproduce with:
 
 ```sh
 cmake --preset ci-lite -B /private/tmp/tracking-tsan \
