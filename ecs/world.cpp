@@ -11,6 +11,7 @@
 #include <ecs/internal/scoped_batch.h>
 #include <ecs/internal/system_run.h>
 #include <ecs/internal/topology.h>
+#include <ecs/internal/world_changes.h>
 
 namespace NEcs {
 namespace {
@@ -42,6 +43,7 @@ TopologySnapshot World::AcquireTopologySnapshot() const {
 void World::SetLocalTransform(EntityReference entity, const NMath::Mat4& local) {
     ValidateStructuralWriteAllowed();
     StructuralWriteGuard structuralGuard{*this};
+    m_pendingChanges.AllDomains = true;
     m_topology->SetLocal(entity, local);
 }
 World::DeferredReparentCommand::DeferredReparentCommand(EntityReference child,
@@ -52,6 +54,7 @@ World::DeferredReparentCommand::DeferredReparentCommand(EntityReference child,
     , m_mode(mode) {
 }
 void World::DeferredReparentCommand::Apply(World& world) {
+    world.m_pendingChanges.AllDomains = true;
     world.m_topology->Reparent(m_child, m_parent, m_mode);
 }
 void World::DeferReparent(EntityReference child, EntityReference parent, EReparentMode mode) {
@@ -74,7 +77,59 @@ struct World::SystemInvocation {
     std::shared_ptr<NInternal::ResolvedBatch> Batch;
     std::vector<NInternal::AccessFootprint> Footprints;
     bool Invoked = false;
+    NCommon::DirtySummary Changes;
 };
+
+NCommon::ChangeDomainKey World::GetChangeDomain(std::type_index type, bool entityRevisions) {
+    if (entityRevisions) {
+        m_entityRevisionTypes.insert(type);
+    }
+    auto found = m_changeDomains.find(type);
+    if (found == m_changeDomains.end()) {
+        const NCommon::ChangeDomainKey key{m_topology->WorldId, m_changeDomains.size() + 1, 1};
+        m_changes.RegisterDomain(key, entityRevisions);
+        found = m_changeDomains.emplace(type, key).first;
+        m_pendingChanges.MarkAll(key);
+    } else if (entityRevisions) {
+        m_changes.RegisterDomain(found->second, true);
+    }
+    return found->second;
+}
+
+void World::TrackComponentAccess(std::type_index type) {
+    if (auto* invocation = GetCurrentSystemInvocation()) {
+        const auto found = m_changeDomains.find(type);
+        if (found == m_changeDomains.end()) {
+            invocation->Changes.AllDomains = true;
+            return;
+        }
+        for (auto& dirty: invocation->Changes.Domains) {
+            if (dirty.Domain == found->second) {
+                dirty.WholeStorage = true;
+                return;
+            }
+        }
+        invocation->Changes.AllDomains = true;
+        return;
+    }
+    if (IsRunningSystems_.load() && CommittingWorld_ != this) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Mutable World access requires an active invocation");
+    }
+    m_pendingChanges.MarkAll(GetChangeDomain(type));
+}
+
+NCommon::WorldEpoch NInternal::WorldChangeAccess::PublishEpoch(World& world) {
+    world.ValidateStructuralWriteAllowed();
+    const NCommon::DirtySummary* summary = &world.m_pendingChanges;
+    const auto epoch = world.m_changes.PublishEpoch({&summary, 1});
+    world.m_pendingChanges.Clear();
+    return epoch;
+}
+
+NCommon::ChangeSnapshot NInternal::WorldChangeAccess::CaptureSnapshot(World& world) {
+    world.ValidateStructuralWriteAllowed();
+    return world.m_changes.CaptureSnapshot(world.m_pendingChanges.HasChanges());
+}
 
 thread_local World::SystemInvocation* World::CurrentSystemInvocation_ = nullptr;
 thread_local World* World::CommittingWorld_ = nullptr;
@@ -398,6 +453,7 @@ World::DeferredStructuralCommandBuffer::State::~State() {
 Entity World::CreateEntity() {
     ValidateStructuralWriteAllowed();
     StructuralWriteGuard structuralGuard{*this};
+    m_pendingChanges.AllDomains = true;
 
     if (PendingDeferredEntityCreateCount_ > 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
@@ -438,6 +494,7 @@ World::DeferredCreateEntityCommand::DeferredCreateEntityCommand(Entity entity, b
 }
 
 void World::DeferredCreateEntityCommand::Apply(World& world) {
+    world.m_pendingChanges.AllDomains = true;
     world.m_topology->Prepare(Entity_.Index);
     if (ReusedFreeSlot_) {
         auto& state = world.Entities_[Entity_.Index];
@@ -642,6 +699,8 @@ void World::DestroyEntity(Entity entity) {
     if (!IsAlive(entity)) {
         return;
     }
+
+    m_pendingChanges.AllDomains = true;
 
     FreeEntityIndices_.reserve(FreeEntityIndices_.size() + 1);
     for (auto& [componentType, storage]: ComponentStorageByType_) {
@@ -979,6 +1038,16 @@ void World::RunSystems(NCommon::TaskSystem& taskSystem) {
 }
 
 void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations) {
+    m_changeInputs.reserve(invocations.size() + 1);
+    for (std::size_t index = 0; index < Systems_.size(); ++index) {
+        const auto& system = Systems_[index];
+        auto& changes = invocations[index].Changes;
+        changes.AllDomains = !system.Scoped && system.Access.empty();
+        for (const auto& access: system.Access) {
+            auto& dirty = changes.Touch(GetChangeDomain(access.Component));
+            dirty.WholeStorage = dirty.WholeStorage || (!system.Scoped && access.Mode == ESystemAccessMode::WRITE);
+        }
+    }
     if (!std::ranges::any_of(Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
         return;
     }
@@ -1007,6 +1076,17 @@ void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations)
                                                  : NInternal::EAccessRequirement::READ});
         if (system.Scoped) {
             invocation.Batch = NInternal::ScopedWorldAccess::Resolve(*this, *system.Scoped);
+            for (const auto& entry: invocation.Batch->Entries) {
+                if (entry.Writable) {
+                    const auto key = m_changeDomains.at(entry.Type);
+                    if (m_entityRevisionTypes.contains(entry.Type)) {
+                        invocation.Changes.MarkEntity(key,
+                                                      {entry.Entity.Identity.Index, entry.Entity.Identity.Generation});
+                    } else {
+                        invocation.Changes.MarkRange(key, entry.Entity.Identity.Index, 1);
+                    }
+                }
+            }
             for (const auto& declaration: system.Scoped->Access) {
                 NInternal::AccessScope scope{.Kind = declaration.Scope.Kind,
                                              .Begin = declaration.Scope.Begin,
@@ -1037,6 +1117,20 @@ void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations)
 }
 
 void World::CollectScopedDirty(std::vector<SystemInvocation>& invocations) noexcept {
+    try {
+        m_changeInputs.clear();
+        m_changeInputs.push_back(&m_pendingChanges);
+        for (const auto& invocation: invocations) {
+            if (invocation.Invoked) {
+                m_changeInputs.push_back(&invocation.Changes);
+            }
+        }
+        static_cast<void>(m_changes.PublishEpoch(m_changeInputs));
+        m_pendingChanges.Clear();
+    } catch (...) {
+        m_changes.InvalidateAll();
+        m_pendingChanges.AllDomains = true;
+    }
     if (invocations.size() != Systems_.size() ||
         !std::ranges::any_of(Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
         return;

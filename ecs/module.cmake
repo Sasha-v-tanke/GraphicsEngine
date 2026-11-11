@@ -9,6 +9,7 @@ API(
 
 SOURCES(
     internal/adaptive_traversal.h
+    internal/world_changes.h
     internal/scoped_batch.h
     internal/scoped_batch.cpp
     internal/system_run.h
