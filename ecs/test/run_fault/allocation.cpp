@@ -1,7 +1,10 @@
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <new>
 #include <semaphore>
@@ -18,6 +21,58 @@
 namespace {
 
 thread_local std::ptrdiff_t AllocationBudget = -1;
+
+#ifndef GRAPHICS_ENGINE_ECS_FAULT_ASAN
+// Allocation-request bytes, including containers/control blocks, rather than logical entry counts.
+// The probe itself uses fixed stack storage and cannot recursively allocate from operator new.
+struct HeapProbe {
+    struct Record {
+        void* Pointer = nullptr;
+        std::size_t Bytes = 0;
+    };
+    std::array<Record, 16384> Records = {};
+    std::size_t LiveBytes = 0;
+    std::size_t PeakBytes = 0;
+    bool Overflow = false;
+
+    void Allocate(void* pointer, std::size_t bytes) noexcept {
+        for (auto& record: Records) {
+            if (record.Pointer == nullptr) {
+                record = {pointer, bytes};
+                LiveBytes += bytes;
+                PeakBytes = std::max(PeakBytes, LiveBytes);
+                return;
+            }
+        }
+        Overflow = true;
+    }
+
+    void Free(void* pointer) noexcept {
+        for (auto& record: Records) {
+            if (record.Pointer == pointer && pointer != nullptr) {
+                LiveBytes -= record.Bytes;
+                record = {};
+                return;
+            }
+        }
+    }
+};
+
+thread_local HeapProbe* ActiveHeapProbe = nullptr;
+
+class HeapProbeScope final: private NCommon::NonTransferable {
+public:
+    explicit HeapProbeScope(HeapProbe& probe)
+        : m_previous(std::exchange(ActiveHeapProbe, &probe)) {
+    }
+    ~HeapProbeScope() {
+        ActiveHeapProbe = m_previous;
+    }
+
+private:
+    HeapProbe* m_previous;
+};
+#endif
 
 } // namespace
 
@@ -40,6 +95,9 @@ void* operator new(std::size_t size) {
     }
 #else
     if (void* memory = std::malloc(size == 0 ? 1 : size)) {
+        if (ActiveHeapProbe != nullptr) {
+            ActiveHeapProbe->Allocate(memory, size == 0 ? 1 : size);
+        }
         return memory;
     }
 #endif
@@ -49,12 +107,15 @@ void* operator new(std::size_t size) {
 #ifndef GRAPHICS_ENGINE_ECS_FAULT_ASAN
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
 void operator delete(void* memory) noexcept {
+    if (ActiveHeapProbe != nullptr) {
+        ActiveHeapProbe->Free(memory);
+    }
     std::free(memory);
 }
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
 void operator delete(void* memory, std::size_t) noexcept {
-    std::free(memory);
+    ::operator delete(memory);
 }
 
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name): Standard-library names vary by implementation.
@@ -73,6 +134,75 @@ void operator delete(void* memory, const std::nothrow_t&) noexcept {
 #endif
 
 namespace {
+#ifndef GRAPHICS_ENGINE_ECS_FAULT_ASAN
+// ASan owns the delete interceptor in this executable; allocator instrumentation is
+// exercised by normal Small/Medium profiles, while sanitizer profiles retain fault tests.
+TEST(EcsRunFault, TrackingHeapIsBoundedAndPinnedSnapshotsReleaseTheirAllocations) {
+    HeapProbe probe;
+    std::size_t steady = 0;
+    std::size_t pinned = 0;
+    std::size_t released = 0;
+    std::size_t maximumSteady = 0;
+    std::size_t historyEpochs = 0;
+    {
+        HeapProbeScope scope(probe);
+        {
+            NCommon::ChangeTracker tracker({.MaxDomains = 4,
+                                            .MaxHistoryEpochs = 4,
+                                            .MaxHistoryRecords = 2048,
+                                            .MaxRangesPerDomain = 64,
+                                            .MaxChunkVersionsPerDomain = 64,
+                                            .MaxEntityVersionsPerDomain = 64,
+                                            .ChunkSize = 1});
+            for (std::uint64_t type = 1; type <= 4; ++type) {
+                tracker.RegisterDomain({1, type, 1}, true);
+            }
+            static_cast<void>(tracker.PublishEpoch());
+            const auto publish = [&](std::uint64_t index) {
+                NCommon::DirtySummary dirty;
+                for (std::uint64_t type = 1; type <= 4; ++type) {
+                    for (std::uint64_t item = 0; item < 32; ++item) {
+                        dirty.MarkEntity({1, type, 1}, {(index % 2) * 64 + item * 2, 1});
+                    }
+                }
+                const NCommon::DirtySummary* input = &dirty;
+                static_cast<void>(tracker.PublishEpoch({&input, 1}));
+            };
+            for (std::uint64_t index = 0; index < 8; ++index) {
+                publish(index);
+            }
+            steady = probe.LiveBytes;
+            historyEpochs = tracker.CaptureSnapshot().GetStatistics().HistoryEpochs;
+            std::array<NCommon::ChangeSnapshot, 8> snapshots;
+            for (std::size_t index = 0; index < snapshots.size(); ++index) {
+                publish(index);
+                snapshots[index] = tracker.CaptureSnapshot();
+            }
+            pinned = probe.LiveBytes;
+            snapshots = {};
+            released = probe.LiveBytes;
+            maximumSteady = released;
+            for (std::uint64_t index = 0; index < 128; ++index) {
+                publish(index);
+                maximumSteady = std::max(maximumSteady, probe.LiveBytes);
+            }
+        }
+    }
+    ASSERT_FALSE(probe.Overflow);
+    EXPECT_EQ(historyEpochs, 4U);
+    EXPECT_GT(pinned, released);
+    EXPECT_LE(released, steady + 4096);
+    EXPECT_LE(maximumSteady, steady + 4096);
+    EXPECT_LT(steady, 512U * 1024);
+    EXPECT_LT(pinned, 2U * 1024 * 1024);
+    EXPECT_LT(probe.PeakBytes, 4U * 1024 * 1024);
+    EXPECT_EQ(probe.LiveBytes, 0U);
+    std::cout << "ChangeTracker allocation-request bytes: steady=" << steady << " pinned=" << pinned
+              << " released=" << released << " maxSteady=" << maximumSteady << " peak=" << probe.PeakBytes
+              << " final=" << probe.LiveBytes << '\n';
+}
+#endif
+
 TEST(EcsRunFault, TrackingPublicationAllocationFailurePreservesDirtyWrites) {
     NEcs::World world;
     const auto entity = world.CreateEntity();

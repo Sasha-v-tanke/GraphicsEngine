@@ -1,5 +1,8 @@
 # Change tracking
 
+Measured allocation footprint and reproducible TSan commands are in
+[acceptance evidence](change_tracking_verification.md).
+
 `NCommon::ChangeTracker` publishes metadata for owner-defined domains. A key contains
 owner, type and generation identities. Advancing a generation retires the old key.
 Registration becomes visible at the next `PublishEpoch`.
