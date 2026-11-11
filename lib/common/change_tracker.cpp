@@ -186,6 +186,8 @@ WorldEpoch ChangeTracker::PublishEpoch(std::span<const DirtySummary* const> summ
     try {
         const auto old = m_impl->Load();
         auto state = std::make_shared<ChangeSnapshot::State>(*old);
+        // Captures compare this sequence with live invalidation, so a later concurrent
+        // invalidation remains visible even after this replacement root is installed.
         state->Invalidation = m_impl->Invalidation.load(std::memory_order_acquire);
         bool full = state->Invalidation != old->Invalidation;
         WorldEpoch& epoch = state->Cursor.Epoch;
@@ -275,6 +277,8 @@ WorldEpoch ChangeTracker::PublishEpoch(std::span<const DirtySummary* const> summ
                 }
             }
             if (dirty.WholeStorage) {
+                // Coarse invalidation retires every earlier precise stamp: retaining
+                // sparse entity revisions here could incorrectly certify stale data.
                 domain->DefaultChunkVersion = epoch;
                 domain->Chunks.clear();
                 domain->Entities.clear();
@@ -287,6 +291,8 @@ WorldEpoch ChangeTracker::PublishEpoch(std::span<const DirtySummary* const> summ
         state->HistoryRecords += record->Records;
         while (state->History.size() > m_impl->Config.MaxHistoryEpochs ||
                state->HistoryRecords > m_impl->Config.MaxHistoryRecords) {
+            // A cursor at the evicted epoch has already consumed that record. Only
+            // cursors strictly below this floor need a conservative full replay.
             state->HistoryFloor = state->History.front()->Epoch;
             state->HistoryRecords -= state->History.front()->Records;
             state->History.pop_front();
