@@ -2,6 +2,7 @@ TEST_SUITE(ThreadDag)
 
 SOURCES(
     cancellation.cpp
+    validation.cpp
 )
 
 PRIVATE_DEPENDS(
@@ -37,3 +38,13 @@ foreach(caseName IN ITEMS DeepChain200k WideFanIn100k)
         SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
     )
 endforeach()
+
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_test(NAME GraphicsEngineThreadDagValidation
+        COMMAND ${GRAPHICS_ENGINE_CURRENT_TARGET} "--gtest_filter=DebugDag.*"
+    )
+    set_tests_properties(GraphicsEngineThreadDagValidation PROPERTIES
+        TIMEOUT 60
+        LABELS "small;cpp;thread;task;test:DebugDag"
+    )
+endif ()
