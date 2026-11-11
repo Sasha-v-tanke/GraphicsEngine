@@ -177,7 +177,8 @@ TEST(DebugDag, FullAndLocalChecksRejectCorruptionAndRestoreTheGraph) {
                             Fault::DANGLING_DEPENDENT,
                             Fault::DUPLICATE_PARENT,
                             Fault::DEGREE,
-                            Fault::IDENTITY}) {
+                            Fault::IDENTITY,
+                            Fault::STATUS}) {
         ASSERT_EQ(Access::Full(pool), nullptr);
         const auto [full, local] = Access::Probe(pool, child, fault);
         ASSERT_NE(full, nullptr) << static_cast<int>(fault);
