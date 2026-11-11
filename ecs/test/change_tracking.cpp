@@ -139,6 +139,49 @@ TEST(EcsChanges, LegacyDeclaredStorageRemainsCoarseEvenAfterFailure) {
     EXPECT_TRUE(WorldChangeAccess::CaptureSnapshot(world).CaptureChanges(cursor, domain).FullDirty);
 }
 
+TEST(EcsChanges, DuplicateDeclarationsKeepWriteDirtyRegardlessOfOrderAndFailure) {
+    for (bool writeFirst: {false, true}) {
+        for (bool fail: {false, true}) {
+            for (bool asynchronous: {false, true}) {
+                World world;
+                NCommon::TaskSystem tasks{2};
+                const auto entity = world.CreateEntity();
+                world.AddComponent<Position>(entity);
+                const auto domain = WorldChangeAccess::Domain<Position>(world);
+                static_cast<void>(WorldChangeAccess::PublishEpoch(world));
+                const auto cursor = WorldChangeAccess::CaptureSnapshot(world).GetCursor();
+                NEcs::SystemAccessList declarations =
+                        writeFirst ? NEcs::SystemAccessList{NEcs::Write<Position>(), NEcs::Read<Position>()}
+                                   : NEcs::SystemAccessList{NEcs::Read<Position>(), NEcs::Write<Position>()};
+                // No mutable getter: the declared WRITE itself must conservatively dirty storage.
+                world.RegisterSystem(
+                        std::move(declarations),
+                        [fail](World&) {
+                            if (fail) {
+                                throw std::runtime_error("duplicate access failure");
+                            }
+                        },
+                        NEcs::SystemSchedule{.Id = 1});
+                const auto run = [&] {
+                    if (asynchronous) {
+                        world.RunSystems(tasks);
+                    } else {
+                        world.RunSystems();
+                    }
+                };
+                if (fail) {
+                    EXPECT_THROW(run(), std::runtime_error);
+                } else {
+                    EXPECT_NO_THROW(run());
+                }
+                const auto snapshot = WorldChangeAccess::CaptureSnapshot(world);
+                EXPECT_TRUE(snapshot.CaptureChanges(cursor, domain).FullDirty);
+                EXPECT_FALSE(snapshot.CaptureChanges(snapshot.GetCursor(), domain).HasChanges());
+            }
+        }
+    }
+}
+
 TEST(EcsChanges, StructuralRemovalCannotLeaveAConsumerClean) {
     World world;
     const auto entity = world.CreateEntity();

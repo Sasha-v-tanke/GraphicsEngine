@@ -129,7 +129,7 @@ void DirtySummary::Clear() noexcept {
     Domains.clear();
 }
 
-ChangeTracker::ChangeTracker(ChangeTrackerConfig config)
+ChangeTracker::ChangeTracker(const ChangeTrackerConfig& config)
     : m_impl(std::make_unique<Impl>()) {
     if (!config.InitialEpoch.IsValid() || config.ChunkSize == 0 || config.MaxDomains == 0) {
         throw std::invalid_argument("Invalid change tracker configuration");
@@ -177,6 +177,10 @@ void ChangeTracker::RegisterDomain(ChangeDomainKey domain, bool entityRevisions)
     m_impl->Registry.emplace(domain, entityRevisions);
 }
 
+// Build a replacement root under publisher serialization, then swap it at one boundary.
+// Registration changes and clock wrap force full invalidation; otherwise local summaries
+// merge into bounded sparse versions and retained epoch records. Any allocation/validation
+// failure leaves the old root pinned and invalidates live captures until recovery.
 WorldEpoch ChangeTracker::PublishEpoch(std::span<const DirtySummary* const> summaries) {
     std::lock_guard lock(m_impl->Publisher);
     try {

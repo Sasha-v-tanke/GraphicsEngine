@@ -1045,7 +1045,7 @@ void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations)
         changes.AllDomains = !system.Scoped && system.Access.empty();
         for (const auto& access: system.Access) {
             auto& dirty = changes.Touch(GetChangeDomain(access.Component));
-            dirty.WholeStorage = !system.Scoped && access.Mode == ESystemAccessMode::WRITE;
+            dirty.WholeStorage = dirty.WholeStorage || (!system.Scoped && access.Mode == ESystemAccessMode::WRITE);
         }
     }
     if (!std::ranges::any_of(Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {

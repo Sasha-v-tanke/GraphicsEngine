@@ -120,7 +120,7 @@ private:
 
 class ChangeTracker final: private NonTransferable {
 public:
-    explicit ChangeTracker(ChangeTrackerConfig config = {});
+    explicit ChangeTracker(const ChangeTrackerConfig& config = {});
     ~ChangeTracker();
     // Publisher-side registration. Same owner/type may only advance generation; visible at next PublishEpoch.
     void RegisterDomain(ChangeDomainKey domain, bool entityRevisions = false);
