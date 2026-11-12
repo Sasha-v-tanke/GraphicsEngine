@@ -165,6 +165,10 @@ public:
         {
             std::unique_lock lock{m_mutex};
 
+            if (m_stateManager.GetState() == EEngineState::RUNNING &&
+                m_stateManager.GetGeneration() == observedGeneration) {
+                CancelUserPostUpdatesLocked();
+            }
             if (!m_stateManager.BeginStop(lock, observedGeneration)) {
                 return;
             }
@@ -256,6 +260,15 @@ public:
         callback = {};
         std::lock_guard lock{m_mutex};
         return CompleteUserUpdateLocked(key, work);
+    }
+    [[nodiscard]] bool BindUserPostUpdate(FrameKey key, const std::shared_ptr<NRuntime::UserPostUpdate>& callback) {
+        std::lock_guard lock{m_mutex};
+        FrameRuntimeRecord* record = ResolveReservationLocked(key);
+        if (record == nullptr || record->HasUpdateTask || record->PostUpdate || !callback || !callback->IsWaiting()) {
+            return false;
+        }
+        record->PostUpdate = callback;
+        return true;
     }
     [[nodiscard]] bool IsUpdateComplete(FrameKey key) const {
         std::lock_guard lock{m_mutex};
@@ -380,7 +393,20 @@ private:
         if (m_userJobs) {
             m_userJobs->CloseAdmission();
         }
+        CancelUserPostUpdatesLocked();
         m_stateManager.EnterStopping();
+    }
+
+    void CancelUserPostUpdatesLocked() noexcept {
+        // Cancel before publishing STOPPING: callbacks that won their start claim are already running;
+        // prepared references that have not claimed invocation can no longer enter user code.
+        if (m_frameRecords) {
+            for (std::size_t index = 0; index < m_config.MaxActiveFrames; ++index) {
+                if (m_frameRecords[index].PostUpdate) {
+                    m_frameRecords[index].PostUpdate->Cancel();
+                }
+            }
+        }
     }
 
     struct UserUpdateWork {
@@ -401,6 +427,7 @@ private:
         bool UpdateSucceeded = false;
         std::shared_ptr<NRuntime::UpdateCompletion> Completion;
         NCommon::TaskSystem* Executor = nullptr;
+        std::shared_ptr<NRuntime::UserPostUpdate> PostUpdate;
     };
 
     void NotifyProgressLocked() {
@@ -626,10 +653,27 @@ private:
         try {
             NController::FrameScheduler* frameScheduler = m_frameScheduler.get();
             NRuntime::IFrameRuntime* frameRuntime = m_frameRuntime.get();
-            if (frameRuntime->HasPostUpdate()) {
-                {
-                    std::lock_guard lock{m_mutex};
+            std::shared_ptr<NRuntime::UserPostUpdate> postUpdate;
+            FrameKey key;
+            {
+                std::lock_guard lock{m_mutex};
+                auto& record = GetFrameRecordLocked(frame);
+                key = record.Key;
+                if (frameRuntime->HasPostUpdate() || record.PostUpdate) {
                     if (m_stateManager.GetState() != EEngineState::RUNNING) {
+                        record.PhaseSkipped = true;
+                        return;
+                    }
+                    postUpdate = record.PostUpdate;
+                }
+            }
+            const NCommon::FrameOriginScope origin{
+                    NCommon::FrameOrigin{key.GetRunGeneration(), key.GetFrameSequence()}};
+            if (frameRuntime->HasPostUpdate() || postUpdate) {
+                if (postUpdate) {
+                    const bool invoked = postUpdate->TryInvoke();
+                    std::lock_guard lock{m_mutex};
+                    if (!invoked || m_stateManager.GetState() != EEngineState::RUNNING) {
                         GetFrameRecordLocked(frame).PhaseSkipped = true;
                         return;
                     }
@@ -957,6 +1001,12 @@ void Engine::ClearLastError() {
 }
 
 namespace NRuntime {
+
+bool EngineFactory::BindUserPostUpdate(Engine& engine,
+                                       FrameKey frame,
+                                       const std::shared_ptr<UserPostUpdate>& callback) {
+    return engine.m_impl->BindUserPostUpdate(frame, callback);
+}
 
 std::unique_ptr<Engine> EngineFactory::Create(EngineConfig config, std::unique_ptr<IFrameRuntime> frameRuntime) {
     return std::unique_ptr<Engine>{new Engine{std::make_unique<Engine::Impl>(config, std::move(frameRuntime))}};

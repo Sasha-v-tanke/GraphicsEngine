@@ -58,8 +58,8 @@ public:
         m_application.OnUpdate();
     }
 
-    void OnDraw() override {
-        m_application.OnDraw();
+    void OnPostUpdate() override {
+        m_application.OnPostUpdate();
     }
 
     [[nodiscard]] bool IsShutdownRequested() const override {
@@ -152,7 +152,7 @@ bool Application::IsShutdownRequested() const {
 void Application::OnUpdate() {
 }
 
-void Application::OnDraw() {
+void Application::OnPostUpdate() {
 }
 
 void Application::OnResize(NWindow::WindowSize) {

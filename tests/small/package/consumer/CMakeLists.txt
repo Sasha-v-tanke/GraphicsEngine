@@ -46,3 +46,7 @@ add_test(
     NAME GraphicsEnginePackageConsumerRun
     COMMAND GraphicsEnginePackageConsumer
 )
+
+# Built explicitly by the package regression; ordinary consumer builds use only the current API.
+add_library(GraphicsEngineLegacyCallback OBJECT EXCLUDE_FROM_ALL legacy_callback.cpp)
+target_link_libraries(GraphicsEngineLegacyCallback PRIVATE GraphicsEngine::GraphicsEngine)

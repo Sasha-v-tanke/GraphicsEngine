@@ -54,6 +54,9 @@ static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
 class UserJobsConsumer: public NApplication::Application {
 public:
     using Application::Application;
+
+    void OnPostUpdate() override {
+    }
     void MainAction() {
         RunOnMainThread([value = std::make_unique<int>(1)] { (void)value; });
     }
