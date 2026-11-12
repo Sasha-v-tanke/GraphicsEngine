@@ -39,13 +39,15 @@ private:
 // on the host; no worker waits. Failure/cancellation exposes no partial results.
 class TransformResolve {
 public:
-    NCommon::TaskHandle Completion;
-    NCommon::TaskGroupHandle Traversal;
+    [[nodiscard]] NCommon::TaskHandle GetCompletion() const noexcept;
+    [[nodiscard]] NCommon::TaskGroupHandle GetTraversal() const noexcept;
     [[nodiscard]] ResolvedTransforms ReadResolved(const NCommon::TaskSystem& tasks) const;
 
 private:
     friend class TransformResolver;
     std::shared_ptr<const TransformResultData> m_data;
+    NCommon::TaskHandle m_completion;
+    NCommon::TaskGroupHandle m_traversal;
 };
 
 // One in-flight resolve per resolver. Topology leases provide exclusive access to

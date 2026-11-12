@@ -38,8 +38,8 @@ ResolvedTransforms Resolve(TransformResolver& resolver,
                            NCommon::TaskSystem& tasks,
                            std::span<const EntityReference> required) {
     const auto operation = resolver.ScheduleResolve(world.AcquireTopologySnapshot(), required, tasks);
-    tasks.Wait(operation.Completion);
-    EXPECT_EQ(tasks.GetStatus(operation.Completion), NCommon::ETaskStatus::COMPLETED);
+    tasks.Wait(operation.GetCompletion());
+    EXPECT_EQ(tasks.GetStatus(operation.GetCompletion()), NCommon::ETaskStatus::COMPLETED);
     return operation.ReadResolved(tasks);
 }
 
@@ -145,6 +145,7 @@ TEST(TransformResolver, DeepBambooIsIterativeAndCacheHitsDoNotMultiply) {
     NCommon::TaskSystem tasks{4};
     TransformResolver resolver;
     std::vector<EntityReference> chain;
+    chain.reserve(10000);
     for (std::size_t index = 0; index < 10000; ++index) {
         chain.push_back(Create(world));
     }
@@ -209,8 +210,8 @@ TEST(TransformResolver, FailureDoesNotPublishEvenSuccessfullyComputedAncestors) 
     world.SetLocalTransform(parent, huge);
     world.SetLocalTransform(child, huge);
     const auto failed = resolver.ScheduleResolve(world.AcquireTopologySnapshot(), required, tasks);
-    tasks.Wait(failed.Completion);
-    EXPECT_EQ(tasks.GetGroupStatus(failed.Traversal), NCommon::ETaskGroupStatus::FAILED);
+    tasks.Wait(failed.GetCompletion());
+    EXPECT_EQ(tasks.GetGroupStatus(failed.GetTraversal()), NCommon::ETaskGroupStatus::FAILED);
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)failed.ReadResolved(tasks); });
     ExpectMatrix(first.Get(parent).Value, NMath::Mat4::Identity());
     world.SetLocalTransform(child, NMath::Mat4::Identity());
@@ -268,11 +269,11 @@ TEST(TransformResolver, CancellationRejectsPartialReadsPinsLocalsAndReleasesAdmi
                        [&] { (void)world.SetLocalTransform(required.front(), Translation(2)); });
     NTest::ExpectError(NCommon::EError::INVALID_STATE,
                        [&] { (void)resolver.ScheduleResolve(world.AcquireTopologySnapshot(), required, tasks); });
-    tasks.CancelGroup(cancelled.Traversal);
+    tasks.CancelGroup(cancelled.GetTraversal());
     release.release();
     tasks.Wait(blocker);
-    tasks.WaitGroup(cancelled.Traversal);
-    tasks.Wait(cancelled.Completion);
+    tasks.WaitGroup(cancelled.GetTraversal());
+    tasks.Wait(cancelled.GetCompletion());
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)cancelled.ReadResolved(tasks); });
     world.SetLocalTransform(required.front(), Translation(2));
     const auto retry = Resolve(resolver, world, tasks, required);
@@ -303,4 +304,67 @@ TEST(TransformResolver, RevisionRolloverNeverAliasesPreviousEra) {
     NTest::ExpectError(NCommon::EError::INVALID_STATE,
                        [&] { (void)NextTransformRevision(NCommon::VersionStamp{limit, limit}); });
 }
+TEST(TransformResolver, PreviouslyInvisibleCandidateUsesCurrentBoundsAfterParentMove) {
+    World world;
+    NCommon::TaskSystem tasks{2};
+    TransformResolver resolver;
+    const auto parent = Create(world);
+    const auto candidate = Create(world);
+    world.SetLocalTransform(parent, Translation(100));
+    world.DeferReparent(candidate, parent);
+    world.ApplyDeferredStructuralChanges();
+    const std::array required{candidate};
+    const auto previous = Resolve(resolver, world, tasks, required);
+    const auto intersectsView = [](const ResolvedTransforms& transforms, EntityReference entity) {
+        // Unit local bounds projected onto the view's x interval [-2, 2].
+        const auto center = transforms.Get(entity).Value * NMath::Vec4{0, 0, 0, 1};
+        return center.X - 1 <= 2 && center.X + 1 >= -2;
+    };
+    EXPECT_FALSE(intersectsView(previous, candidate));
+    world.SetLocalTransform(parent, Translation(0));
+    // All candidates without conservative bounds are required, including those
+    // invisible in the previous view; visibility never selects the resolve closure.
+    const auto current = Resolve(resolver, world, tasks, required);
+    EXPECT_TRUE(intersectsView(current, candidate));
+    EXPECT_FALSE(intersectsView(previous, candidate));
+}
+
+TEST(TransformResolver, CancellingPublicationDoesNotReleaseRunningTraversalOrPublishCache) {
+    World world;
+    NCommon::TaskSystem tasks{1};
+    TransformResolver resolver;
+    const std::array required{Create(world)};
+    std::binary_semaphore entered{0};
+    std::binary_semaphore release{0};
+    const auto blocker = tasks.Submit([&](NCommon::TaskContext&) {
+        entered.release();
+        release.acquire();
+    });
+    entered.acquire();
+    const auto operation = resolver.ScheduleResolve(world.AcquireTopologySnapshot(), required, tasks);
+    tasks.Cancel(operation.GetCompletion());
+    NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                       [&] { world.SetLocalTransform(required.front(), Translation(1)); });
+    release.release();
+    tasks.Wait(blocker);
+    tasks.WaitGroup(operation.GetTraversal());
+    tasks.Wait(operation.GetCompletion());
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)operation.ReadResolved(tasks); });
+    const auto retry = Resolve(resolver, world, tasks, required);
+    EXPECT_EQ(retry.GetRecomputedCount(), 1U);
+}
+
+TEST(TransformResolver, SubmittedResolveOwnsStateAfterFacadeDestruction) {
+    World world;
+    NCommon::TaskSystem tasks{1};
+    const std::array required{Create(world)};
+    NEcs::NInternal::TransformResolve operation;
+    {
+        TransformResolver resolver;
+        operation = resolver.ScheduleResolve(world.AcquireTopologySnapshot(), required, tasks);
+    }
+    tasks.Wait(operation.GetCompletion());
+    EXPECT_EQ(operation.ReadResolved(tasks).GetResolvedCount(), 1U);
+}
+
 } // namespace

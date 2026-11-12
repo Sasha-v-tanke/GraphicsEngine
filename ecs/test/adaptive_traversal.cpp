@@ -358,4 +358,57 @@ TEST(AdaptiveTraversal, RetiredResultsDoNotAliasRecycledEntitiesAndOutputCannotB
                                         operation);
     });
 }
+TEST(AdaptiveTraversal, SelectedClosurePrunesSubtreesAndPreservesDependencyInputs) {
+    Forest forest{300, EShape::STAR};
+    const auto root = forest.Entities.front();
+    const std::vector selected{root, forest.Entities[5], forest.Entities[1]};
+    for (const auto mode: {ETraversalMode::TOP_DOWN, ETraversalMode::BOTTOM_UP, ETraversalMode::INDEPENDENT}) {
+        for (const unsigned workers: {1U, 4U}) {
+            NCommon::TaskSystem tasks{workers};
+            AdaptiveBatchPlanner planner{tasks};
+            auto operation = Operation();
+            operation.SelectedNodes = selected;
+            const auto output = operation.Output;
+            const auto group = planner.ScheduleTraversal(forest.Owner.AcquireTopologySnapshot(),
+                                                         forest.Roots,
+                                                         mode,
+                                                         std::move(operation));
+            tasks.WaitGroup(group);
+            const auto result = output->TryAcquire(tasks);
+            ASSERT_TRUE(result);
+            EXPECT_EQ(output->GetMetrics().VisitedNodes, selected.size());
+            std::uint64_t expected = 17 * 31 + root.Identity.Index;
+            for (std::size_t index = 1; index < selected.size(); ++index) {
+                const auto child = selected[index];
+                const std::uint64_t parent = mode == ETraversalMode::TOP_DOWN ? expected : 17;
+                EXPECT_EQ(result->Get(child), parent * 31 + child.Identity.Index);
+            }
+            if (mode == ETraversalMode::BOTTOM_UP) {
+                expected = expected * 31 + (17 * 31 + selected[1].Identity.Index);
+                expected = expected * 31 + (17 * 31 + selected[2].Identity.Index);
+            }
+            EXPECT_EQ(result->Get(root), expected);
+            NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)result->Get(forest.Entities[2]); });
+        }
+    }
+}
+
+TEST(AdaptiveTraversal, RejectsInvalidSelectionBeforePublishingTasks) {
+    Forest forest{10, EShape::BALANCED};
+    for (const auto& selected: std::vector<std::vector<EntityReference>>{{},
+                                                                         {forest.Entities[1]},
+                                                                         {forest.Entities[0], forest.Entities[0]},
+                                                                         {forest.Entities[0], forest.Entities[9]},
+                                                                         {forest.Entities[9], forest.Entities[0]}}) {
+        auto operation = Operation();
+        operation.SelectedNodes = selected;
+        NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
+            (void)AdaptiveBatchPlanner::RunSerial(forest.Owner.AcquireTopologySnapshot(),
+                                                  forest.Roots,
+                                                  ETraversalMode::TOP_DOWN,
+                                                  std::move(operation));
+        });
+    }
+}
+
 } // namespace

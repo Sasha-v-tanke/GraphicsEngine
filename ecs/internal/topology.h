@@ -39,7 +39,7 @@ struct TopologyNode {
     EntityReference LastChild = {};
     EntityReference PreviousSibling = {};
     EntityReference NextSibling = {};
-    LocalTransform Local;
+    LocalTransform Local = {};
 };
 
 struct TopologyState {

@@ -48,8 +48,14 @@ std::size_t ResolvedTransforms::GetResolvedCount() const noexcept {
 std::size_t ResolvedTransforms::GetRecomputedCount() const noexcept {
     return m_data->Recomputed;
 }
+NCommon::TaskHandle TransformResolve::GetCompletion() const noexcept {
+    return m_completion;
+}
+NCommon::TaskGroupHandle TransformResolve::GetTraversal() const noexcept {
+    return m_traversal;
+}
 ResolvedTransforms TransformResolve::ReadResolved(const NCommon::TaskSystem& tasks) const {
-    if (!m_data || tasks.GetStatus(Completion) != NCommon::ETaskStatus::COMPLETED) {
+    if (!m_data || tasks.GetStatus(m_completion) != NCommon::ETaskStatus::COMPLETED) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Transform resolve has not completed successfully");
     }
     return ResolvedTransforms{m_data};
@@ -132,10 +138,10 @@ TransformResolve TransformResolver::ScheduleResolve(TopologySnapshot topology,
     AdaptiveBatchPlanner planner{tasks};
     TransformResolve result;
     result.m_data = data;
-    result.Traversal =
+    result.m_traversal =
             planner.ScheduleTraversal(std::move(topology), roots, ETraversalMode::TOP_DOWN, std::move(operation));
-    result.Completion =
-            tasks.SubmitAfterGroup(result.Traversal, [data, output, admission, &tasks](NCommon::TaskContext&) {
+    result.m_completion =
+            tasks.SubmitAfterGroup(result.m_traversal, [data, output, admission, &tasks](NCommon::TaskContext&) {
                 const auto resolved = output->TryAcquire(tasks);
                 if (!resolved) {
                     GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Transform traversal did not complete");
@@ -146,7 +152,9 @@ TransformResolve TransformResolver::ScheduleResolve(TopologySnapshot topology,
                 for (auto& [index, value]: data->Values) {
                     value = resolved->Get(value.Entity);
                     data->Recomputed += static_cast<std::size_t>(value.Recomputed);
-                    publication.emplace(index, value);
+                    if (value.Recomputed) {
+                        publication.emplace(index, value);
+                    }
                 }
                 const std::lock_guard lock{admission->Owner->Mutex};
                 while (!publication.empty()) {
