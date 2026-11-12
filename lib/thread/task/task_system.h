@@ -16,6 +16,7 @@
 
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
+#include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 #include <GraphicsEngine/lib/thread/task/frame_origin.h>
 
 namespace NCommon {
@@ -111,7 +112,7 @@ private:
     friend class TaskContext;
 };
 
-class TaskContext final {
+class TaskContext final: public NonTransferable {
 public:
     using TaskFunction = std::function<void(TaskContext&)>;
 
@@ -145,9 +146,10 @@ private:
         , m_workerIndex(workerIndex) {
     }
 
-    TaskSystem* m_taskSystem = nullptr;
-    TaskHandle m_task;
-    WorkerIndex m_workerIndex{0};
+    // Invocation identity cannot be reassigned or moved out of a running callback.
+    TaskSystem* const m_taskSystem = nullptr;
+    const TaskHandle m_task;
+    const WorkerIndex m_workerIndex{0};
 
     friend class TaskSystem;
     friend class TaskContext;

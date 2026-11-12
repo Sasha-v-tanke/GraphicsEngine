@@ -121,13 +121,15 @@ Textured draw, совместимые pipeline layouts, startup upload и lifeti
 Worker получает доступ только через
 `ring.WithWorkerContext(frameIdentity, taskContext, [](VulkanWorkerContext& context) { ... });`.
 Индекс выбирается из `TaskContext::GetWorkerIndex()` текущего invocation, а не из номера chunk,
-потока приложения или заранее назначенного worker. Контекст от другого scheduler, копия
-TaskContext, вызов из постороннего потока, устаревшая frame identity и повторный вложенный borrow
-отклоняются. `TaskContext::IsCurrentInvocation(taskSystem)` проверяет scheduler и точный объект
-invocation через worker-local состояние, которое очищается также при исключении callable.
+потока приложения или заранее назначенного worker. `TaskContext` нельзя копировать, перемещать
+или присваивать; его scheduler, TaskHandle и WorkerIndex неизменяемы. Контекст от другого
+scheduler/worker, вызов из постороннего потока, устаревшая frame identity и повторный вложенный
+borrow отклоняются. `TaskContext::IsCurrentInvocation(taskSystem)` проверяет scheduler,
+монотонный Task ID и WorkerIndex через worker-local состояние, которое очищается также при
+исключении callable. Адреса стековых объектов в TLS не сохраняются.
 
 View непереносим и действует только внутри callback. Нельзя сохранять view, указатели на него
-или native pool за пределами callback; command buffers передаются координатору как результаты
+или использовать native pool за пределами callback; command buffers передаются координатору как результаты
 записи и живут в слоте до его следующего сброса. Callback не держит mutex слота: разные workers
 могут записывать одновременно. Borrow автоматически возвращается при исключении. Submit и
 освобождение приобретённого слота запрещены, пока хотя бы один callback активен.
@@ -139,7 +141,7 @@ View непереносим и действует только внутри call
 ACQUIRED frame. Scheduler и device должны переживать кольцо, все CPU callbacks должны закончиться
 до его разрушения. Завершение GPU при shutdown обеспечивает прежний путь кольца.
 
-Worker-пулы являются основой IMPROVE-0029: здесь не включаются PARALLEL capability, деление
+Worker-пулы являются основой будущей параллельной записи: здесь не включаются PARALLEL capability, деление
 draws на chunks, secondary inheritance или новый порядок submits. Descriptor/scratch arenas
 могут добавляться к тому же worker owner без изменения Renderer-facing contracts.
 

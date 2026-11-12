@@ -1,4 +1,5 @@
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -433,7 +434,6 @@ TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotComplet
                 NVulkan::VulkanFrameContextRing ring{runtime.Device, slots, tasks};
                 NVulkan::VulkanSubmissionManager submissions{runtime.Device};
                 std::unordered_set<VkCommandPool> allPools;
-                std::optional<NCommon::TaskContext> saved;
                 for (std::size_t slot = 0; slot < slots; ++slot) {
                     const NVulkan::VulkanFrameContextAcquire frame{slot, slot};
                     auto* context = ring.TryAcquire(frame, nullptr);
@@ -444,6 +444,8 @@ TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotComplet
                     std::vector<VkCommandBuffer> commands(workerCount);
                     std::vector<NCommon::TaskHandle> jobs;
                     jobs.reserve(workerCount);
+                    std::vector<NCommon::TaskContext*> liveTasks(workerCount);
+                    std::barrier published{static_cast<std::ptrdiff_t>(workerCount)};
                     std::counting_semaphore<> entered{0};
                     std::counting_semaphore<> resume{0};
                     for (std::size_t index = 0; index < workerCount; ++index) {
@@ -460,10 +462,14 @@ TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotComplet
                                             AllocateCommandBuffer(runtime.Device.GetHandle(), worker.GetCommandPool());
                                     RecordEmptyCommandBuffer(commands[workerIndex]);
                                     EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) {}), NCommon::Exception);
-                                    if (workerIndex == 0) {
-                                        saved.emplace(task);
-                                        EXPECT_THROW(ring.WithWorkerContext(frame, *saved, [](auto&) {}),
+                                    liveTasks[workerIndex] = &task;
+                                    published.arrive_and_wait();
+                                    if (workerCount > 1) {
+                                        auto& other = *liveTasks[(workerIndex + 1) % workerCount];
+                                        EXPECT_THROW(ring.WithWorkerContext(frame, other, [](auto&) {}),
                                                      NCommon::Exception);
+                                    }
+                                    if (workerIndex == 0) {
                                         std::thread wrongThread([&] {
                                             EXPECT_THROW((void)worker.GetCommandPool(), NCommon::Exception);
                                         });
@@ -486,7 +492,9 @@ TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotComplet
                     }
                     EXPECT_THROW(ring.MarkSubmitted(frame, 1), NCommon::Exception);
                     EXPECT_THROW(ring.ReleaseAcquired(frame), NCommon::Exception);
+                    EXPECT_THROW(ring.WithWorkerContext(frame, *liveTasks[0], [](auto&) {}), NCommon::Exception);
                     EXPECT_EQ(ring.TryAcquire({frame.FrameIndex + slots, slot}, [](auto) { return true; }), nullptr);
+                    liveTasks.clear();
                     resume.release(static_cast<std::ptrdiff_t>(workerCount));
                     tasks.WaitIdle();
                     for (const auto& job: jobs) {
@@ -496,8 +504,6 @@ TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotComplet
                         EXPECT_NE(pool, VK_NULL_HANDLE);
                         EXPECT_TRUE(allPools.insert(pool).second);
                     }
-                    ASSERT_TRUE(saved.has_value());
-                    EXPECT_THROW(ring.WithWorkerContext(frame, *saved, [](auto&) {}), NCommon::Exception);
                     const auto wrongPool = foreign.Submit([&](NCommon::TaskContext& task) {
                         EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) {}), NCommon::Exception);
                     });

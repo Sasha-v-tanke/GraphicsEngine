@@ -26,7 +26,7 @@ enum class EVulkanFrameContextState {
     IN_FLIGHT,
 };
 
-// Invocation-local view. Neither this view nor its native handles may escape the callback.
+// Invocation-local view. Do not retain the view or access its pool outside the callback.
 class VulkanWorkerContext final: public NCommon::NonTransferable {
 public:
     [[nodiscard]] VkCommandPool GetCommandPool() const;

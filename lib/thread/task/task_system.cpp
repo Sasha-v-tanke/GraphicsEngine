@@ -23,17 +23,17 @@ namespace {
 struct WorkerThreadContext {
     TaskSystem* System = nullptr;
     WorkerIndex Index{0};
-    const TaskContext* Invocation = nullptr;
+    std::uint64_t InvocationTaskId = 0;
 };
 
 thread_local WorkerThreadContext CurrentWorker;
 
 struct TaskInvocationScope {
-    explicit TaskInvocationScope(const TaskContext& context) noexcept {
-        CurrentWorker.Invocation = &context;
+    explicit TaskInvocationScope(std::uint64_t taskId) noexcept {
+        CurrentWorker.InvocationTaskId = taskId;
     }
     ~TaskInvocationScope() {
-        CurrentWorker.Invocation = nullptr;
+        CurrentWorker.InvocationTaskId = 0;
     }
 };
 
@@ -286,7 +286,11 @@ bool TaskHandle::IsValid() const noexcept {
 }
 
 bool TaskContext::IsCurrentInvocation(const TaskSystem& system) const noexcept {
-    return CurrentWorker.Invocation == this && m_taskSystem == &system;
+    if (m_taskSystem != &system || CurrentWorker.System != m_taskSystem) {
+        return false;
+    }
+    return CurrentWorker.InvocationTaskId != 0 && CurrentWorker.InvocationTaskId == m_task.GetId() &&
+           CurrentWorker.Index.GetValue() == m_workerIndex.GetValue();
 }
 
 TaskHandle TaskContext::Spawn(TaskFunction function) {
@@ -1216,7 +1220,7 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
         // internal primitive/invariant failures are fail-stop, never a second completion.
         try {
             TaskContext context{*this, task, workerIndex};
-            const TaskInvocationScope invocation{context};
+            const TaskInvocationScope invocation{task.GetId()};
             function(context);
         } catch (...) {
             error = MakeFailureError(std::current_exception());
