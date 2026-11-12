@@ -46,6 +46,9 @@ public:
     // buffer, transition the acquired image to Present, and keep every referenced object alive through completion.
     // Throwing fails the path closed. Backend integration only; never a user rendering callback.
     // The caller must retain that completion if Render subsequently throws, and stop using the failed path.
+    // resourceUses is captured after record returns, before native submission. A recording
+    // callback may append owners to the caller's vector; accepted submissions retain them
+    // independently of the caller and release them during owner-lane completion collection.
     [[nodiscard]] VulkanClearPresentResult
     Render(std::uint64_t frameIndex,
            VkClearColorValue clearColor,

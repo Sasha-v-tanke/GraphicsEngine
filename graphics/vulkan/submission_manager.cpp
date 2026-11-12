@@ -58,6 +58,7 @@ VulkanSubmissionManager::~VulkanSubmissionManager() {
 
 EVulkanSubmissionShutdown VulkanSubmissionManager::Shutdown() {
     NGraphics::NBackend::SubmissionRetirementQueue::RetiredUses retired;
+    EVulkanSubmissionShutdown status = EVulkanSubmissionShutdown::DRAINED;
     {
         const VulkanLockedQueue queue = m_device.LockGraphicsQueue();
         m_shutdown = true;
@@ -73,13 +74,14 @@ EVulkanSubmissionShutdown VulkanSubmissionManager::Shutdown() {
         m_deviceLost = m_deviceLost || result == VK_ERROR_DEVICE_LOST;
         retired = m_retirements->TakeAfterShutdown();
         m_drained = true;
+        status = m_deviceLost ? EVulkanSubmissionShutdown::DEVICE_LOST : EVulkanSubmissionShutdown::DRAINED;
     }
 
     // Both successful idle and device loss end native use; never report failure as
     // ordinary timeline completion. Dependencies of the retained owners still exist.
     retired.clear();
 
-    return m_deviceLost ? EVulkanSubmissionShutdown::DEVICE_LOST : EVulkanSubmissionShutdown::DRAINED;
+    return status;
 }
 
 VulkanQueueCompletion VulkanSubmissionManager::SubmitGraphics(const VulkanQueueSubmitInfo& submitInfo) {
@@ -134,12 +136,15 @@ VulkanQueueCompletion VulkanSubmissionManager::SubmitGraphics(const VulkanQueueS
 }
 
 bool VulkanSubmissionManager::IsCompleted(VulkanQueueCompletion completion) const {
-    NGraphics::NBackend::SubmissionRetirementQueue::RetiredUses retired;
     if (completion.Value == 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan queue completion value must be valid");
     }
 
     const VulkanLockedQueue graphicsQueue = m_device.LockGraphicsQueue();
+    return GetCompletedValueLocked() >= completion.Value;
+}
+
+std::uint64_t VulkanSubmissionManager::GetCompletedValueLocked() const {
     if (m_deviceLost) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Vulkan device was lost");
     }
@@ -147,17 +152,12 @@ bool VulkanSubmissionManager::IsCompleted(VulkanQueueCompletion completion) cons
     const VkResult result = vkGetSemaphoreCounterValue(m_handle, m_graphicsTimeline, &currentValue);
     if (result != VK_SUCCESS) {
         m_deviceLost = result == VK_ERROR_DEVICE_LOST;
-        if (m_deviceLost) {
-            retired = m_retirements->TakeAfterShutdown();
-        }
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Failed to query Vulkan graphics timeline: {}",
                               GetVkResultName(result));
     }
 
-    retired = m_retirements->TakeCompleted(currentValue);
-
-    return currentValue >= completion.Value;
+    return currentValue;
 }
 
 void VulkanSubmissionManager::Wait(VulkanQueueCompletion completion, std::uint64_t timeoutNanoseconds) const {
@@ -177,21 +177,26 @@ void VulkanSubmissionManager::Wait(VulkanQueueCompletion completion, std::uint64
     const VkResult result = vkWaitSemaphores(m_handle, &waitInfo, timeoutNanoseconds);
     if (result != VK_SUCCESS) {
         if (result == VK_ERROR_DEVICE_LOST) {
-            NGraphics::NBackend::SubmissionRetirementQueue::RetiredUses retired;
             const VulkanLockedQueue queue = m_device.LockGraphicsQueue();
             m_deviceLost = true;
-            retired = m_retirements->TakeAfterShutdown();
         }
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Failed to wait for Vulkan graphics timeline: {}",
                               GetVkResultName(result));
     }
-    ReleaseCompleted();
 }
 
 void VulkanSubmissionManager::ReleaseCompleted() const {
-    // This is only a nonblocking counter query, including before the first submission.
-    static_cast<void>(IsCompleted({.Value = 1}));
+    NGraphics::NBackend::SubmissionRetirementQueue::RetiredUses retired;
+    const VulkanLockedQueue queue = m_device.LockGraphicsQueue();
+    try {
+        retired = m_retirements->TakeCompleted(GetCompletedValueLocked());
+    } catch (...) {
+        if (m_deviceLost) {
+            retired = m_retirements->TakeAfterShutdown();
+        }
+        throw;
+    }
 }
 
 VkSemaphore VulkanSubmissionManager::CreateTimelineSemaphore() const {

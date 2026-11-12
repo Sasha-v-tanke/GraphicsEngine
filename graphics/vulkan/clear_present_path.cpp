@@ -1,5 +1,6 @@
 #include "clear_present_path.h"
 
+#include <exception>
 #include <optional>
 #include <string_view>
 
@@ -106,7 +107,12 @@ VulkanClearPresentPath::VulkanClearPresentPath(const VulkanDevice& device,
 
 VulkanClearPresentPath::~VulkanClearPresentPath() {
     if (m_device.GetHandle() != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(m_device.GetHandle());
+        const VkResult result = vkDeviceWaitIdle(m_device.GetHandle());
+        if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
+            // Frame command pools and WSI dependencies must not disappear after an unproven drain.
+            std::terminate();
+        }
+        static_cast<void>(m_submissions.Shutdown());
     }
 }
 
@@ -285,6 +291,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(
 }
 
 std::vector<VulkanFrameCompletionEvent> VulkanClearPresentPath::PollCompletedFrames() {
+    m_submissions.ReleaseCompleted();
     ReleaseRetiredIfCompleted();
     std::vector<VulkanFrameCompletionEvent> completed;
     while (!m_pendingCompletions.empty() && m_submissions.IsCompleted(m_pendingCompletions.front().Completion)) {

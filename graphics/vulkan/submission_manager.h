@@ -28,6 +28,8 @@ struct VulkanQueueSubmitInfo {
     std::vector<VkCommandBufferSubmitInfo> CommandBuffers;
     std::vector<VkSemaphoreSubmitInfo> SignalSemaphores;
     VkFence Fence = VK_NULL_HANDLE;
+    // Strong immutable representation owners for every native resource referenced by this work.
+    // Device, VMA allocator and resource-state tracker must outlive retained allocations.
     std::vector<std::shared_ptr<const void>> ResourceUses = {};
 };
 
@@ -41,8 +43,9 @@ public:
 
     [[nodiscard]] bool IsCompleted(VulkanQueueCompletion completion) const;
 
+    // Host observation only; completion polling/waiting never runs representation deleters.
     void Wait(VulkanQueueCompletion completion, std::uint64_t timeoutNanoseconds) const;
-    // Nonblocking collection of representation owners after observed timeline completion.
+    // Nonblocking collection on the resource-owner lane, serialized with recording/tracker writes.
     void ReleaseCompleted() const;
     // Host-only shutdown, after all publishers/recorders stop. Closes admission.
     // Unexpected driver errors preserve owners and throw; callers may retry. The
@@ -51,6 +54,7 @@ public:
 
 private:
     [[nodiscard]] VkSemaphore CreateTimelineSemaphore() const;
+    [[nodiscard]] std::uint64_t GetCompletedValueLocked() const;
 
 private:
     const VulkanDevice& m_device;

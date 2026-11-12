@@ -17,3 +17,5 @@ TEST_LABELS(
     cpp
     graphics
 )
+
+RECURSE(retirement_fault)
