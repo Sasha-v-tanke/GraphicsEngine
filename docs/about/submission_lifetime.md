@@ -82,3 +82,20 @@ Validation is required and ERROR messages fail; unavailable environments propaga
 an explicit SKIP from child to parent. Driver-status injection separately exercises
 submit rollback, drain retry, device-loss cleanup, admission closure and reentrant
 deleters without pretending to lose a real device containing pending GPU allocations.
+
+### Recorded native acceptance
+
+On 2026-11-12, runtime commit `0e51d3406b1235826c5254943c560c5222cffc84`
+passed the separately dispatched [Heavy/macOS run](https://github.com/Sasha-v-tanke/GraphicsEngine/actions/runs/43221671048).
+The ordinary PR workflow skips Heavy; that skip is not the result of this separate run.
+Its logs record 6/6 CTest suites and 71/71 VulkanBackend tests passing, including both
+`VulkanSubmissionManager.RetainsAllocationUntilLastActualConsumer` and
+`VulkanSubmissionManager.RollbackShutdownRetryAndDeviceLoss`, with their required-validation
+child processes passing rather than skipping. The first covers actual gated GPU use,
+logical unload, two frame slots, observer-only waits, owner collection and shutdown.
+The second injects driver statuses; it does not claim a physical device-loss experiment.
+
+Reproduce the native acceptance through `gh workflow run ci.yml --ref <branch>`.
+Locally, build the `ci-vulkan-glfw` preset and run
+`ctest --test-dir <build> -L heavy --output-on-failure -j1` with
+`VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT`.
