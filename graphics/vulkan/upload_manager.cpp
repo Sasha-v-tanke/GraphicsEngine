@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <string_view>
 
@@ -166,8 +167,15 @@ VulkanUploadManager::~VulkanUploadManager() noexcept {
                 m_submissions.Wait(arena->Completion, std::numeric_limits<std::uint64_t>::max());
             }
         }
+        m_submissions.ReleaseCompleted();
     } catch (...) {
-        // A failed device follows backend teardown; steady-state recycling never waits.
+        // Unknown wait failures cannot justify destroying a command pool or allocation.
+        // Confirm device loss or drain the queue before releasing this owner's dependencies.
+        try {
+            static_cast<void>(m_submissions.Shutdown());
+        } catch (...) {
+            std::terminate();
+        }
     }
     if (m_commandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(m_handle, m_commandPool, nullptr);
@@ -308,7 +316,8 @@ VulkanQueueCompletion VulkanUploadManager::UploadBatch(std::span<const VulkanBuf
         const VulkanQueueCompletion completion = m_submissions.SubmitGraphics({.WaitSemaphores = {},
                                                                                .CommandBuffers = {commandBufferInfo},
                                                                                .SignalSemaphores = {},
-                                                                               .Fence = VK_NULL_HANDLE});
+                                                                               .Fence = VK_NULL_HANDLE,
+                                                                               .ResourceUses = arena.Destinations});
         // Nothing after successful submit may allocate or fail: all retention is already installed.
         arena.Completion = completion;
         arena.PayloadBytes = payloadBytes;
@@ -363,6 +372,7 @@ VulkanUploadManager::StagingArena& VulkanUploadManager::AcquireArena(std::uint64
 }
 
 void VulkanUploadManager::ReleaseCompleted() {
+    m_submissions.ReleaseCompleted();
     for (const auto& arena: m_arenas) {
         if (arena->Completion.Value != 0 && m_submissions.IsCompleted(arena->Completion)) {
             arena->Completion = {};

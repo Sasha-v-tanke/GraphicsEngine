@@ -88,7 +88,7 @@ private:
         VulkanQueueCompletion Completion;
         std::uint64_t PayloadBytes = 0;
         std::size_t UploadCount = 0;
-        std::vector<std::shared_ptr<void>> Destinations;
+        std::vector<std::shared_ptr<const void>> Destinations;
     };
 
     [[nodiscard]] StagingArena& AcquireArena(std::uint64_t sizeBytes);

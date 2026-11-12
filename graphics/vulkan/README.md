@@ -1,5 +1,7 @@
 # Реализация графического интерфейса Vulkan
 
+Submission use sets, owner-lane collection и failure/shutdown paths описаны в [контракте GPU lifetime](../../docs/about/submission_lifetime.md).
+
 `VulkanBackend` владеет загрузчиком Vulkan, созданием экземпляра, выбором физического устройства и созданием логического устройства GraphicsEngine. Модуль является внутренней реализацией: он использует физические типы Vulkan, но публичные контракты `Window`, `Application`, `Engine` и `Graphics` не должны зависеть от заголовков Vulkan через этот модуль.
 
 ## Пересоздание цепочки изображений

@@ -3,6 +3,7 @@ TEST_SUITE(Graphics)
 TEST(Graphics)
 
 SOURCES(
+    submission_uses.cpp
     graphics_test.cpp
 )
 
@@ -16,3 +17,5 @@ TEST_LABELS(
     cpp
     graphics
 )
+
+RECURSE(retirement_fault)

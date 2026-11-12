@@ -298,6 +298,7 @@ set(
     "GraphicsEngine/graphics/backend/completion_access.h"
     "GraphicsEngine/graphics/backend/backend.h"
     "GraphicsEngine/graphics/backend/factory.h"
+    "GraphicsEngine/graphics/backend/submission_uses.h"
     "GraphicsEngine/math/internal/glm_conversion.h"
     "GraphicsEngine/window/engine/engine.h"
     "GraphicsEngine/window/engine/event_sink.h"
