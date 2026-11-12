@@ -1,6 +1,7 @@
 TEST_SUITE(Ecs)
 
 SOURCES(
+    transform_resolver.cpp
     adaptive_traversal.cpp
     change_tracking.cpp
     access_coordinator.cpp

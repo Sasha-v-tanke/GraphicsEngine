@@ -8,6 +8,8 @@ API(
 )
 
 SOURCES(
+    internal/transform_resolver.h
+    internal/transform_resolver.cpp
     internal/adaptive_traversal.h
     internal/world_changes.h
     internal/scoped_batch.h
