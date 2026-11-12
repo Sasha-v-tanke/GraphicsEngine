@@ -358,10 +358,10 @@ TEST(AdaptiveTraversal, RetiredResultsDoNotAliasRecycledEntitiesAndOutputCannotB
                                         operation);
     });
 }
-TEST(AdaptiveTraversal, SelectedClosurePrunesSubtreesAndPreservesDependencyInputs) {
+TEST(AdaptiveTraversal, SelectedClosurePrunesSubtreesAndPreservesTopologyReductionWithReversedSiblings) {
     Forest forest{300, EShape::STAR};
     const auto root = forest.Entities.front();
-    const std::vector selected{root, forest.Entities[5], forest.Entities[1]};
+    const std::vector selected{root, forest.Entities[1], forest.Entities[5]};
     for (const auto mode: {ETraversalMode::TOP_DOWN, ETraversalMode::BOTTOM_UP, ETraversalMode::INDEPENDENT}) {
         for (const unsigned workers: {1U, 4U}) {
             NCommon::TaskSystem tasks{workers};
@@ -384,8 +384,9 @@ TEST(AdaptiveTraversal, SelectedClosurePrunesSubtreesAndPreservesDependencyInput
                 EXPECT_EQ(result->Get(child), parent * 31 + child.Identity.Index);
             }
             if (mode == ETraversalMode::BOTTOM_UP) {
-                expected = expected * 31 + (17 * 31 + selected[1].Identity.Index);
+                // Forest attaches children in reverse: child 5 precedes child 1.
                 expected = expected * 31 + (17 * 31 + selected[2].Identity.Index);
+                expected = expected * 31 + (17 * 31 + selected[1].Identity.Index);
             }
             EXPECT_EQ(result->Get(root), expected);
             NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)result->Get(forest.Entities[2]); });

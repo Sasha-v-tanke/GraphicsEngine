@@ -96,8 +96,9 @@ struct TraversalOperation {
     std::shared_ptr<TraversalOutput<Result>> Output;
     // Optional pure estimate in positive finite units. Evaluated before publication.
     std::function<double(EntityReference)> EstimateWork = {};
-    // Optional parent-first, ancestor-closed selection relative to roots. Siblings
-    // follow selection order; omitted subtrees are not visited or evaluated.
+    // Optional parent-first, ancestor-closed selection relative to roots.
+    // BOTTOM_UP preserves topology sibling order; other modes use selection order.
+    // Omitted subtrees are not visited or evaluated.
     std::optional<std::vector<EntityReference>> SelectedNodes = {};
 };
 
@@ -453,6 +454,33 @@ std::shared_ptr<Run<Result>> Prepare(TopologySnapshot topology,
             const auto parent = run->Storage->Get(root).Parent;
             if (parent != EntityReference{} && run->Nodes[parent.Identity.Index].Identity == parent) {
                 GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Traversal roots overlap");
+            }
+        }
+        if (mode == ETraversalMode::BOTTOM_UP) {
+            // Noncommutative reductions require canonical topology order even
+            // when the request lists siblings in the opposite order. Only inspect
+            // direct child links of selected parents; never descend omitted trees.
+            for (const auto entity: order) {
+                auto& node = run->Nodes[entity.Identity.Index];
+                if (node.RemainingChildren.load() < 2) {
+                    continue;
+                }
+                node.FirstChild = {};
+                node.LastChild = {};
+                for (auto child = run->Storage->Get(entity).FirstChild; child != EntityReference{};
+                     child = run->Storage->Get(child).NextSibling) {
+                    auto& childNode = run->Nodes[child.Identity.Index];
+                    if (childNode.Identity != child) {
+                        continue;
+                    }
+                    childNode.NextSibling = {};
+                    if (node.LastChild == EntityReference{}) {
+                        node.FirstChild = child;
+                    } else {
+                        run->Nodes[node.LastChild.Identity.Index].NextSibling = child;
+                    }
+                    node.LastChild = child;
+                }
             }
         }
     } else {
