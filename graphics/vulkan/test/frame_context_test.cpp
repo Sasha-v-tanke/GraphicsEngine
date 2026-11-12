@@ -1,6 +1,6 @@
 #include <atomic>
-#include <barrier>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -445,7 +445,9 @@ TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotComplet
                     std::vector<NCommon::TaskHandle> jobs;
                     jobs.reserve(workerCount);
                     std::vector<NCommon::TaskContext*> liveTasks(workerCount);
-                    std::barrier published{static_cast<std::ptrdiff_t>(workerCount)};
+                    std::mutex publicationMutex;
+                    std::condition_variable publicationChanged;
+                    std::size_t published = 0;
                     std::counting_semaphore<> entered{0};
                     std::counting_semaphore<> resume{0};
                     for (std::size_t index = 0; index < workerCount; ++index) {
@@ -462,12 +464,17 @@ TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotComplet
                                             AllocateCommandBuffer(runtime.Device.GetHandle(), worker.GetCommandPool());
                                     RecordEmptyCommandBuffer(commands[workerIndex]);
                                     EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) {}), NCommon::Exception);
-                                    liveTasks[workerIndex] = &task;
-                                    published.arrive_and_wait();
-                                    if (workerCount > 1) {
-                                        auto& other = *liveTasks[(workerIndex + 1) % workerCount];
-                                        EXPECT_THROW(ring.WithWorkerContext(frame, other, [](auto&) {}),
-                                                     NCommon::Exception);
+                                    {
+                                        std::unique_lock lock{publicationMutex};
+                                        liveTasks[workerIndex] = &task;
+                                        ++published;
+                                        publicationChanged.notify_all();
+                                        publicationChanged.wait(lock, [&] { return published == workerCount; });
+                                        if (workerCount > 1) {
+                                            auto& other = *liveTasks[(workerIndex + 1) % workerCount];
+                                            EXPECT_THROW(ring.WithWorkerContext(frame, other, [](auto&) {}),
+                                                         NCommon::Exception);
+                                        }
                                     }
                                     if (workerIndex == 0) {
                                         std::thread wrongThread([&] {

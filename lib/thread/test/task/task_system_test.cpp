@@ -1,6 +1,5 @@
 #include <array>
 #include <atomic>
-#include <barrier>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -52,16 +51,23 @@ TEST(TaskSystem, ContextIdentifiesOnlyItsLiveSchedulerInvocation) {
 TEST(TaskSystem, ContextCannotIdentifyAnotherLiveWorkerInvocation) {
     NCommon::TaskSystem tasks{2};
     std::array<NCommon::TaskContext*, 2> contexts{};
-    std::barrier published{2};
-    std::barrier finished{2};
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::size_t published = 0;
+    std::size_t finished = 0;
     for (std::size_t index = 0; index < 2; ++index) {
         tasks.Submit([&](NCommon::TaskContext& context) {
             const auto worker = context.GetWorkerIndex().GetValue();
+            std::unique_lock lock{mutex};
             contexts[worker] = &context;
-            published.arrive_and_wait();
+            ++published;
+            changed.notify_all();
+            changed.wait(lock, [&] { return published == 2; });
             EXPECT_TRUE(context.IsCurrentInvocation(tasks));
             EXPECT_FALSE(contexts[1 - worker]->IsCurrentInvocation(tasks));
-            finished.arrive_and_wait();
+            ++finished;
+            changed.notify_all();
+            changed.wait(lock, [&] { return finished == 2; });
             contexts[worker] = nullptr;
         });
     }
