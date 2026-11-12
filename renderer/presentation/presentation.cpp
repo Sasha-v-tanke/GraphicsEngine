@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <graphics/backend/completion_access.h>
+#include <graphics/backend/submission_uses.h>
 #include <graphics/pipeline_key.h>
 #include <graphics/vulkan/clear_present_path.h>
 #include <graphics/vulkan/descriptor_manager.h>
@@ -97,8 +98,9 @@ public:
         , Physical(NVulkan::SelectVulkanPhysicalDevice(Instance, Surface.GetHandle()))
         , Device(Physical)
         , Memory(Instance.GetHandle(), Physical.Handle, Device, States)
-        , Pipelines(Device, Physical)
-        , Descriptors(Device.GetHandle(), Device.GetDescriptorLimits())
+        , Pipelines(std::make_shared<NVulkan::VulkanPipelineManager>(Device, Physical))
+        , Descriptors(
+                  std::make_shared<NVulkan::VulkanDescriptorManager>(Device.GetHandle(), Device.GetDescriptorLimits()))
         , Swapchain(Device, Physical, Surface.GetHandle(), window.GetFramebufferSize())
         , Path(Device, Swapchain, config.MaxActiveFrames)
         , MaxFrames(config.MaxActiveFrames) {
@@ -114,6 +116,7 @@ public:
         NGraphics::PipelineKey Key;
         const NVulkan::VulkanGraphicsPipeline* Pipeline;
         NVulkan::VulkanDescriptorSetLease Descriptors;
+        NGraphics::NBackend::SubmissionUseSet ResourceUses;
     };
 
     struct Image {
@@ -143,11 +146,11 @@ public:
     NVulkan::VulkanDevice Device;
     NVulkan::VulkanResourceStateTracker States;
     NVulkan::VulkanMemoryAllocator Memory;
-    NVulkan::VulkanPipelineManager Pipelines;
-    std::vector<std::unique_ptr<Image>> Images;
-    std::vector<std::unique_ptr<Sampler>> Samplers;
+    std::shared_ptr<NVulkan::VulkanPipelineManager> Pipelines;
+    std::vector<std::shared_ptr<Image>> Images;
+    std::vector<std::shared_ptr<Sampler>> Samplers;
     // All sets and their resources stay immutable and alive until Path drains.
-    NVulkan::VulkanDescriptorManager Descriptors;
+    std::shared_ptr<NVulkan::VulkanDescriptorManager> Descriptors;
     std::vector<Mesh> Meshes;
     std::vector<Material> Materials;
     NVulkan::VulkanSwapchain Swapchain;
@@ -184,7 +187,8 @@ public:
                 VkImageView view,
                 const NVulkan::VulkanSwapchainPlan& plan,
                 RenderFrameIdentity frame,
-                const BuildGraph& build) {
+                const BuildGraph& build,
+                NGraphics::NBackend::SubmissionUseSet& uses) {
         auto target = std::make_shared<SwapchainGraphTarget>(
                 ++TargetIdentity,
                 GraphImageDescription{{plan.Extent.width, plan.Extent.height, 1},
@@ -238,6 +242,9 @@ public:
             for (const auto& draw: pass.Description.DrawCommands) {
                 const auto& mesh = FindMesh(draw);
                 const auto& material = FindMaterial(draw);
+                uses.push_back(mesh.Vertices.GetRetentionToken());
+                uses.push_back(mesh.Indices.GetRetentionToken());
+                uses.insert(uses.end(), material.ResourceUses.begin(), material.ResourceUses.end());
                 vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, material.Pipeline->GetHandle());
                 if (material.Descriptors.IsValid()) {
                     VkDescriptorSet set = material.Descriptors.GetSet();
@@ -344,7 +351,8 @@ void GraphPresentation::PrepareMaterial(NResources::ResourceLease<NGraphics::Mat
             return;
         }
     }
-    const auto& prepared = m_impl->Pipelines.Prepare(key);
+    const auto& prepared = m_impl->Pipelines->Prepare(key);
+    NGraphics::NBackend::SubmissionUseSet resourceUses{m_impl->Pipelines, m_impl->Descriptors};
     std::vector<NVulkan::VulkanResolvedMaterialBinding> bindings;
     for (const auto& binding: material->GetBindings()) {
         NVulkan::VulkanResolvedMaterialBinding resolved{};
@@ -362,6 +370,7 @@ void GraphPresentation::PrepareMaterial(NResources::ResourceLease<NGraphics::Mat
             if (found == m_impl->Images.rend())
                 Invalid("Material image was not prepared");
             resolved.Image = {(*found)->View, (*found)->Lease.GetVersion()};
+            resourceUses.push_back(*found);
         }
         if (binding.Type != NGraphics::EMaterialBindingType::SampledImage) {
             const auto& identity = binding.Type == NGraphics::EMaterialBindingType::CombinedImageSampler
@@ -373,13 +382,14 @@ void GraphPresentation::PrepareMaterial(NResources::ResourceLease<NGraphics::Mat
             if (found == m_impl->Samplers.rend())
                 Invalid("Material sampler was not prepared");
             resolved.Sampler = {(*found)->Handle, (*found)->Lease.GetVersion()};
+            resourceUses.push_back(*found);
         }
         bindings.push_back(resolved);
     }
     NVulkan::VulkanDescriptorSetLease descriptors;
     if (!layout.empty())
-        descriptors = m_impl->Descriptors.Acquire({layout, bindings});
-    m_impl->Materials.push_back({std::move(material), std::move(key), &prepared, descriptors});
+        descriptors = m_impl->Descriptors->Acquire({layout, bindings});
+    m_impl->Materials.push_back({std::move(material), std::move(key), &prepared, descriptors, std::move(resourceUses)});
 }
 
 void GraphPresentation::PrepareImage(NResources::ResourceManager& resources,
@@ -398,7 +408,7 @@ void GraphPresentation::PrepareImage(NResources::ResourceManager& resources,
         if (image->Lease.GetResource() == handle && image->Lease.GetVersion() == lease->GetVersion())
             return;
     }
-    auto image = std::make_unique<Impl::Image>();
+    auto image = std::make_shared<Impl::Image>();
     image->Device = m_impl->Device.GetHandle();
     image->Identity = resources.GetIdentity(handle);
     image->Lease = std::move(*lease);
@@ -433,7 +443,7 @@ void GraphPresentation::PrepareSampler(NResources::ResourceManager& resources,
         if (sampler->Lease.GetResource() == handle && sampler->Lease.GetVersion() == lease->GetVersion())
             return;
     }
-    auto sampler = std::make_unique<Impl::Sampler>();
+    auto sampler = std::make_shared<Impl::Sampler>();
     sampler->Device = m_impl->Device.GetHandle();
     sampler->Identity = resources.GetIdentity(handle);
     sampler->Lease = std::move(*lease);
@@ -456,6 +466,7 @@ NGraphics::FrameSubmissionResult GraphPresentation::Render(RenderFrameIdentity f
         Invalid("Invalid graph frame identity or producer");
     }
     NGraphics::FrameSubmissionResult result;
+    NGraphics::NBackend::SubmissionUseSet resourceUses;
     try {
         (void)m_impl->Path.PollCompletedFrames();
         const auto submitted = m_impl->Path.Render(
@@ -469,8 +480,9 @@ NGraphics::FrameSubmissionResult GraphPresentation::Render(RenderFrameIdentity f
                     VkImage image,
                     VkImageView view,
                     const NVulkan::VulkanSwapchainPlan& plan) {
-                    m_impl->Record(command, image, view, plan, frame, build);
-                });
+                    m_impl->Record(command, image, view, plan, frame, build, resourceUses);
+                },
+                resourceUses);
         switch (submitted.Status) {
         case NVulkan::EVulkanClearPresentStatus::PRESENTED:
             result.Status = NGraphics::EFrameSubmissionStatus::PRESENTED;

@@ -207,15 +207,17 @@ public:
         ++Updates;
     }
 
-    void OnDraw() override {
-        EXPECT_EQ(++Draws, Updates.load());
+    void OnPostUpdate() override {
+        const int count = Updates.load();
+        EXPECT_EQ(Draws.load() + 1, count);
         m_events.emplace_back("user.update");
-        m_events.emplace_back("user.draw");
+        m_events.emplace_back("user.post-update");
+        Draws.store(count);
     }
 
 public:
     std::atomic<int> Updates{0};
-    int Draws = 0;
+    std::atomic<int> Draws{0};
 
 private:
     std::vector<std::string>& m_events;
@@ -298,14 +300,14 @@ protected:
         }
     }
 
-    void OnDraw() override {
-        m_state.Events.emplace_back("user.draw");
+    void OnPostUpdate() override {
+        RunOnMainThread([this] { m_state.Events.emplace_back("user.post-update"); });
 
-        if (ThrowFromDraw) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected draw failure");
+        if (ThrowFromPostUpdate) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Injected post-update failure");
         }
 
-        if (CloseFromDraw) {
+        if (CloseFromPostUpdate) {
             RequestShutdown();
         }
     }
@@ -323,10 +325,10 @@ private:
 
 public:
     bool CloseFromUpdate = false;
-    bool CloseFromDraw = false;
+    bool CloseFromPostUpdate = false;
     bool CloseFromCallback = false;
     bool ThrowFromUpdate = false;
-    bool ThrowFromDraw = false;
+    bool ThrowFromPostUpdate = false;
 };
 
 std::vector<std::string> CallbackEvents(const std::vector<std::string>& events) {
@@ -368,7 +370,7 @@ TEST_F(ApplicationTest, RunProcessesFramesUntilClose) {
               }));
 }
 
-TEST_F(ApplicationTest, RunsUpdateOnWorkerAndDrawOnApplicationThread) {
+TEST_F(ApplicationTest, RunsUpdateAndPostUpdateOnWorkers) {
     const std::thread::id applicationThread = std::this_thread::get_id();
 
     class ThreadCheckingApplication final: public RecordingApplication {
@@ -387,9 +389,10 @@ TEST_F(ApplicationTest, RunsUpdateOnWorkerAndDrawOnApplicationThread) {
             RecordingApplication::OnUpdate();
         }
 
-        void OnDraw() override {
-            EXPECT_EQ(std::this_thread::get_id(), m_expectedThread);
-            RecordingApplication::OnDraw();
+        void OnPostUpdate() override {
+            EXPECT_NE(std::this_thread::get_id(), m_expectedThread);
+            EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
+            RecordingApplication::OnPostUpdate();
         }
 
     private:
@@ -397,14 +400,14 @@ TEST_F(ApplicationTest, RunsUpdateOnWorkerAndDrawOnApplicationThread) {
     };
 
     ThreadCheckingApplication application{MakeConfig(), m_state, applicationThread};
-    application.CloseFromDraw = true;
+    application.CloseFromPostUpdate = true;
 
     application.Run();
 
     EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "window.request-close",
                       "user.close",
               }));
@@ -461,7 +464,7 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
               }));
 
     blockingEngineFactory.Runtime->FinishFirstDraw();
@@ -469,7 +472,7 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     EXPECT_TRUE(blockingEngineFactory.Runtime->WaitFirstDrawFinished(1s));
 
     const auto deadline = std::chrono::steady_clock::now() + 2s;
-    while (m_state.Events.size() < 4 && std::chrono::steady_clock::now() < deadline) {
+    while (callbacks.Draws.load() < 2 && std::chrono::steady_clock::now() < deadline) {
         frameLoop.Step(callbacks);
         std::this_thread::yield();
     }
@@ -477,9 +480,9 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
               }));
 }
 
@@ -507,7 +510,7 @@ TEST_F(ApplicationTest, ObservesAsyncExtractionFailureWhileUpdateAdmissionIsClos
     EXPECT_EQ(factoryRef.Engine->GetLastError()->Message, "Async extraction failed");
     EXPECT_EQ(factoryRef.Runtime->Updates.load(), 1);
     EXPECT_EQ(factoryRef.Runtime->Draws.load(), 0);
-    EXPECT_EQ(CallbackEvents(m_state.Events), (std::vector<std::string>{"user.update", "user.draw"}));
+    EXPECT_EQ(CallbackEvents(m_state.Events), (std::vector<std::string>{"user.update", "user.post-update"}));
 }
 
 TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
@@ -533,9 +536,9 @@ TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
     EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
               }));
 
     blockingEngineFactory.Runtime->FinishFirstDraw();
@@ -550,11 +553,11 @@ TEST_F(ApplicationTest, FastApplicationGetsBackpressureFromSlowWorkers) {
     EXPECT_EQ(CallbackEvents(m_state.Events),
               (std::vector<std::string>{
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
               }));
 }
 
@@ -570,13 +573,13 @@ TEST_F(ApplicationTest, StopsEngineWhenUpdateThrowsAndCanRunAgain) {
     EXPECT_NO_THROW(application.Run());
 }
 
-TEST_F(ApplicationTest, StopsEngineWhenDrawThrowsAndCanRunAgain) {
+TEST_F(ApplicationTest, StopsEngineWhenPostUpdateThrowsAndCanRunAgain) {
     RecordingApplication application{MakeConfig(), m_state};
-    application.ThrowFromDraw = true;
+    application.ThrowFromPostUpdate = true;
 
     EXPECT_THROW(application.Run(), NCommon::Exception);
 
-    application.ThrowFromDraw = false;
+    application.ThrowFromPostUpdate = false;
     application.CloseFromUpdate = true;
 
     EXPECT_NO_THROW(application.Run());
@@ -742,8 +745,14 @@ TEST_F(ApplicationTest, WorkerUpdateMainHandoffAndInputSnapshotMatrix) {
                     EXPECT_EQ(GetInputSnapshot().Sequence, snapshot.Sequence);
                     EXPECT_EQ(GetInputSnapshot().FramebufferSize.Width, snapshot.FramebufferSize.Width);
                 }
-                void OnDraw() override {
-                    EXPECT_EQ(std::this_thread::get_id(), MainThread);
+                void OnPostUpdate() override {
+                    EXPECT_NE(std::this_thread::get_id(), MainThread);
+                    EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
+                    EXPECT_EQ(GetInputSnapshot().Sequence, static_cast<std::uint64_t>(Updates));
+                    RunOnMainThread([this] {
+                        EXPECT_EQ(std::this_thread::get_id(), MainThread);
+                        ++Actions;
+                    });
                     EXPECT_EQ(++Draws, Updates);
                     if (Draws == 8) {
                         RequestShutdown();
@@ -754,7 +763,7 @@ TEST_F(ApplicationTest, WorkerUpdateMainHandoffAndInputSnapshotMatrix) {
             application.Run();
             EXPECT_EQ(application.Updates, 8);
             EXPECT_EQ(application.Draws, 8);
-            EXPECT_EQ(application.Actions, 8);
+            EXPECT_EQ(application.Actions, 16);
         }
     }
 }

@@ -4,7 +4,7 @@
 
 Adapter выполняет PrepareSystems → GetHandle → BindCancellation → Start. Запись completion существует до первой публикации и допускает inline Finish. При поздней привязке после Stop cancellation вызывается сразу вне runtime locks. Finish разрешён после всех systems, producer tickets, структурного commit и уничтожения временных payloads; повторный сигнал игнорируется. Конкретный FrameKey захвачен владельцем completion: сигнал не может завершить другую генерацию слота.
 
-Engine отдельно хранит orchestration TaskHandle и semantic completion. Main OnDraw ждёт semantic success; ранний legacy Draw регистрирует намерение, которое превращается в задачу лишь после успешного completion. Задача рисования также зависит от возврата оркестратора. Ошибка/отмена закрывает admission и не запускает Extract. Слот не освобождается в catch при живых CPU consumers.
+Engine отдельно хранит orchestration TaskHandle и semantic completion. Worker OnPostUpdate ждёт semantic success; ранний legacy Draw регистрирует намерение, которое превращается в задачу лишь после успешного completion. Задача рисования также зависит от возврата оркестратора. Ошибка/отмена закрывает admission и не запускает Extract. Слот не освобождается в catch при живых CPU consumers.
 
 Stop закрывает admission, запрашивает cancellation всех completion records вне metadata lock и ждёт их quiescence до WaitIdle. Это существенно для producer tickets, которые могут пережить idle TaskSystem. Пул жив до окончания принятых wrappers, callback tails и Drain. Повторный запуск получает новые FrameKey. Completion callbacks пробуждают main через платформенный wakeup вне runtime metadata locks; bounded maintenance ожидание сохраняется для GPU.
 

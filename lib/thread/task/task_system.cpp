@@ -23,9 +23,19 @@ namespace {
 struct WorkerThreadContext {
     TaskSystem* System = nullptr;
     WorkerIndex Index{0};
+    std::uint64_t InvocationTaskId = 0;
 };
 
 thread_local WorkerThreadContext CurrentWorker;
+
+struct TaskInvocationScope {
+    explicit TaskInvocationScope(std::uint64_t taskId) noexcept {
+        CurrentWorker.InvocationTaskId = taskId;
+    }
+    ~TaskInvocationScope() {
+        CurrentWorker.InvocationTaskId = 0;
+    }
+};
 
 [[nodiscard]] ErrorInfo MakeFailureError(const std::exception_ptr& error) noexcept {
     try {
@@ -273,6 +283,14 @@ void TaskSystem::TaskRegistry::RollbackAllocationLocked(std::uint64_t taskId) {
 
 bool TaskHandle::IsValid() const noexcept {
     return m_id != 0 && m_state != nullptr;
+}
+
+bool TaskContext::IsCurrentInvocation(const TaskSystem& system) const noexcept {
+    if (m_taskSystem != &system || CurrentWorker.System != m_taskSystem) {
+        return false;
+    }
+    return CurrentWorker.InvocationTaskId != 0 && CurrentWorker.InvocationTaskId == m_task.GetId() &&
+           CurrentWorker.Index.GetValue() == m_workerIndex.GetValue();
 }
 
 TaskHandle TaskContext::Spawn(TaskFunction function) {
@@ -1202,6 +1220,7 @@ void TaskSystem::WorkerLoop(WorkerIndex workerIndex) noexcept {
         // internal primitive/invariant failures are fail-stop, never a second completion.
         try {
             TaskContext context{*this, task, workerIndex};
+            const TaskInvocationScope invocation{task.GetId()};
             function(context);
         } catch (...) {
             error = MakeFailureError(std::current_exception());

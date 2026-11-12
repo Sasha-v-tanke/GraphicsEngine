@@ -1,5 +1,7 @@
 # Ресурсы
 
+Логическая выгрузка и независимое удержание GPU representations описаны в [контракте submission lifetime](../docs/about/submission_lifetime.md).
+
 `Resources` владеет логическими идентификаторами ресурсов и их жизненным циклом независимо от графического интерфейса. `AsyncResourceLoader` связывает выделенный ResourceIo, TaskSystem и адаптер загрузки backend. Конкретные GPU-объекты и политика размещения принадлежат Graphics.
 
 ## Контракт

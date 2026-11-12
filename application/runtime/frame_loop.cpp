@@ -124,6 +124,14 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_UPDATE;
         try {
             callbacks.CaptureInput();
+            if (!NEngine::NRuntime::EngineFactory::BindUserPostUpdate(
+                        *m_engine,
+                        *m_reservedFrame,
+                        std::make_shared<NEngine::NRuntime::UserPostUpdate>(&callbacks, [](void* target) {
+                            static_cast<IFrameLoopCallbacks*>(target)->OnPostUpdate();
+                        }))) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Frame post-update admission failed");
+            }
             if (!m_engine->ScheduleUserUpdate(*m_reservedFrame, [&callbacks] { callbacks.OnUpdate(); })) {
                 GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Frame user update admission failed");
             }
@@ -143,9 +151,7 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
         }
     }
 
-    if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_DRAW) {
-        callbacks.OnDraw();
-        progressed = true;
+    if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_ENGINE_DRAW) {
         m_frameCheckpoint = EFrameCheckpoint::WAITING_ENGINE_DRAW;
     }
 
@@ -169,7 +175,7 @@ void FrameLoop::EngineUpdateCheckpoint() {
     }
 
     if (m_reservedFrame && m_engine->IsUpdateComplete(*m_reservedFrame)) {
-        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_DRAW;
+        m_frameCheckpoint = EFrameCheckpoint::READY_FOR_ENGINE_DRAW;
     }
 }
 

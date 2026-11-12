@@ -1,7 +1,10 @@
 #include "submission_manager.h"
 
+#include <exception>
+#include <limits>
 #include <string_view>
 
+#include <graphics/backend/submission_uses.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
 
@@ -30,7 +33,8 @@ std::string_view GetVkResultName(VkResult result) {
 
 VulkanSubmissionManager::VulkanSubmissionManager(const VulkanDevice& device)
     : m_device(device)
-    , m_handle(device.GetHandle()) {
+    , m_handle(device.GetHandle())
+    , m_retirements(std::make_unique<NGraphics::NBackend::SubmissionRetirementQueue>()) {
     if (m_handle == VK_NULL_HANDLE) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan submission manager requires a device");
     }
@@ -39,8 +43,11 @@ VulkanSubmissionManager::VulkanSubmissionManager(const VulkanDevice& device)
 }
 
 VulkanSubmissionManager::~VulkanSubmissionManager() {
-    if (m_handle != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(m_handle);
+    try {
+        static_cast<void>(Shutdown());
+    } catch (...) {
+        // Returning would destroy owners still possibly referenced by native work.
+        std::terminate();
     }
 
     if (m_graphicsTimeline != VK_NULL_HANDLE) {
@@ -49,9 +56,41 @@ VulkanSubmissionManager::~VulkanSubmissionManager() {
     }
 }
 
+EVulkanSubmissionShutdown VulkanSubmissionManager::Shutdown() {
+    NGraphics::NBackend::SubmissionRetirementQueue::RetiredUses retired;
+    EVulkanSubmissionShutdown status = EVulkanSubmissionShutdown::DRAINED;
+    {
+        const VulkanLockedQueue queue = m_device.LockGraphicsQueue();
+        m_shutdown = true;
+        if (m_drained) {
+            return m_deviceLost ? EVulkanSubmissionShutdown::DEVICE_LOST : EVulkanSubmissionShutdown::DRAINED;
+        }
+        const VkResult result = vkQueueWaitIdle(queue.GetHandle());
+        if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to drain Vulkan submission uses: {}",
+                                  GetVkResultName(result));
+        }
+        m_deviceLost = m_deviceLost || result == VK_ERROR_DEVICE_LOST;
+        retired = m_retirements->TakeAfterShutdown();
+        m_drained = true;
+        status = m_deviceLost ? EVulkanSubmissionShutdown::DEVICE_LOST : EVulkanSubmissionShutdown::DRAINED;
+    }
+
+    // Both successful idle and device loss end native use; never report failure as
+    // ordinary timeline completion. Dependencies of the retained owners still exist.
+    retired.clear();
+
+    return status;
+}
+
 VulkanQueueCompletion VulkanSubmissionManager::SubmitGraphics(const VulkanQueueSubmitInfo& submitInfo) {
+    NGraphics::NBackend::SubmissionRetirementQueue::RetiredUses retired;
     const VulkanLockedQueue graphicsQueue = m_device.LockGraphicsQueue();
-    const std::uint64_t completionValue = m_nextGraphicsValue++;
+    if (m_shutdown || m_deviceLost || m_nextGraphicsValue == std::numeric_limits<std::uint64_t>::max()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Vulkan submission admission is closed");
+    }
+    const std::uint64_t completionValue = m_nextGraphicsValue;
 
     std::vector<VkSemaphoreSubmitInfo> signalSemaphores = submitInfo.SignalSemaphores;
     signalSemaphores.push_back({
@@ -75,13 +114,21 @@ VulkanQueueCompletion VulkanSubmissionManager::SubmitGraphics(const VulkanQueueS
             .pSignalSemaphoreInfos = signalSemaphores.data(),
     };
 
+    auto uses = m_retirements->Prepare(completionValue, submitInfo.ResourceUses);
     const VkResult result = vkQueueSubmit2(graphicsQueue.GetHandle(), 1, &vulkanSubmitInfo, submitInfo.Fence);
     if (result != VK_SUCCESS) {
-        --m_nextGraphicsValue;
+        if (result == VK_ERROR_DEVICE_LOST) {
+            m_deviceLost = true;
+            uses.Commit(); // Submission acceptance is uncertain; retain until failure cleanup.
+            retired = m_retirements->TakeAfterShutdown();
+        }
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Failed to submit Vulkan graphics queue work: {}",
                               GetVkResultName(result));
     }
+
+    uses.Commit();
+    ++m_nextGraphicsValue;
 
     return {
             .Value = completionValue,
@@ -93,15 +140,24 @@ bool VulkanSubmissionManager::IsCompleted(VulkanQueueCompletion completion) cons
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Vulkan queue completion value must be valid");
     }
 
+    const VulkanLockedQueue graphicsQueue = m_device.LockGraphicsQueue();
+    return GetCompletedValueLocked() >= completion.Value;
+}
+
+std::uint64_t VulkanSubmissionManager::GetCompletedValueLocked() const {
+    if (m_deviceLost) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Vulkan device was lost");
+    }
     std::uint64_t currentValue = 0;
     const VkResult result = vkGetSemaphoreCounterValue(m_handle, m_graphicsTimeline, &currentValue);
     if (result != VK_SUCCESS) {
+        m_deviceLost = result == VK_ERROR_DEVICE_LOST;
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Failed to query Vulkan graphics timeline: {}",
                               GetVkResultName(result));
     }
 
-    return currentValue >= completion.Value;
+    return currentValue;
 }
 
 void VulkanSubmissionManager::Wait(VulkanQueueCompletion completion, std::uint64_t timeoutNanoseconds) const {
@@ -120,9 +176,26 @@ void VulkanSubmissionManager::Wait(VulkanQueueCompletion completion, std::uint64
 
     const VkResult result = vkWaitSemaphores(m_handle, &waitInfo, timeoutNanoseconds);
     if (result != VK_SUCCESS) {
+        if (result == VK_ERROR_DEVICE_LOST) {
+            const VulkanLockedQueue queue = m_device.LockGraphicsQueue();
+            m_deviceLost = true;
+        }
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Failed to wait for Vulkan graphics timeline: {}",
                               GetVkResultName(result));
+    }
+}
+
+void VulkanSubmissionManager::ReleaseCompleted() const {
+    NGraphics::NBackend::SubmissionRetirementQueue::RetiredUses retired;
+    const VulkanLockedQueue queue = m_device.LockGraphicsQueue();
+    try {
+        retired = m_retirements->TakeCompleted(GetCompletedValueLocked());
+    } catch (...) {
+        if (m_deviceLost) {
+            retired = m_retirements->TakeAfterShutdown();
+        }
+        throw;
     }
 }
 

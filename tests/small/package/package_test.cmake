@@ -298,6 +298,7 @@ set(
     "GraphicsEngine/graphics/backend/completion_access.h"
     "GraphicsEngine/graphics/backend/backend.h"
     "GraphicsEngine/graphics/backend/factory.h"
+    "GraphicsEngine/graphics/backend/submission_uses.h"
     "GraphicsEngine/math/internal/glm_conversion.h"
     "GraphicsEngine/window/engine/engine.h"
     "GraphicsEngine/window/engine/event_sink.h"
@@ -433,4 +434,19 @@ if (invalidComponentResult EQUAL 0)
     message(FATAL_ERROR
         "GraphicsEngine accepted an unavailable required component"
     )
+endif ()
+
+# The installed Application interface intentionally rejects the retired OnDraw override.
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${consumerBuildDirectory}"
+        --target GraphicsEngineLegacyCallback ${consumerBuildArguments}
+    RESULT_VARIABLE legacyCallbackResult
+    OUTPUT_VARIABLE legacyCallbackOutput
+    ERROR_VARIABLE legacyCallbackError
+)
+if (legacyCallbackResult EQUAL 0)
+    message(FATAL_ERROR "GraphicsEngine accepted the retired OnDraw override")
+endif ()
+if (NOT "${legacyCallbackOutput}${legacyCallbackError}" MATCHES "OnDraw.*override|override.*OnDraw")
+    message(FATAL_ERROR "Legacy callback failed for an unexpected reason:\n${legacyCallbackOutput}\n${legacyCallbackError}")
 endif ()
