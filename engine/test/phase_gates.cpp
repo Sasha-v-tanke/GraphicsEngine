@@ -14,6 +14,13 @@
 namespace {
 using namespace std::chrono_literals;
 
+bool BindPostUpdate(NEngine::Engine& engine, NEngine::FrameKey frame, void* target, void (*invoke)(void*)) {
+    return NEngine::NRuntime::EngineFactory::BindUserPostUpdate(
+            engine,
+            frame,
+            std::make_shared<NEngine::NRuntime::UserPostUpdate>(target, invoke));
+}
+
 class PhaseRuntime final: public NEngine::NRuntime::IFrameRuntime {
 public:
     void Trace(int phase, const NEngine::NRuntime::FrameContext& frame) {
@@ -293,7 +300,11 @@ TEST(EnginePhaseGates, StopDrainsRunningPostAndSkipsCommitAndExtraction) {
     auto entered = observed.Entered.get_future();
     auto engine = NEngine::NRuntime::EngineFactory::Create({.WorkerCount = 1}, std::move(runtime));
     engine->Start();
-    ASSERT_TRUE(engine->Update());
+    const auto key = engine->TryBeginFrame();
+    ASSERT_TRUE(key);
+    int userCalls = 0;
+    ASSERT_TRUE(BindPostUpdate(*engine, *key, &userCalls, [](void* target) { ++*static_cast<int*>(target); }));
+    ASSERT_TRUE(engine->ScheduleUserUpdate(*key, [] {}));
     ASSERT_TRUE(engine->Draw());
     ASSERT_EQ(entered.wait_for(2s), std::future_status::ready);
     auto stopped = std::async(std::launch::async, [&] { engine->Stop(); });
@@ -303,6 +314,7 @@ TEST(EnginePhaseGates, StopDrainsRunningPostAndSkipsCommitAndExtraction) {
     ASSERT_EQ(stopped.wait_for(2s), std::future_status::ready);
     EXPECT_FALSE(engine->GetLastError());
     EXPECT_EQ(observed.Events, (std::vector<int>{1}));
+    EXPECT_EQ(userCalls, 0);
     EXPECT_EQ(observed.Draws.load(), 0);
     observed.HoldPost = false;
     observed.Events.clear();
@@ -336,8 +348,8 @@ TEST(EnginePhaseGates, BoundUserPostWaitsForSemanticCompletionAndRunsOnceBeforeC
         std::lock_guard lock{state.Runtime.Mutex};
         state.Runtime.Events.push_back(99);
     };
-    ASSERT_TRUE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *key, &callback, invoke));
-    EXPECT_FALSE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *key, &callback, invoke));
+    ASSERT_TRUE(BindPostUpdate(*engine, *key, &callback, invoke));
+    EXPECT_FALSE(BindPostUpdate(*engine, *key, &callback, invoke));
     ASSERT_TRUE(engine->ScheduleUserUpdate(*key, [] {}));
     ASSERT_TRUE(engine->Draw());
     ASSERT_EQ(semantic.wait_for(2s), std::future_status::ready);
@@ -353,7 +365,7 @@ TEST(EnginePhaseGates, BoundUserPostWaitsForSemanticCompletionAndRunsOnceBeforeC
     observed.HoldSemantic = false;
     observed.Events.clear();
     engine->Start();
-    EXPECT_FALSE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *key, &callback, invoke));
+    EXPECT_FALSE(BindPostUpdate(*engine, *key, &callback, invoke));
     ASSERT_TRUE(engine->Update());
     ASSERT_TRUE(engine->Draw());
     ASSERT_TRUE(Progress(*engine, [&] { return observed.Draws.load() == 2; }));
@@ -368,7 +380,7 @@ TEST(EnginePhaseGates, BoundUserPostFailureCancelsCommitAndExtraction) {
     engine->Start();
     const auto key = engine->TryBeginFrame();
     ASSERT_TRUE(key);
-    ASSERT_TRUE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *key, nullptr, [](void*) {
+    ASSERT_TRUE(BindPostUpdate(*engine, *key, nullptr, [](void*) {
         throw std::runtime_error{"user post-update failure"};
     }));
     ASSERT_TRUE(engine->ScheduleUserUpdate(*key, [] {}));
@@ -402,7 +414,7 @@ TEST(EnginePhaseGates, StopDrainsBoundUserPostBeforeTargetRetirementAndSkipsComm
     engine->Start();
     const auto key = engine->TryBeginFrame();
     ASSERT_TRUE(key);
-    ASSERT_TRUE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *key, &callback, [](void* target) {
+    ASSERT_TRUE(BindPostUpdate(*engine, *key, &callback, [](void* target) {
         auto& state = *static_cast<Callback*>(target);
         state.Entered.set_value();
         state.Release.acquire();
@@ -431,9 +443,7 @@ TEST(EnginePhaseGates, StopSkipsBoundUserPostWhileSemanticUpdateIsPending) {
     engine->Start();
     const auto key = engine->TryBeginFrame();
     ASSERT_TRUE(key);
-    ASSERT_TRUE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *key, &calls, [](void* target) {
-        ++*static_cast<int*>(target);
-    }));
+    ASSERT_TRUE(BindPostUpdate(*engine, *key, &calls, [](void* target) { ++*static_cast<int*>(target); }));
     ASSERT_TRUE(engine->ScheduleUserUpdate(*key, [] {}));
     ASSERT_TRUE(engine->Draw());
     ASSERT_EQ(semantic.wait_for(2s), std::future_status::ready);
@@ -441,5 +451,30 @@ TEST(EnginePhaseGates, StopSkipsBoundUserPostWhileSemanticUpdateIsPending) {
     EXPECT_EQ(calls, 0);
     EXPECT_EQ(observed.Events, (std::vector<int>{1}));
     EXPECT_EQ(observed.Draws.load(), 0);
+}
+
+TEST(EnginePhaseGates, PreparedUserPostReferenceCannotStartAfterStopOrBeReusedOnRestart) {
+    auto engine = NEngine::NRuntime::EngineFactory::Create({.WorkerCount = 1}, std::make_unique<PhaseRuntime>());
+    int calls = 0;
+    auto callback = std::make_shared<NEngine::NRuntime::UserPostUpdate>(&calls, [](void* target) {
+        ++*static_cast<int*>(target);
+    });
+    engine->Start();
+    const auto frame = engine->TryBeginFrame();
+    ASSERT_TRUE(frame);
+    ASSERT_TRUE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *frame, callback));
+    // Copying a target reference is preparation, not admission. Stop may win before TryInvoke.
+    const auto prepared = callback;
+    callback.reset();
+    engine->Stop();
+    EXPECT_FALSE(prepared->TryInvoke());
+    EXPECT_EQ(calls, 0);
+    engine->Start();
+    const auto next = engine->TryBeginFrame();
+    ASSERT_TRUE(next);
+    EXPECT_FALSE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *frame, prepared));
+    EXPECT_FALSE(NEngine::NRuntime::EngineFactory::BindUserPostUpdate(*engine, *next, prepared));
+    EXPECT_TRUE(engine->AbortFrame(*next));
+    engine->Stop();
 }
 } // namespace

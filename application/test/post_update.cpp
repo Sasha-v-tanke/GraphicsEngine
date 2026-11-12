@@ -36,7 +36,7 @@ public:
                         std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) override {
         NEngine::NRuntime::ScheduleWorldUpdate(World, tasks, completion);
     }
-    bool HasPostUpdate() const noexcept override {
+    [[nodiscard]] bool HasPostUpdate() const noexcept override {
         return true;
     }
     NCommon::TaskHandle SchedulePostUpdate(const NEngine::NRuntime::FrameContext&, NCommon::TaskContext&) override {

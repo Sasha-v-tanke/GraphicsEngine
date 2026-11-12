@@ -127,8 +127,9 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
             if (!NEngine::NRuntime::EngineFactory::BindUserPostUpdate(
                         *m_engine,
                         *m_reservedFrame,
-                        &callbacks,
-                        [](void* target) { static_cast<IFrameLoopCallbacks*>(target)->OnPostUpdate(); })) {
+                        std::make_shared<NEngine::NRuntime::UserPostUpdate>(&callbacks, [](void* target) {
+                            static_cast<IFrameLoopCallbacks*>(target)->OnPostUpdate();
+                        }))) {
                 GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Frame post-update admission failed");
             }
             if (!m_engine->ScheduleUserUpdate(*m_reservedFrame, [&callbacks] { callbacks.OnUpdate(); })) {
