@@ -29,28 +29,31 @@ public:
 
     template<typename T>
     [[nodiscard]] ResourceHandle<T> Request(ResourceIdentity identity) {
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
-        return MakeTypedHandle<T>(Request(std::move(identity), std::type_index{typeid(T)}));
+        return MakeTypedHandle<T>(Request(std::move(identity), std::type_index{typeid(T)}, retired));
     }
 
     template<typename T>
     [[nodiscard]] ResourceOperation<T> BeginLoading(ResourceHandle<T> handle) {
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
         return ResourceOperation<T>{
                 handle,
-                BeginLoading(Validate(handle, std::type_index{typeid(T)})),
+                BeginLoading(Validate(handle, std::type_index{typeid(T)}), retired),
         };
     }
 
     // Atomic admission: concurrent pipelines coalesce at the logical identity.
     template<typename T>
     [[nodiscard]] std::optional<ResourceOperation<T>> TryQueueLoading(ResourceHandle<T> handle) {
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
         Entry& entry = Validate(handle, std::type_index{typeid(T)});
         if (entry.State != EResourceState::UNLOADED && entry.State != EResourceState::FAILED) {
             return std::nullopt;
         }
-        const auto generation = BeginLoading(entry);
+        const auto generation = BeginLoading(entry, retired);
         entry.State = EResourceState::QUEUED;
         return ResourceOperation<T>{handle, generation};
     }
@@ -108,7 +111,7 @@ public:
         }
         if (to == EResourceState::READY) {
             ++entry->PublishedVersion;
-            entry->GpuResource = std::move(gpuVersion);
+            entry->GpuResource.swap(gpuVersion);
         }
         entry->State = to;
         lock.unlock();
@@ -117,13 +120,13 @@ public:
 
     template<typename T>
     bool TryFail(ResourceOperation<T> operation, NCommon::ErrorInfo error) {
-        std::shared_ptr<const void> retired;
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
         Entry* entry = const_cast<Entry*>(FindOperation(operation));
         if (!entry || !IsLoadingState(entry->State)) {
             return false;
         }
-        retired.swap(entry->CpuResource);
+        RetirePayload(*entry, retired);
         entry->Failure = std::move(error);
         entry->State = EResourceState::FAILED;
         lock.unlock();
@@ -133,7 +136,7 @@ public:
     // Cancels admission even when its pipeline work record has not been registered yet.
     template<typename T>
     [[nodiscard]] std::optional<ResourceOperation<T>> TryCancelLoading(ResourceHandle<T> handle) {
-        std::shared_ptr<const void> retired;
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
         Entry& entry = Validate(handle, std::type_index{typeid(T)});
         if (!IsLoadingState(entry.State)) {
@@ -141,7 +144,7 @@ public:
         }
         const ResourceOperation<T> operation{handle, entry.OperationGeneration};
         entry.CancelledOperationGeneration = entry.OperationGeneration;
-        retired.swap(entry.CpuResource);
+        RetirePayload(entry, retired);
         entry.Failure.reset();
         entry.State = EResourceState::UNLOADED;
         auto cancellation = entry.Cancellation;
@@ -152,14 +155,14 @@ public:
 
     template<typename T>
     bool TryCancel(ResourceOperation<T> operation) {
-        std::shared_ptr<const void> retired;
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
         Entry* entry = const_cast<Entry*>(FindOperation(operation));
         if (!entry || !IsLoadingState(entry->State)) {
             return false;
         }
         entry->CancelledOperationGeneration = entry->OperationGeneration;
-        retired.swap(entry->CpuResource);
+        RetirePayload(*entry, retired);
         entry->Failure.reset();
         entry->State = EResourceState::UNLOADED;
         auto cancellation = entry->Cancellation;
@@ -170,27 +173,32 @@ public:
 
     template<typename T>
     void PublishReady(ResourceOperation<T> operation, std::shared_ptr<T> resource) {
+        // Erase ownership before taking the lock: conversion/callee temporaries must not
+        // destroy a rejected payload while validation still holds the metadata mutex.
+        std::shared_ptr<const void> published = std::move(resource);
         std::unique_lock lock{m_mutex};
         PublishReady(Validate(operation.GetResource(), std::type_index{typeid(T)}),
                      operation.GetGeneration(),
-                     std::move(resource));
+                     published);
     }
 
     template<typename T>
     void Fail(ResourceOperation<T> operation, NCommon::ErrorInfo error) {
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
         Fail(Validate(operation.GetResource(), std::type_index{typeid(T)}),
              operation.GetGeneration(),
-             std::move(error));
+             std::move(error),
+             retired);
     }
 
     template<typename T>
     void RequestUnload(ResourceHandle<T> handle) {
-        std::shared_ptr<const void> retired;
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
         Entry& entry = Validate(handle, std::type_index{typeid(T)});
         RequestUnload(entry);
-        retired.swap(entry.CpuResource);
+        RetirePayload(entry, retired);
         auto cancellation = entry.Cancellation;
         lock.unlock();
         cancellation.request_stop();
@@ -198,14 +206,16 @@ public:
 
     template<typename T>
     void CompleteUnload(ResourceHandle<T> handle) {
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
-        CompleteUnload(Validate(handle, std::type_index{typeid(T)}));
+        CompleteUnload(Validate(handle, std::type_index{typeid(T)}), retired);
     }
 
     template<typename T>
     void Forget(ResourceHandle<T> handle) {
+        RetiredPayload retired;
         std::unique_lock lock{m_mutex};
-        Forget(Validate(handle, std::type_index{typeid(T)}));
+        Forget(Validate(handle, std::type_index{typeid(T)}), retired);
     }
 
     template<typename T>
@@ -305,6 +315,13 @@ public:
     }
 
 private:
+    // Declared by callers before their lock guard, so strong payloads and weak control
+    // blocks (including custom deleter/allocator state) are released after unlocking.
+    struct RetiredPayload {
+        std::shared_ptr<const void> Cpu;
+        std::weak_ptr<const void> Gpu;
+    };
+
     struct Entry {
         bool Occupied = false;
         ResourceIdentity Identity;
@@ -346,19 +363,25 @@ private:
 
     [[nodiscard]] static std::uint64_t AcquireOwnerId();
 
-    [[nodiscard]] InternalHandle Request(ResourceIdentity identity, std::type_index type);
+    static void RetirePayload(Entry& entry, RetiredPayload& retired) noexcept {
+        entry.CpuResource.swap(retired.Cpu);
+        entry.GpuResource.swap(retired.Gpu);
+    }
 
-    [[nodiscard]] static std::uint64_t BeginLoading(Entry& entry);
+    [[nodiscard]] InternalHandle Request(ResourceIdentity identity, std::type_index type, RetiredPayload& retired);
 
-    static void PublishReady(Entry& entry, std::uint64_t operationGeneration, std::shared_ptr<const void> resource);
+    [[nodiscard]] static std::uint64_t BeginLoading(Entry& entry, RetiredPayload& retired);
 
-    static void Fail(Entry& entry, std::uint64_t operationGeneration, NCommon::ErrorInfo error);
+    static void PublishReady(Entry& entry, std::uint64_t operationGeneration, std::shared_ptr<const void>& resource);
+
+    static void
+    Fail(Entry& entry, std::uint64_t operationGeneration, NCommon::ErrorInfo error, RetiredPayload& retired);
 
     static void RequestUnload(Entry& entry);
 
-    static void CompleteUnload(Entry& entry);
+    static void CompleteUnload(Entry& entry, RetiredPayload& retired);
 
-    void Forget(Entry& entry);
+    void Forget(Entry& entry, RetiredPayload& retired);
 
     [[nodiscard]] static EResourceState GetState(const Entry& entry) noexcept;
 

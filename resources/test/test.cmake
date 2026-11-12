@@ -17,3 +17,5 @@ TEST_LABELS(
 PRIVATE_DEPENDS(
     Thread
 )
+
+RECURSE(retirement)

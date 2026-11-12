@@ -32,7 +32,8 @@ std::uint64_t ResourceManager::AcquireOwnerId() {
     return ownerId;
 }
 
-ResourceManager::InternalHandle ResourceManager::Request(ResourceIdentity identity, std::type_index type) {
+ResourceManager::InternalHandle
+ResourceManager::Request(ResourceIdentity identity, std::type_index type, RetiredPayload& retired) {
     if (!identity.IsValid()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Resource identity must have class and key");
     }
@@ -75,8 +76,7 @@ ResourceManager::InternalHandle ResourceManager::Request(ResourceIdentity identi
     entry.State = EResourceState::UNLOADED;
     entry.CancelledOperationGeneration = 0;
     entry.PublishedVersion = 0;
-    entry.CpuResource.reset();
-    entry.GpuResource.reset();
+    RetirePayload(entry, retired);
     entry.Failure.reset();
 
     m_identityIndex.emplace(entry.Identity, slotIndex);
@@ -87,7 +87,7 @@ ResourceManager::InternalHandle ResourceManager::Request(ResourceIdentity identi
     };
 }
 
-std::uint64_t ResourceManager::BeginLoading(Entry& entry) {
+std::uint64_t ResourceManager::BeginLoading(Entry& entry, RetiredPayload& retired) {
     if (entry.State != EResourceState::UNLOADED && entry.State != EResourceState::FAILED) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Resource '{}' cannot begin loading from state {}",
@@ -106,8 +106,7 @@ std::uint64_t ResourceManager::BeginLoading(Entry& entry) {
     entry.Cancellation = std::move(cancellation);
     entry.CancelledOperationGeneration = 0;
     entry.State = EResourceState::LOADING;
-    entry.CpuResource.reset();
-    entry.GpuResource.reset();
+    RetirePayload(entry, retired);
     entry.Failure.reset();
 
     return entry.OperationGeneration;
@@ -115,7 +114,7 @@ std::uint64_t ResourceManager::BeginLoading(Entry& entry) {
 
 void ResourceManager::PublishReady(Entry& entry,
                                    std::uint64_t operationGeneration,
-                                   std::shared_ptr<const void> resource) {
+                                   std::shared_ptr<const void>& resource) {
     if (!resource) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Ready resource payload must not be null");
     }
@@ -133,20 +132,22 @@ void ResourceManager::PublishReady(Entry& entry,
     }
 
     ++entry.PublishedVersion;
-    entry.CpuResource = std::move(resource);
+    entry.CpuResource.swap(resource);
     entry.Failure.reset();
     entry.State = EResourceState::READY;
 }
 
-void ResourceManager::Fail(Entry& entry, std::uint64_t operationGeneration, NCommon::ErrorInfo error) {
+void ResourceManager::Fail(Entry& entry,
+                           std::uint64_t operationGeneration,
+                           NCommon::ErrorInfo error,
+                           RetiredPayload& retired) {
     if (entry.State != EResourceState::LOADING || entry.OperationGeneration != operationGeneration) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Resource '{}' has no matching loading operation",
                               entry.Identity.GetKey());
     }
 
-    entry.CpuResource.reset();
-    entry.GpuResource.reset();
+    RetirePayload(entry, retired);
     entry.Failure = std::move(error);
     entry.State = EResourceState::FAILED;
 }
@@ -176,7 +177,7 @@ void ResourceManager::RequestUnload(Entry& entry) {
     entry.State = EResourceState::UNLOADING;
 }
 
-void ResourceManager::CompleteUnload(Entry& entry) {
+void ResourceManager::CompleteUnload(Entry& entry, RetiredPayload& retired) {
     if (entry.State != EResourceState::UNLOADING) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Resource '{}' cannot complete unload from state {}",
@@ -184,13 +185,12 @@ void ResourceManager::CompleteUnload(Entry& entry) {
                               static_cast<int>(entry.State));
     }
 
-    entry.CpuResource.reset();
-    entry.GpuResource.reset();
+    RetirePayload(entry, retired);
     entry.Failure.reset();
     entry.State = EResourceState::UNLOADED;
 }
 
-void ResourceManager::Forget(Entry& entry) {
+void ResourceManager::Forget(Entry& entry, RetiredPayload& retired) {
     if (entry.State != EResourceState::UNLOADED) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Resource '{}' cannot be forgotten from state {}",
@@ -207,8 +207,7 @@ void ResourceManager::Forget(Entry& entry) {
     entry.Type = std::type_index{typeid(void)};
     entry.CancelledOperationGeneration = 0;
     entry.PublishedVersion = 0;
-    entry.CpuResource.reset();
-    entry.GpuResource.reset();
+    RetirePayload(entry, retired);
     entry.Failure.reset();
 
     if (entry.Generation == std::numeric_limits<std::uint64_t>::max()) {
