@@ -472,7 +472,7 @@ TEST_F(ApplicationTest, DoesNotRepeatUserCallbacksWhileEngineAppliesBackpressure
     EXPECT_TRUE(blockingEngineFactory.Runtime->WaitFirstDrawFinished(1s));
 
     const auto deadline = std::chrono::steady_clock::now() + 2s;
-    while (m_state.Events.size() < 4 && std::chrono::steady_clock::now() < deadline) {
+    while (callbacks.Draws.load() < 2 && std::chrono::steady_clock::now() < deadline) {
         frameLoop.Step(callbacks);
         std::this_thread::yield();
     }
