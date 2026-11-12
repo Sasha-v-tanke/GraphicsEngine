@@ -165,9 +165,9 @@ void TopologyState::Destroy(Entity entity) noexcept {
 }
 
 NMath::Mat4 TopologyState::Resolve(EntityReference entity) const {
-    NMath::Mat4 result = Get(entity).Local;
+    NMath::Mat4 result = Get(entity).Local.Value;
     for (EntityReference parent = Get(entity).Parent; parent != EntityReference{}; parent = Get(parent).Parent) {
-        result = Get(parent).Local * result;
+        result = Get(parent).Local.Value * result;
         ValidateAffine(result);
     }
     return result;
@@ -176,7 +176,10 @@ NMath::Mat4 TopologyState::Resolve(EntityReference entity) const {
 void TopologyState::SetLocal(EntityReference entity, const NMath::Mat4& local) {
     (void)Get(entity);
     ValidateAffine(local);
-    Nodes[entity.Identity.Index].Local = local;
+    auto& transform = Nodes[entity.Identity.Index].Local;
+    const auto revision = NextTransformRevision(transform.LocalRevision);
+    transform.Value = local;
+    transform.LocalRevision = revision;
 }
 
 void TopologyState::Reparent(EntityReference child, EntityReference parent, EReparentMode mode) {
@@ -196,7 +199,7 @@ void TopologyState::Reparent(EntityReference child, EntityReference parent, ERep
         return;
     }
     ValidateEpoch();
-    NMath::Mat4 local = Get(child).Local;
+    NMath::Mat4 local = Get(child).Local.Value;
     if (mode == EReparentMode::KEEP_WORLD) {
         const NMath::Mat4 world = Resolve(child);
         if (parent == EntityReference{}) {
@@ -220,9 +223,12 @@ void TopologyState::Reparent(EntityReference child, EntityReference parent, ERep
         }
     }
     ValidateAffine(local);
+    const auto revision = mode == EReparentMode::KEEP_WORLD ? NextTransformRevision(Get(child).Local.LocalRevision)
+                                                            : Get(child).Local.LocalRevision;
     Detach(child);
     auto& node = Nodes[child.Identity.Index];
-    node.Local = local;
+    node.Local.Value = local;
+    node.Local.LocalRevision = revision;
     node.Parent = parent;
     if (parent != EntityReference{}) {
         auto& parentNode = Nodes[parent.Identity.Index];
@@ -268,7 +274,7 @@ bool TopologySnapshot::IsAncestor(EntityReference ancestor, EntityReference desc
     return false;
 }
 NMath::Mat4 TopologySnapshot::GetLocalTransform(EntityReference entity) const {
-    return m_lease->State->Get(entity).Local;
+    return m_lease->State->Get(entity).Local.Value;
 }
 NMath::Mat4 TopologySnapshot::GetWorldTransform(EntityReference entity) const {
     return m_lease->State->Resolve(entity);

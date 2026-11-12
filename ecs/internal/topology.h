@@ -1,13 +1,36 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <vector>
 
+#include <GraphicsEngine/lib/common/change_tracker.h>
+#include <GraphicsEngine/lib/common/error/error.h>
+#include <GraphicsEngine/lib/common/error/exception.h>
 #include <ecs/hierarchy.h>
 
 namespace NEcs::NInternal {
+
+// Versions are owned by the topology writer, never a shared per-write counter.
+inline NCommon::VersionStamp NextTransformRevision(NCommon::VersionStamp revision) {
+    if (revision.Value != std::numeric_limits<std::uint64_t>::max()) {
+        ++revision.Value;
+    } else {
+        if (revision.Era == std::numeric_limits<std::uint64_t>::max()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Transform revision exhausted");
+        }
+        ++revision.Era;
+        revision.Value = 0;
+    }
+    return revision;
+}
+
+struct LocalTransform {
+    NMath::Mat4 Value = NMath::Mat4::Identity();
+    NCommon::VersionStamp LocalRevision{1, 0};
+};
 
 struct TopologyNode {
     Entity Identity = {};
@@ -16,7 +39,7 @@ struct TopologyNode {
     EntityReference LastChild = {};
     EntityReference PreviousSibling = {};
     EntityReference NextSibling = {};
-    NMath::Mat4 Local = NMath::Mat4::Identity();
+    LocalTransform Local;
 };
 
 struct TopologyState {

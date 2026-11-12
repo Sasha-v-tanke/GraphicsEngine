@@ -96,6 +96,9 @@ struct TraversalOperation {
     std::shared_ptr<TraversalOutput<Result>> Output;
     // Optional pure estimate in positive finite units. Evaluated before publication.
     std::function<double(EntityReference)> EstimateWork = {};
+    // Optional parent-first, ancestor-closed selection relative to roots. Siblings
+    // follow selection order; omitted subtrees are not visited or evaluated.
+    std::optional<std::vector<EntityReference>> SelectedNodes = {};
 };
 
 namespace NTraversal {
@@ -108,6 +111,10 @@ template<typename Result>
 struct Run: std::enable_shared_from_this<Run<Result>> {
     struct Node {
         EntityReference Identity;
+        EntityReference FirstChild;
+        EntityReference LastChild;
+        EntityReference NextSibling;
+        bool IsRoot = false;
         std::optional<Result> Value;
         double OwnCost = 0;
         double SubtreeCost = 0;
@@ -228,7 +235,7 @@ struct Run: std::enable_shared_from_this<Run<Result>> {
         if (work.RootEnd != 0) {
             ++work.RootBegin;
         } else {
-            work.First = Storage->Get(work.First).NextSibling;
+            work.First = Nodes[work.First.Identity.Index].NextSibling;
         }
     }
     bool Split(WorkItem& work, NCommon::TaskContext* context) {
@@ -274,8 +281,8 @@ struct Run: std::enable_shared_from_this<Run<Result>> {
         }
         children.clear();
         if (Mode == ETraversalMode::BOTTOM_UP) {
-            for (auto child = Storage->Get(entity).FirstChild; child != EntityReference{};
-                 child = Storage->Get(child).NextSibling) {
+            for (auto child = Nodes[entity.Identity.Index].FirstChild; child != EntityReference{};
+                 child = Nodes[child.Identity.Index].NextSibling) {
                 children.push_back(&*Nodes[child.Identity.Index].Value);
             }
         }
@@ -337,13 +344,13 @@ struct Run: std::enable_shared_from_this<Run<Result>> {
                     local.push_back(item);
                 }
                 if (Mode == ETraversalMode::BOTTOM_UP) {
-                    if (Storage->Get(entity).FirstChild == EntityReference{}) {
+                    if (Nodes[entity.Identity.Index].FirstChild == EntityReference{}) {
                         Reduce(entity, children, units, visited, context);
                     }
                 } else {
                     Compute(entity, children, units, visited);
                 }
-                const auto first = Storage->Get(entity).FirstChild;
+                const auto first = Nodes[entity.Identity.Index].FirstChild;
                 if (first != EntityReference{}) {
                     local.push_back({first,
                                      {},
@@ -390,14 +397,11 @@ std::shared_ptr<Run<Result>> Prepare(TopologySnapshot topology,
     run->InitialRate = learned > 0 ? learned : policy.InitialNanosecondsPerWorkUnit;
     run->LiveRate.store(run->InitialRate);
     std::vector<EntityReference> order;
-    std::vector<EntityReference> pending(roots.rbegin(), roots.rend());
-    while (!pending.empty()) {
-        const auto entity = pending.back();
-        pending.pop_back();
-        const auto& topologyNode = run->Storage->Get(entity);
+    const auto initialize = [&](EntityReference entity) -> typename Run<Result>::Node& {
+        (void)run->Storage->Get(entity);
         auto& node = run->Nodes[entity.Identity.Index];
         if (node.Identity != EntityReference{}) {
-            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Traversal roots overlap or repeat");
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Traversal nodes overlap or repeat");
         }
         node.Identity = entity;
         node.OwnCost = operation.EstimateWork ? operation.EstimateWork(entity) : 1.0;
@@ -407,13 +411,67 @@ std::shared_ptr<Run<Result>> Prepare(TopologySnapshot topology,
         }
         node.SubtreeCost = node.OwnCost;
         order.push_back(entity);
-        std::size_t children = 0;
-        for (auto child = topologyNode.LastChild; child != EntityReference{};
-             child = run->Storage->Get(child).PreviousSibling) {
-            pending.push_back(child);
-            ++children;
+        return node;
+    };
+    if (operation.SelectedNodes) {
+        for (const auto root: roots) {
+            (void)run->Storage->Get(root);
+            auto& node = run->Nodes[root.Identity.Index];
+            if (node.IsRoot) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Traversal roots repeat");
+            }
+            node.IsRoot = true;
         }
-        node.RemainingChildren.store(children);
+        for (const auto entity: *operation.SelectedNodes) {
+            auto& node = initialize(entity);
+            const auto parent = run->Storage->Get(entity).Parent;
+            const bool selectedParent =
+                    parent != EntityReference{} && run->Nodes[parent.Identity.Index].Identity == parent;
+            if (node.IsRoot) {
+                if (selectedParent) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Traversal roots overlap");
+                }
+            } else {
+                if (!selectedParent) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
+                                          "Traversal selection must be parent-first and ancestor-closed");
+                }
+                auto& parentNode = run->Nodes[parent.Identity.Index];
+                if (parentNode.LastChild == EntityReference{}) {
+                    parentNode.FirstChild = entity;
+                } else {
+                    run->Nodes[parentNode.LastChild.Identity.Index].NextSibling = entity;
+                }
+                parentNode.LastChild = entity;
+                parentNode.RemainingChildren.fetch_add(1);
+            }
+        }
+        for (const auto root: roots) {
+            if (run->Nodes[root.Identity.Index].Identity != root) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Traversal root is outside selection");
+            }
+            const auto parent = run->Storage->Get(root).Parent;
+            if (parent != EntityReference{} && run->Nodes[parent.Identity.Index].Identity == parent) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Traversal roots overlap");
+            }
+        }
+    } else {
+        std::vector<EntityReference> pending(roots.rbegin(), roots.rend());
+        while (!pending.empty()) {
+            const auto entity = pending.back();
+            pending.pop_back();
+            auto& node = initialize(entity);
+            const auto& topologyNode = run->Storage->Get(entity);
+            node.FirstChild = topologyNode.FirstChild;
+            node.NextSibling = topologyNode.NextSibling;
+            std::size_t children = 0;
+            for (auto child = topologyNode.LastChild; child != EntityReference{};
+                 child = run->Storage->Get(child).PreviousSibling) {
+                pending.push_back(child);
+                ++children;
+            }
+            node.RemainingChildren.store(children);
+        }
     }
     double total = 0;
     for (const auto entity: std::views::reverse(order)) {
