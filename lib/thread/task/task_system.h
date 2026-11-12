@@ -123,6 +123,9 @@ public:
         return m_workerIndex;
     }
 
+    // True only for this context on its invoking worker, before the callable returns.
+    [[nodiscard]] bool IsCurrentInvocation(const TaskSystem& system) const noexcept;
+
     [[nodiscard]] TaskHandle GetTask() const noexcept {
         return m_task;
     }

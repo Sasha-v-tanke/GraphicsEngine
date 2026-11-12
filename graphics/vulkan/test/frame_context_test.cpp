@@ -7,12 +7,15 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <semaphore>
 #include <spawn.h>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unistd.h>
+#include <unordered_set>
 #include <vector>
 
 #include <sys/wait.h>
@@ -231,7 +234,7 @@ public:
         , m_submissions(device)
         , m_ring(device, slots)
         , m_commands(slots, VK_NULL_HANDLE)
-        , m_events([this](std::stop_token stop) {
+        , m_events([this](const std::stop_token& stop) {
             while (!stop.stop_requested()) {
                 {
                     const std::lock_guard lock{m_mutex};
@@ -418,6 +421,154 @@ TEST(VulkanFrameContext, UsesOneContextPerFrameSlotAndBlocksReuseUntilCompletion
 
 TEST(VulkanFrameContext, SupportsSingleFrameRingAndShutdownInFlight) {
     RunSpawnedSmoke("VulkanFrameContextChild.DISABLED_SupportsSingleFrameRingAndShutdownInFlight");
+}
+
+TEST(VulkanFrameContextChild, DISABLED_WorkerPoolsFollowInvocationAndSlotCompletion) {
+    try {
+        VulkanRuntime runtime;
+        for (const std::size_t workerCount: {1U, 4U}) {
+            for (const std::size_t slots: {1U, 3U}) {
+                NCommon::TaskSystem tasks{workerCount};
+                NCommon::TaskSystem foreign{1};
+                NVulkan::VulkanFrameContextRing ring{runtime.Device, slots, tasks};
+                NVulkan::VulkanSubmissionManager submissions{runtime.Device};
+                std::unordered_set<VkCommandPool> allPools;
+                std::optional<NCommon::TaskContext> saved;
+                for (std::size_t slot = 0; slot < slots; ++slot) {
+                    const NVulkan::VulkanFrameContextAcquire frame{slot, slot};
+                    auto* context = ring.TryAcquire(frame, nullptr);
+                    ASSERT_NE(context, nullptr);
+                    EXPECT_EQ(context->GetWorkerCount(), workerCount);
+                    ASSERT_TRUE(allPools.insert(context->GetCommandPool()).second);
+                    std::vector<VkCommandPool> pools(workerCount);
+                    std::vector<VkCommandBuffer> commands(workerCount);
+                    std::vector<NCommon::TaskHandle> jobs;
+                    jobs.reserve(workerCount);
+                    std::counting_semaphore<> entered{0};
+                    std::counting_semaphore<> resume{0};
+                    for (std::size_t index = 0; index < workerCount; ++index) {
+                        jobs.push_back(tasks.Submit([&](NCommon::TaskContext& task) {
+                            bool announced = false;
+                            try {
+                                ring.WithWorkerContext(frame, task, [&](NVulkan::VulkanWorkerContext& worker) {
+                                    const auto workerIndex = task.GetWorkerIndex().GetValue();
+                                    EXPECT_EQ(worker.GetWorkerIndex().GetValue(), workerIndex);
+                                    EXPECT_EQ(worker.GetFrameIndex(), frame.FrameIndex);
+                                    EXPECT_EQ(worker.GetFrameSlotIndex(), slot);
+                                    pools[workerIndex] = worker.GetCommandPool();
+                                    commands[workerIndex] =
+                                            AllocateCommandBuffer(runtime.Device.GetHandle(), worker.GetCommandPool());
+                                    RecordEmptyCommandBuffer(commands[workerIndex]);
+                                    EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) {}), NCommon::Exception);
+                                    if (workerIndex == 0) {
+                                        saved.emplace(task);
+                                        EXPECT_THROW(ring.WithWorkerContext(frame, *saved, [](auto&) {}),
+                                                     NCommon::Exception);
+                                        std::thread wrongThread([&] {
+                                            EXPECT_THROW((void)worker.GetCommandPool(), NCommon::Exception);
+                                        });
+                                        wrongThread.join();
+                                    }
+                                    announced = true;
+                                    entered.release();
+                                    resume.acquire();
+                                });
+                            } catch (...) {
+                                if (!announced) {
+                                    entered.release();
+                                }
+                                throw;
+                            }
+                        }));
+                    }
+                    for (std::size_t index = 0; index < workerCount; ++index) {
+                        entered.acquire();
+                    }
+                    EXPECT_THROW(ring.MarkSubmitted(frame, 1), NCommon::Exception);
+                    EXPECT_THROW(ring.ReleaseAcquired(frame), NCommon::Exception);
+                    EXPECT_EQ(ring.TryAcquire({frame.FrameIndex + slots, slot}, [](auto) { return true; }), nullptr);
+                    resume.release(static_cast<std::ptrdiff_t>(workerCount));
+                    tasks.WaitIdle();
+                    for (const auto& job: jobs) {
+                        ASSERT_EQ(tasks.GetStatus(job), NCommon::ETaskStatus::COMPLETED);
+                    }
+                    for (const auto pool: pools) {
+                        EXPECT_NE(pool, VK_NULL_HANDLE);
+                        EXPECT_TRUE(allPools.insert(pool).second);
+                    }
+                    ASSERT_TRUE(saved.has_value());
+                    EXPECT_THROW(ring.WithWorkerContext(frame, *saved, [](auto&) {}), NCommon::Exception);
+                    const auto wrongPool = foreign.Submit([&](NCommon::TaskContext& task) {
+                        EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) {}), NCommon::Exception);
+                    });
+                    foreign.Wait(wrongPool);
+                    ASSERT_EQ(foreign.GetStatus(wrongPool), NCommon::ETaskStatus::COMPLETED);
+                    // An exception returns the borrow; the same invocation can safely borrow again.
+                    const auto retry = tasks.Submit([&](NCommon::TaskContext& task) {
+                        EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) { throw 28; }), int);
+                        ring.WithWorkerContext(frame, task, [&](auto& worker) {
+                            EXPECT_EQ(worker.GetCommandPool(), pools[task.GetWorkerIndex().GetValue()]);
+                        });
+                    });
+                    tasks.Wait(retry);
+                    ASSERT_EQ(tasks.GetStatus(retry), NCommon::ETaskStatus::COMPLETED);
+                    NVulkan::VulkanQueueSubmitInfo submit;
+                    for (const auto command: commands) {
+                        submit.CommandBuffers.push_back({
+                                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                .pNext = nullptr,
+                                .commandBuffer = command,
+                                .deviceMask = 0,
+                        });
+                    }
+                    const auto completion = submissions.SubmitGraphics(submit);
+                    ring.MarkSubmitted(frame, completion.Value);
+                    // Deterministically withhold completion observation even on a fast GPU.
+                    EXPECT_EQ(ring.TryAcquire({frame.FrameIndex + slots, slot},
+                                              [&](std::uint64_t value) {
+                                                  EXPECT_EQ(value, completion.Value);
+                                                  return false;
+                                              }),
+                              nullptr);
+                    const auto afterSubmit = tasks.Submit([&](NCommon::TaskContext& task) {
+                        EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) {}), NCommon::Exception);
+                    });
+                    tasks.Wait(afterSubmit);
+                    ASSERT_EQ(tasks.GetStatus(afterSubmit), NCommon::ETaskStatus::COMPLETED);
+                    submissions.Wait(completion, 5'000'000'000ULL);
+                    const NVulkan::VulkanFrameContextAcquire next{frame.FrameIndex + slots, slot};
+                    ASSERT_EQ(ring.TryAcquire(next,
+                                              [&](std::uint64_t value) {
+                                                  EXPECT_EQ(value, completion.Value);
+                                                  return submissions.IsCompleted({value});
+                                              }),
+                              context);
+                    const auto reuse = tasks.Submit([&](NCommon::TaskContext& task) {
+                        EXPECT_THROW(ring.WithWorkerContext(frame, task, [](auto&) {}), NCommon::Exception);
+                        ring.WithWorkerContext(next, task, [&](auto& worker) {
+                            const auto index = task.GetWorkerIndex().GetValue();
+                            EXPECT_EQ(worker.GetCommandPool(), pools[index]);
+                            RecordEmptyCommandBuffer(commands[index]);
+                        });
+                    });
+                    tasks.Wait(reuse);
+                    ASSERT_EQ(tasks.GetStatus(reuse), NCommon::ETaskStatus::COMPLETED);
+                    ring.ReleaseAcquired(next);
+                }
+                EXPECT_EQ(allPools.size(), slots * (workerCount + 1));
+            }
+        }
+        EXPECT_EQ(runtime.ValidationErrors.load(), 0);
+    } catch (const NCommon::Exception& exception) {
+        if (IsEnvironmentFailure(exception)) {
+            GTEST_SKIP() << exception.GetMessage();
+        }
+        throw;
+    }
+}
+
+TEST(VulkanFrameContext, WorkerPoolsFollowInvocationAndSlotCompletion) {
+    RunSpawnedSmoke("VulkanFrameContextChild.DISABLED_WorkerPoolsFollowInvocationAndSlotCompletion");
 }
 
 } // namespace

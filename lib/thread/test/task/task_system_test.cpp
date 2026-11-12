@@ -21,6 +21,30 @@
 
 namespace {
 
+TEST(TaskSystem, ContextIdentifiesOnlyItsLiveSchedulerInvocation) {
+    NCommon::TaskSystem tasks{1};
+    NCommon::TaskSystem other{1};
+    std::optional<NCommon::TaskContext> saved;
+    const auto task = tasks.Submit([&](NCommon::TaskContext& context) {
+        EXPECT_TRUE(context.IsCurrentInvocation(tasks));
+        EXPECT_FALSE(context.IsCurrentInvocation(other));
+        saved.emplace(context);
+        EXPECT_FALSE(saved->IsCurrentInvocation(tasks));
+        std::thread foreign([&] { EXPECT_FALSE(context.IsCurrentInvocation(tasks)); });
+        foreign.join();
+        throw 28;
+    });
+    tasks.Wait(task);
+    EXPECT_EQ(tasks.GetStatus(task), NCommon::ETaskStatus::FAILED);
+    ASSERT_TRUE(saved.has_value());
+    EXPECT_FALSE(saved->IsCurrentInvocation(tasks));
+    const auto next = tasks.Submit([&](NCommon::TaskContext& context) {
+        EXPECT_TRUE(context.IsCurrentInvocation(tasks));
+        EXPECT_FALSE(saved->IsCurrentInvocation(tasks));
+    });
+    tasks.Wait(next);
+}
+
 using namespace std::chrono_literals;
 
 class Gate final {

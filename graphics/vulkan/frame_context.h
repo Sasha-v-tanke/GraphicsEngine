@@ -4,12 +4,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 #include <vulkan.h>
 
 #include <GraphicsEngine/graphics/vulkan/device.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/lib/thread/task/task_system.h>
 
 namespace NVulkan {
 
@@ -22,6 +24,28 @@ enum class EVulkanFrameContextState {
     FREE,
     ACQUIRED,
     IN_FLIGHT,
+};
+
+// Invocation-local view. Neither this view nor its native handles may escape the callback.
+class VulkanWorkerContext final: public NCommon::NonTransferable {
+public:
+    [[nodiscard]] VkCommandPool GetCommandPool() const;
+    [[nodiscard]] NCommon::WorkerIndex GetWorkerIndex() const noexcept;
+    [[nodiscard]] std::uint64_t GetFrameIndex() const noexcept;
+    [[nodiscard]] std::size_t GetFrameSlotIndex() const noexcept;
+
+private:
+    VulkanWorkerContext(const NCommon::TaskSystem& system,
+                        const NCommon::TaskContext& task,
+                        VkCommandPool pool,
+                        VulkanFrameContextAcquire frame) noexcept;
+
+    const NCommon::TaskSystem& m_system;
+    const NCommon::TaskContext& m_task;
+    VkCommandPool m_pool;
+    VulkanFrameContextAcquire m_frame;
+
+    friend class VulkanFrameContext;
 };
 
 class VulkanFrameContext final: public NCommon::NonTransferable {
@@ -38,8 +62,17 @@ public:
 
     [[nodiscard]] std::optional<std::uint64_t> GetCompletionValue() const noexcept;
 
+    [[nodiscard]] std::size_t GetWorkerCount() const noexcept;
+
 private:
-    VulkanFrameContext(VkDevice device, std::size_t frameSlotIndex, std::uint32_t queueFamilyIndex);
+    VulkanFrameContext(VkDevice device,
+                       std::size_t frameSlotIndex,
+                       std::uint32_t queueFamilyIndex,
+                       const NCommon::TaskSystem* tasks);
+
+    void WithWorkerContext(std::uint64_t frameIndex,
+                           NCommon::TaskContext& task,
+                           const std::function<void(VulkanWorkerContext&)>& record);
 
     void Acquire(std::uint64_t frameIndex);
 
@@ -52,6 +85,11 @@ private:
     [[nodiscard]] bool MatchesFrame(std::uint64_t frameIndex) const noexcept;
 
 private:
+    struct WorkerState;
+    mutable std::mutex m_mutex;
+    const NCommon::TaskSystem* m_tasks = nullptr;
+    std::vector<std::unique_ptr<WorkerState>> m_workers;
+    std::size_t m_activeWorkers = 0;
     VkDevice m_device = VK_NULL_HANDLE;
     std::size_t m_frameSlotIndex = 0;
     std::uint64_t m_frameIndex = 0;
@@ -68,6 +106,9 @@ public:
 
     VulkanFrameContextRing(const VulkanDevice& device, std::size_t maxActiveFrames);
 
+    // The scheduler must outlive the ring; CPU recording tasks must finish before destruction.
+    VulkanFrameContextRing(const VulkanDevice& device, std::size_t maxActiveFrames, const NCommon::TaskSystem& tasks);
+
     ~VulkanFrameContextRing();
 
     [[nodiscard]] std::size_t GetSize() const noexcept;
@@ -80,7 +121,12 @@ public:
 
     void ReleaseAcquired(VulkanFrameContextAcquire acquire);
 
+    void WithWorkerContext(VulkanFrameContextAcquire acquire,
+                           NCommon::TaskContext& task,
+                           const std::function<void(VulkanWorkerContext&)>& record);
+
 private:
+    VulkanFrameContextRing(const VulkanDevice& device, std::size_t maxActiveFrames, const NCommon::TaskSystem* tasks);
     [[nodiscard]] VulkanFrameContext& GetBySlot(std::size_t frameSlotIndex);
 
 private:

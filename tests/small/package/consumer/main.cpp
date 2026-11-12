@@ -28,6 +28,14 @@ static_assert(NCommon::FrameOrigin{3, 99}.FrameSequence == 99);
     #include <GraphicsEngine/renderer/presentation/presentation.h>
 static_assert(!std::is_copy_constructible_v<NRenderer::GraphPresentation>);
 #endif
+#if __has_include(<GraphicsEngine/graphics/vulkan/frame_context.h>)
+    #include <GraphicsEngine/graphics/vulkan/frame_context.h>
+static_assert(!std::is_copy_constructible_v<NVulkan::VulkanWorkerContext>);
+static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
+                                      const NVulkan::VulkanDevice&,
+                                      std::size_t,
+                                      const NCommon::TaskSystem&>);
+#endif
 #include <GraphicsEngine/renderer/renderer.h>
 #include <GraphicsEngine/resources/async_resource_loader.h>
 #include <GraphicsEngine/resources/image_data.h>
