@@ -39,6 +39,7 @@ SOURCES(
 
 PUBLIC_DEPENDS(
     Common
+    Thread
     Graphics
     Vulkan
 )
