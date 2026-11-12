@@ -25,9 +25,9 @@ private:
         }
     }
 
-    void OnDraw() override {
-        ++m_drawCount;
-        std::cout << "draw " << m_drawCount << '\n';
+    void OnPostUpdate() override {
+        ++m_postUpdateCount;
+        std::cout << "post-update " << m_postUpdateCount << '\n';
     }
 
     void OnClose() override {
@@ -36,7 +36,7 @@ private:
 
 private:
     int m_updateCount = 0;
-    int m_drawCount = 0;
+    int m_postUpdateCount = 0;
 };
 
 } // namespace

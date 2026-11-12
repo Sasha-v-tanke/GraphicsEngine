@@ -67,7 +67,7 @@ public:
         }
     }
 
-    // Optional internal worker phase. Application's public callback migration is separate.
+    // Optional runtime-owned preparation, joined before the bound Application post-update callback.
     [[nodiscard]] virtual bool HasPostUpdate() const noexcept {
         return false;
     }
@@ -111,6 +111,10 @@ public:
 
 class EngineFactory final {
 public:
+    // Internal Application bridge. Bind before publishing Update; target must outlive Engine::Stop.
+    // The frame owns the invocation, not the target. No arbitrary user graph or public callback API.
+    [[nodiscard]] static bool BindUserPostUpdate(Engine& engine, FrameKey frame, void* target, void (*invoke)(void*));
+
     [[nodiscard]] static std::unique_ptr<Engine> Create(EngineConfig config,
                                                         std::unique_ptr<IFrameRuntime> frameRuntime);
 };

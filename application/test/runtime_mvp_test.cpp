@@ -118,9 +118,9 @@ private:
         }
     }
 
-    void OnDraw() override {
-        EXPECT_EQ(std::this_thread::get_id(), m_state.OwningThread);
-        m_state.Events.emplace_back("user.draw");
+    void OnPostUpdate() override {
+        EXPECT_NE(std::this_thread::get_id(), m_state.OwningThread);
+        RunOnMainThread([this] { m_state.Events.emplace_back("user.post-update"); });
     }
 
     void OnClose() override {
@@ -215,15 +215,17 @@ public:
         ++Updates;
     }
 
-    void OnDraw() override {
-        EXPECT_EQ(++Draws, Updates.load());
+    void OnPostUpdate() override {
+        const int count = Updates.load();
+        EXPECT_EQ(Draws.load() + 1, count);
         m_events.emplace_back("user.update");
-        m_events.emplace_back("user.draw");
+        m_events.emplace_back("user.post-update");
+        Draws.store(count);
     }
 
 public:
     std::atomic<int> Updates{0};
-    int Draws = 0;
+    std::atomic<int> Draws{0};
 
 private:
     std::vector<std::string>& m_events;
@@ -378,9 +380,9 @@ TEST(RuntimeMvpStress, MaxActiveFramesRingBackpressuresFastApplicationLoop) {
     EXPECT_EQ(events,
               (std::vector<std::string>{
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
               }));
 
     engineFactoryRef.Runtime->FinishFirstDraw();
@@ -391,11 +393,11 @@ TEST(RuntimeMvpStress, MaxActiveFramesRingBackpressuresFastApplicationLoop) {
     EXPECT_EQ(events,
               (std::vector<std::string>{
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
                       "user.update",
-                      "user.draw",
+                      "user.post-update",
               }));
 }
 

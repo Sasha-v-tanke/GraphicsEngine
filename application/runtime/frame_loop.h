@@ -25,7 +25,7 @@ public:
 
     virtual void OnUpdate() = 0;
 
-    virtual void OnDraw() = 0;
+    virtual void OnPostUpdate() = 0;
     [[nodiscard]] virtual bool IsShutdownRequested() const {
         return false;
     }
@@ -66,7 +66,7 @@ private:
     enum class EFrameCheckpoint {
         READY_FOR_USER_UPDATE,
         WAITING_ENGINE_UPDATE,
-        READY_FOR_USER_DRAW,
+        READY_FOR_ENGINE_DRAW,
         WAITING_ENGINE_DRAW,
     };
 

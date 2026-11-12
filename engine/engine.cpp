@@ -257,6 +257,16 @@ public:
         std::lock_guard lock{m_mutex};
         return CompleteUserUpdateLocked(key, work);
     }
+    [[nodiscard]] bool BindUserPostUpdate(FrameKey key, void* target, void (*invoke)(void*)) {
+        std::lock_guard lock{m_mutex};
+        FrameRuntimeRecord* record = ResolveReservationLocked(key);
+        if (record == nullptr || record->HasUpdateTask || record->PostUpdateInvoke != nullptr || invoke == nullptr) {
+            return false;
+        }
+        record->PostUpdateTarget = target;
+        record->PostUpdateInvoke = invoke;
+        return true;
+    }
     [[nodiscard]] bool IsUpdateComplete(FrameKey key) const {
         std::lock_guard lock{m_mutex};
         if (!m_frameRecords || key.m_runGeneration != m_stateManager.GetGeneration() ||
@@ -401,6 +411,8 @@ private:
         bool UpdateSucceeded = false;
         std::shared_ptr<NRuntime::UpdateCompletion> Completion;
         NCommon::TaskSystem* Executor = nullptr;
+        void* PostUpdateTarget = nullptr;
+        void (*PostUpdateInvoke)(void*) = nullptr;
     };
 
     void NotifyProgressLocked() {
@@ -626,8 +638,27 @@ private:
         try {
             NController::FrameScheduler* frameScheduler = m_frameScheduler.get();
             NRuntime::IFrameRuntime* frameRuntime = m_frameRuntime.get();
-            if (frameRuntime->HasPostUpdate()) {
-                {
+            void* target = nullptr;
+            void (*invoke)(void*) = nullptr;
+            FrameKey key;
+            {
+                std::lock_guard lock{m_mutex};
+                auto& record = GetFrameRecordLocked(frame);
+                key = record.Key;
+                if (frameRuntime->HasPostUpdate() || record.PostUpdateInvoke != nullptr) {
+                    if (m_stateManager.GetState() != EEngineState::RUNNING) {
+                        record.PhaseSkipped = true;
+                        return;
+                    }
+                    target = std::exchange(record.PostUpdateTarget, nullptr);
+                    invoke = std::exchange(record.PostUpdateInvoke, nullptr);
+                }
+            }
+            const NCommon::FrameOriginScope origin{
+                    NCommon::FrameOrigin{key.GetRunGeneration(), key.GetFrameSequence()}};
+            if (frameRuntime->HasPostUpdate() || invoke != nullptr) {
+                if (invoke != nullptr) {
+                    invoke(target);
                     std::lock_guard lock{m_mutex};
                     if (m_stateManager.GetState() != EEngineState::RUNNING) {
                         GetFrameRecordLocked(frame).PhaseSkipped = true;
@@ -957,6 +988,10 @@ void Engine::ClearLastError() {
 }
 
 namespace NRuntime {
+
+bool EngineFactory::BindUserPostUpdate(Engine& engine, FrameKey frame, void* target, void (*invoke)(void*)) {
+    return engine.m_impl->BindUserPostUpdate(frame, target, invoke);
+}
 
 std::unique_ptr<Engine> EngineFactory::Create(EngineConfig config, std::unique_ptr<IFrameRuntime> frameRuntime) {
     return std::unique_ptr<Engine>{new Engine{std::make_unique<Engine::Impl>(config, std::move(frameRuntime))}};

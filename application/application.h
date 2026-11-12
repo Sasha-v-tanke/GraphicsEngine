@@ -93,7 +93,7 @@ protected:
                 std::move(task));
     }
 
-    // Immutable for the current OnUpdate; copied on main immediately before frame publication.
+    // Immutable through OnUpdate and OnPostUpdate; copied on main immediately before frame publication.
     [[nodiscard]] const InputSnapshot& GetInputSnapshot() const noexcept {
         return m_input;
     }
@@ -102,8 +102,10 @@ protected:
     // Event callbacks may run concurrently; publish custom input through your own snapshot/synchronization.
     virtual void OnUpdate();
 
-    // Called on the application thread after the engine update checkpoint for the current frame is ready.
-    virtual void OnDraw();
+    // Frame-bound worker callback after all Engine Update work, before structural commit and Extract.
+    // Mutable World access is exclusive with other frame phases; detached writes must not escape this callback.
+    // Window access goes through RunOnMainThread. Exceptions cancel commit/Extract and propagate from Run.
+    virtual void OnPostUpdate();
 
     // Window callbacks are delivered on the application thread during event processing.
     virtual void OnResize(NWindow::WindowSize size);
@@ -112,6 +114,7 @@ protected:
 
     virtual void OnClose();
 
+    // Main-thread-only access, including reads. Worker callbacks must use RunOnMainThread.
     [[nodiscard]] NWindow::Window& GetWindow() noexcept;
 
     [[nodiscard]] const NWindow::Window& GetWindow() const noexcept;

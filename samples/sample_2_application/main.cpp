@@ -7,7 +7,7 @@ namespace {
 
 struct SampleWindowState {
     int UpdateCount = 0;
-    int DrawCount = 0;
+    int PostUpdateCount = 0;
     int CloseCount = 0;
 
     int FramesBeforeClose{};
@@ -32,9 +32,9 @@ protected:
         }
     }
 
-    void OnDraw() override {
-        ++m_state.DrawCount;
-        std::cout << "OnDraw calls: " << m_state.DrawCount << std::endl;
+    void OnPostUpdate() override {
+        ++m_state.PostUpdateCount;
+        std::cout << "OnPostUpdate calls: " << m_state.PostUpdateCount << std::endl;
     }
 
     void OnClose() override {

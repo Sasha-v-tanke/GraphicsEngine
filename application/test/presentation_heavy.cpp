@@ -112,11 +112,11 @@ public:
     void OnUpdate() override {
         ++Updates;
     }
-    void OnDraw() override {
+    void OnPostUpdate() override {
         ++Draws;
     }
     std::atomic<std::uint64_t> Updates = 0;
-    std::uint64_t Draws = 0;
+    std::atomic<std::uint64_t> Draws{0};
 };
 
 void RunPresentationLifecycle(std::size_t count) {
