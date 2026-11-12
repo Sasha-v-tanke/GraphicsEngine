@@ -50,7 +50,8 @@ public:
     Render(std::uint64_t frameIndex,
            VkClearColorValue clearColor,
            const std::function<void(VulkanQueueCompletion)>& onSubmitted = {},
-           const std::function<void(VkCommandBuffer, VkImage, VkImageView, const VulkanSwapchainPlan&)>& record = {});
+           const std::function<void(VkCommandBuffer, VkImage, VkImageView, const VulkanSwapchainPlan&)>& record = {},
+           const std::vector<std::shared_ptr<const void>>& resourceUses = {});
 
     [[nodiscard]] bool IsCompleted(VulkanQueueCompletion completion) const;
 

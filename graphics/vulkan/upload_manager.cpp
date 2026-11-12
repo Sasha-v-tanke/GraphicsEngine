@@ -308,7 +308,8 @@ VulkanQueueCompletion VulkanUploadManager::UploadBatch(std::span<const VulkanBuf
         const VulkanQueueCompletion completion = m_submissions.SubmitGraphics({.WaitSemaphores = {},
                                                                                .CommandBuffers = {commandBufferInfo},
                                                                                .SignalSemaphores = {},
-                                                                               .Fence = VK_NULL_HANDLE});
+                                                                               .Fence = VK_NULL_HANDLE,
+                                                                               .ResourceUses = arena.Destinations});
         // Nothing after successful submit may allocate or fail: all retention is already installed.
         arena.Completion = completion;
         arena.PayloadBytes = payloadBytes;

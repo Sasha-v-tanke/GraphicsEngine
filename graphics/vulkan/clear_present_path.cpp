@@ -147,7 +147,8 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(
         std::uint64_t frameIndex,
         VkClearColorValue clearColor,
         const std::function<void(VulkanQueueCompletion)>& onSubmitted,
-        const std::function<void(VkCommandBuffer, VkImage, VkImageView, const VulkanSwapchainPlan&)>& record) {
+        const std::function<void(VkCommandBuffer, VkImage, VkImageView, const VulkanSwapchainPlan&)>& record,
+        const std::vector<std::shared_ptr<const void>>& resourceUses) {
     if (m_failed) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "Vulkan clear/present path requires shutdown after failure");
@@ -240,6 +241,7 @@ VulkanClearPresentResult VulkanClearPresentPath::Render(
                 .WaitSemaphores = {waitSemaphore},
                 .CommandBuffers = {commandBuffer},
                 .SignalSemaphores = {signalSemaphore},
+                .ResourceUses = resourceUses,
         });
         submitted = true;
         m_lastSubmission = completion;
