@@ -1,6 +1,7 @@
 TEST_SUITE(Ecs)
 
 SOURCES(
+    structural_commit.cpp
     transform_resolver.cpp
     adaptive_traversal.cpp
     change_tracking.cpp

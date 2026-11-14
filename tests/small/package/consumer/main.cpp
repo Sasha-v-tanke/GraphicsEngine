@@ -74,6 +74,19 @@ private:
 };
 
 int main() {
+    {
+        NEcs::World userWorld;
+        const NEcs::EntityReference pending = userWorld.QueueCreateEntity();
+        userWorld.QueueAddComponent<std::unique_ptr<int>>(pending, std::make_unique<int>(7));
+        userWorld.QueueSetComponentEnabled<std::unique_ptr<int>>(pending, false);
+        userWorld.CommitPending();
+        if (*userWorld.GetComponent<std::unique_ptr<int>>(pending.Identity) != 7 ||
+            userWorld.IsComponentEnabled<std::unique_ptr<int>>(pending)) {
+            return 70;
+        }
+        userWorld.QueueDestroyEntity(pending);
+        userWorld.CommitPending();
+    }
     NCommon::ChangeTracker changes;
     const NCommon::ChangeDomainKey domain{1, 1, 1};
     changes.RegisterDomain(domain);
