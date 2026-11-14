@@ -2,6 +2,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <utility>
 
 #include <GraphicsEngine/renderer/render_graph.h>
@@ -615,7 +616,7 @@ TEST(RenderGraph, LoadAndExplicitDependenciesRetainProducersButClearDoesNot) {
     EXPECT_EQ(transitions[2].PassIndex, graph.GetPasses().size());
 }
 
-TEST(RenderGraph, RecordingRangesPartitionDrawsAndStayStableAcrossCompileAndFrameSlots) {
+TEST(RenderGraph, RecordingRangesPartitionDrawsAndStayStableAcrossRepeatedCompile) {
     RenderGraphBuilder builder{FRAME};
     const auto target = Target();
     const auto output = builder.ImportSwapchain(target, EResourceUsage::UNDEFINED);
@@ -666,6 +667,60 @@ TEST(RenderGraph, DeepExplicitDagCullingIsIterativeAndDeterministic) {
     ASSERT_EQ(graph.GetPasses().size(), 10001);
     EXPECT_EQ(graph.GetPasses().back().Id, previous);
     EXPECT_EQ(graph.GetDependencies().size(), 10000);
+}
+
+TEST(RenderGraph, SeededRandomDagMatchesReferenceReachabilityAndPoolIntervals) {
+    // Reproducible scheduler replay, not a source of security randomness.
+    // NOLINTNEXTLINE(cert-msc51-cpp)
+    std::mt19937 random{6317};
+    for (std::size_t iteration = 0; iteration < 40; ++iteration) {
+        SCOPED_TRACE(iteration);
+        RenderGraphBuilder builder{FRAME};
+        std::vector<GraphResourceId> images;
+        std::vector<NRenderer::GraphPassId> passes;
+        std::vector<std::vector<std::size_t>> parents(64);
+        for (std::size_t index = 0; index < 64; ++index) {
+            images.push_back(builder.CreateTransientImage(TargetDescription()));
+            auto pass = ColorPass(images.back());
+            if (index > 0) {
+                const std::size_t parent = random() % index;
+                parents[index].push_back(parent);
+                pass.Reads.push_back({images[parent], EResourceUsage::SAMPLED_READ});
+            }
+            passes.push_back(builder.AddGraphicsPass(pass));
+        }
+        const auto target = Target();
+        const auto output = builder.ImportSwapchain(target, EResourceUsage::UNDEFINED);
+        auto final = ColorPass(output);
+        final.Reads.push_back({images.back(), EResourceUsage::SAMPLED_READ});
+        (void)builder.AddGraphicsPass(final);
+        std::vector<bool> expected(64);
+        std::vector<std::size_t> pending{63};
+        while (!pending.empty()) {
+            const std::size_t index = pending.back();
+            pending.pop_back();
+            if (!expected[index]) {
+                expected[index] = true;
+                pending.insert(pending.end(), parents[index].begin(), parents[index].end());
+            }
+        }
+        const auto graph = builder.Compile();
+        EXPECT_EQ(graph.GetPasses().size(), static_cast<std::size_t>(std::ranges::count(expected, true)) + 1);
+        for (std::size_t index = 0; index < passes.size(); ++index) {
+            EXPECT_EQ(
+                    std::ranges::any_of(graph.GetPasses(), [&](const auto& pass) { return pass.Id == passes[index]; }),
+                    expected[index]);
+        }
+        const auto lifetimes = graph.GetLifetimes();
+        for (std::size_t a = 0; a < lifetimes.size(); ++a) {
+            for (std::size_t b = a + 1; b < lifetimes.size(); ++b) {
+                if (lifetimes[a].Allocation && lifetimes[a].Allocation == lifetimes[b].Allocation) {
+                    EXPECT_TRUE(lifetimes[a].LastPass < lifetimes[b].FirstPass ||
+                                lifetimes[b].LastPass < lifetimes[a].FirstPass);
+                }
+            }
+        }
+    }
 }
 
 } // namespace

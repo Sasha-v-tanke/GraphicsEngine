@@ -571,6 +571,7 @@ CompiledGraph RenderGraphBuilder::Compile() const {
     result.m_resources.clear();
     std::vector<std::optional<std::size_t>> lifetimes(m_resources.size());
     std::vector<EResourceUsage> states;
+    states.reserve(m_resources.size());
     for (const ImportedGraphResource& resource: m_resources) {
         states.push_back(resource.InitialUsage);
     }
@@ -586,10 +587,11 @@ CompiledGraph RenderGraphBuilder::Compile() const {
             result.m_lifetimes[*lifetimes[resource]].LastPass = index;
             bool readsAttachment = false;
             for (const GraphAttachment& attachment: pass.ColorAttachments) {
-                readsAttachment |= attachment.Resource == use.Resource && attachment.Load == EAttachmentLoad::LOAD;
+                readsAttachment |= attachment.Resource == use.Resource &&
+                                   (attachment.Load == EAttachmentLoad::LOAD || !pass.DrawCommands.empty());
             }
             readsAttachment |= pass.DepthAttachment && pass.DepthAttachment->Resource == use.Resource &&
-                               pass.DepthAttachment->Load == EAttachmentLoad::LOAD;
+                               (pass.DepthAttachment->Load == EAttachmentLoad::LOAD || !pass.DrawCommands.empty());
             result.m_transitions.push_back({use.Resource, index, states[resource], use.Usage, readsAttachment});
             states[resource] = use.Usage;
         };

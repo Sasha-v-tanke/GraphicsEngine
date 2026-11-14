@@ -303,6 +303,8 @@ public:
                 }
             }
         };
+        std::size_t recordingRangeIndex = 0;
+        const auto recordingRanges = graph.GetRecordingRanges();
         for (std::size_t passIndex = 0; passIndex < graph.GetPasses().size(); ++passIndex) {
             const auto& pass = graph.GetPasses()[passIndex];
             applyTransitions(passIndex);
@@ -327,42 +329,48 @@ public:
             const VkRect2D scissor{.offset = {}, .extent = renderExtent};
             vkCmdSetViewport(command, 0, 1, &viewport);
             vkCmdSetScissor(command, 0, 1, &scissor);
-            for (const auto& draw: pass.Description.DrawCommands) {
-                const auto& mesh = FindMesh(draw);
-                const auto& material = FindMaterial(draw);
-                uses.push_back(mesh.Vertices.GetRetentionToken());
-                uses.push_back(mesh.Indices.GetRetentionToken());
-                uses.insert(uses.end(), material.ResourceUses.begin(), material.ResourceUses.end());
-                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, material.Pipeline->GetHandle());
-                if (material.Descriptors.IsValid()) {
-                    VkDescriptorSet set = material.Descriptors.GetSet();
-                    vkCmdBindDescriptorSets(command,
-                                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                            material.Pipeline->GetLayout(),
-                                            0,
-                                            1,
-                                            &set,
-                                            0,
-                                            nullptr);
-                }
-                VkBuffer vertex = mesh.Vertices.GetBuffer();
-                const VkDeviceSize offset = 0;
-                vkCmdBindVertexBuffers(command, 0, 1, &vertex, &offset);
-                vkCmdBindIndexBuffer(command, mesh.Indices.GetBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                if (material.Key.GetDescriptor().VertexPushConstantBytes != 0) {
-                    auto transform = draw.ViewProjection * NMath::ComposeTransform(draw.WorldTransform);
-                    // Engine clip space is Y-up; Vulkan uses a positive-height framebuffer viewport.
-                    for (std::size_t column = 0; column < 4; ++column) {
-                        transform(1, column) = -transform(1, column);
+            while (recordingRangeIndex < recordingRanges.size() &&
+                   recordingRanges[recordingRangeIndex].PassIndex == passIndex) {
+                const GraphRecordingRange& recordingRange = recordingRanges[recordingRangeIndex++];
+                const auto draws = std::span{pass.Description.DrawCommands}.subspan(recordingRange.FirstDraw,
+                                                                                    recordingRange.DrawCount);
+                for (const auto& draw: draws) {
+                    const auto& mesh = FindMesh(draw);
+                    const auto& material = FindMaterial(draw);
+                    uses.push_back(mesh.Vertices.GetRetentionToken());
+                    uses.push_back(mesh.Indices.GetRetentionToken());
+                    uses.insert(uses.end(), material.ResourceUses.begin(), material.ResourceUses.end());
+                    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, material.Pipeline->GetHandle());
+                    if (material.Descriptors.IsValid()) {
+                        VkDescriptorSet set = material.Descriptors.GetSet();
+                        vkCmdBindDescriptorSets(command,
+                                                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                                material.Pipeline->GetLayout(),
+                                                0,
+                                                1,
+                                                &set,
+                                                0,
+                                                nullptr);
                     }
-                    vkCmdPushConstants(command,
-                                       material.Pipeline->GetLayout(),
-                                       VK_SHADER_STAGE_VERTEX_BIT,
-                                       0,
-                                       64,
-                                       transform.GetValues().data());
+                    VkBuffer vertex = mesh.Vertices.GetBuffer();
+                    const VkDeviceSize offset = 0;
+                    vkCmdBindVertexBuffers(command, 0, 1, &vertex, &offset);
+                    vkCmdBindIndexBuffer(command, mesh.Indices.GetBuffer(), 0, VK_INDEX_TYPE_UINT32);
+                    if (material.Key.GetDescriptor().VertexPushConstantBytes != 0) {
+                        auto transform = draw.ViewProjection * NMath::ComposeTransform(draw.WorldTransform);
+                        // Engine clip space is Y-up; Vulkan uses a positive-height framebuffer viewport.
+                        for (std::size_t column = 0; column < 4; ++column) {
+                            transform(1, column) = -transform(1, column);
+                        }
+                        vkCmdPushConstants(command,
+                                           material.Pipeline->GetLayout(),
+                                           VK_SHADER_STAGE_VERTEX_BIT,
+                                           0,
+                                           64,
+                                           transform.GetValues().data());
+                    }
+                    vkCmdDrawIndexed(command, static_cast<std::uint32_t>(mesh.Lease->GetIndices().size()), 1, 0, 0, 0);
                 }
-                vkCmdDrawIndexed(command, static_cast<std::uint32_t>(mesh.Lease->GetIndices().size()), 1, 0, 0, 0);
             }
         }
         applyTransitions(graph.GetPasses().size());

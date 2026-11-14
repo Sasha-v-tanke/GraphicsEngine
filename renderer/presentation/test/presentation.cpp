@@ -316,7 +316,7 @@ TEST(GraphPresentation, TransientMultipassPoolingResizeAndFrameSlotsValidationCl
                         const auto final = builder.AddGraphicsPass(color(output));
                         builder.AddDependency(first, second);
                         builder.AddDependency(second, final);
-                        const auto graph = builder.Compile();
+                        auto graph = builder.Compile();
                         EXPECT_EQ(graph.GetPasses().size(), 3);
                         EXPECT_EQ(graph.GetLifetimes()[0].Allocation, graph.GetLifetimes()[1].Allocation);
                         return graph;
