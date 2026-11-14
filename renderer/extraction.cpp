@@ -354,7 +354,7 @@ struct ExtractionData {
 };
 
 const RenderWorld& PublishExtraction(const NEngine::NController::FrameStorage& storage,
-                                     std::shared_ptr<const ExtractionData> data,
+                                     const std::shared_ptr<const ExtractionData>& data,
                                      RenderWorldDelta delta) {
     (void)storage.Emplace<std::shared_ptr<const ExtractionData>>(data);
     const auto frame = storage.GetFrame();
