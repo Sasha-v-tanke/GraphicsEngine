@@ -12,6 +12,7 @@ struct SceneRuntime::Binding {
     ScenePublication Publication;
     std::shared_ptr<NScene::Scene> Source;
     const NRenderer::RenderWorld* Snapshot = nullptr;
+    NCommon::TaskSystem* Tasks = nullptr;
 };
 
 SceneRuntime::SceneRuntime(NResources::ResourceManager& resources, Consumer consumer, std::function<void()> drain)
@@ -84,6 +85,7 @@ void SceneRuntime::ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
                                   NCommon::TaskSystem& tasks,
                                   std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) {
     const auto binding = GetBinding(frame);
+    binding->Tasks = &tasks;
     if (!binding->Source) {
         completion->Finish();
         return;
@@ -96,17 +98,18 @@ NCommon::TaskHandle SceneRuntime::ScheduleExtract(const NEngine::NRuntime::Frame
                                                   NCommon::TaskContext& task) {
     const auto binding = GetBinding(frame);
     const auto source = binding->Source;
-    const auto& world = source ? source->GetWorld() : m_empty;
-    return NRenderer::NInternal::ScheduleRenderWorldExtraction(
-            world,
-            m_resources,
-            frame.GetStorage(),
-            task,
-            [binding, source](const NRenderer::RenderWorld& snapshot) {
-                binding->Snapshot = &snapshot;
-                // The closure still pins Source through extraction capture retirement. Draw only reads Snapshot.
-                binding->Source.reset();
-            });
+    auto& world = source ? source->GetWorld() : m_empty;
+    return m_extraction.Schedule(world,
+                                 m_resources,
+                                 frame.GetStorage(),
+                                 *binding->Tasks,
+                                 task,
+                                 [binding, source](const NRenderer::RenderWorld& snapshot) {
+                                     binding->Snapshot = &snapshot;
+                                     // The closure still pins Source through extraction capture retirement. Draw only
+                                     // reads Snapshot.
+                                     binding->Source.reset();
+                                 });
 }
 
 void SceneRuntime::Draw(const NEngine::NRuntime::FrameContext& frame) {
@@ -119,6 +122,7 @@ void SceneRuntime::Draw(const NEngine::NRuntime::FrameContext& frame) {
 }
 
 void SceneRuntime::Drain() noexcept {
+    m_extraction.Reset();
     if (m_drain) {
         m_drain();
     }

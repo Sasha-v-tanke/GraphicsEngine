@@ -262,7 +262,8 @@ public:
                 vkCmdBindVertexBuffers(command, 0, 1, &vertex, &offset);
                 vkCmdBindIndexBuffer(command, mesh.Indices.GetBuffer(), 0, VK_INDEX_TYPE_UINT32);
                 if (material.Key.GetDescriptor().VertexPushConstantBytes != 0) {
-                    auto transform = draw.ViewProjection * NMath::ComposeTransform(draw.WorldTransform);
+                    auto transform = draw.ViewProjection *
+                                     draw.ResolvedWorldTransform.value_or(NMath::ComposeTransform(draw.WorldTransform));
                     // Engine clip space is Y-up; Vulkan uses a positive-height framebuffer viewport.
                     for (std::size_t column = 0; column < 4; ++column) {
                         transform(1, column) = -transform(1, column);

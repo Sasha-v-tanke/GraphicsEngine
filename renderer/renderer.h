@@ -34,6 +34,8 @@ struct DrawCommandData {
     std::uint64_t MaterialVersion = 0;
     // Immutable camera projection * inverse camera transform; identity for clip-space views.
     NMath::Mat4 ViewProjection = NMath::Mat4::Identity();
+    // Exact affine hierarchy matrix, including shear; absent for the legacy flat TRS path.
+    std::optional<NMath::Mat4> ResolvedWorldTransform = {};
 };
 
 // A contiguous run of compatible instances in the unchanged direct-command stream.

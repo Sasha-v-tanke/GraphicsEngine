@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 
 #include <GraphicsEngine/lib/common/resource_use_record.h>
@@ -59,6 +60,7 @@ struct RenderView {
     RenderObjectId Id;
     NMath::Transform WorldTransform;
     NMath::PerspectiveProjection Projection;
+    std::optional<NMath::Mat4> ResolvedWorldTransform = {};
 };
 
 struct RenderObject {
@@ -66,6 +68,7 @@ struct RenderObject {
     NMath::Transform WorldTransform;
     NResources::ResourceLease<NResources::MeshData> Mesh;
     NResources::ResourceLease<NGraphics::Material> Material;
+    std::optional<NMath::Mat4> ResolvedWorldTransform = {};
 };
 
 enum class ERenderResourceRole {
@@ -81,6 +84,16 @@ struct ResourceReadinessDiagnostic {
     std::size_t ResourceSlot = 0;
     std::uint64_t ResourceGeneration = 0;
     NResources::ResourceStatus Source;
+};
+
+struct RenderWorldDelta {
+    bool FullRebuild = true;
+    std::uint64_t WorldId = 0;
+    std::optional<RenderFrameIdentity> PreviousFrame;
+    std::span<const RenderObjectId> UpdatedObjects;
+    std::span<const RenderObjectId> RemovedObjects;
+    std::span<const RenderObjectId> UpdatedViews;
+    std::span<const RenderObjectId> RemovedViews;
 };
 
 class RenderWorld final {
@@ -105,6 +118,10 @@ public:
         return m_resourceDiagnostics;
     }
 
+    [[nodiscard]] const RenderWorldDelta& GetDelta() const noexcept {
+        return m_delta;
+    }
+
 private:
     RenderWorld(RenderFrameIdentity frame,
                 const RenderView* views,
@@ -113,12 +130,14 @@ private:
                 std::size_t objectCount,
                 const NCommon::ResourceUseRecord* resourceUseRecords,
                 std::size_t resourceUseRecordCount,
-                std::span<const ResourceReadinessDiagnostic> resourceDiagnostics) noexcept
+                std::span<const ResourceReadinessDiagnostic> resourceDiagnostics,
+                RenderWorldDelta delta = {}) noexcept
         : m_frame(frame)
         , m_views(views, viewCount)
         , m_objects(objects, objectCount)
         , m_resourceUseRecords(resourceUseRecords, resourceUseRecordCount)
-        , m_resourceDiagnostics(resourceDiagnostics) {
+        , m_resourceDiagnostics(resourceDiagnostics)
+        , m_delta(delta) {
     }
 
 private:
@@ -127,6 +146,7 @@ private:
     std::span<const RenderObject> m_objects;
     std::span<const NCommon::ResourceUseRecord> m_resourceUseRecords;
     std::span<const ResourceReadinessDiagnostic> m_resourceDiagnostics;
+    RenderWorldDelta m_delta;
 
     friend class NInternal::RenderWorldBuilder;
 };
