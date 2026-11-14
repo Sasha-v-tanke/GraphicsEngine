@@ -172,6 +172,12 @@ void ValidateUsage(const ImportedGraphResource& resource, EResourceUsage usage, 
 }
 
 void ValidateImport(const ImportedGraphResource& resource) {
+    if (resource.Lifetime == EGraphResourceLifetime::TRANSIENT) {
+        ValidateImage(resource.ImageDescription);
+        Require(resource.InitialUsage == EResourceUsage::UNDEFINED && resource.FinalUsage == EResourceUsage::UNDEFINED,
+                "Transient resources cannot import or export contents");
+        return;
+    }
     if (resource.Kind == EGraphResourceKind::SWAPCHAIN) {
         const auto target = resource.Swapchain.lock();
         Require(target && target->IsValid(), "Swapchain import was released or invalidated");
@@ -225,15 +231,27 @@ std::span<const ImportedGraphResource> CompiledGraph::GetResources() const noexc
 }
 
 const ImportedGraphResource& CompiledGraph::GetResource(GraphResourceId resource) const {
-    Require(resource.m_index < m_resources.size() && m_resources[resource.m_index].Id == resource,
-            "Invalid or foreign compiled resource");
-    return m_resources[resource.m_index];
+    Require(resource.m_index < m_resourceLookup.size(), "Invalid or foreign compiled resource");
+    const std::size_t index = m_resourceLookup[resource.m_index];
+    Require(index < m_resources.size() && m_resources[index].Id == resource,
+            "Invalid, culled or foreign compiled resource");
+    return m_resources[index];
 }
 std::span<const CompiledGraphicsPass> CompiledGraph::GetPasses() const noexcept {
     return m_passes;
 }
 std::span<const GraphDependency> CompiledGraph::GetDependencies() const noexcept {
     return m_dependencies;
+}
+
+std::span<const GraphTransition> CompiledGraph::GetTransitions() const noexcept {
+    return m_transitions;
+}
+std::span<const GraphResourceLifetime> CompiledGraph::GetLifetimes() const noexcept {
+    return m_lifetimes;
+}
+std::span<const GraphRecordingRange> CompiledGraph::GetRecordingRanges() const noexcept {
+    return m_recordingRanges;
 }
 
 void CompiledGraph::ValidateResources(RenderFrameIdentity frame) const {
@@ -251,7 +269,8 @@ RenderGraphBuilder::RenderGraphBuilder(RenderFrameIdentity frame)
 
 GraphResourceId RenderGraphBuilder::AddResource(ImportedGraphResource resource) {
     for (const ImportedGraphResource& existing: m_resources) {
-        if (existing.Kind != resource.Kind) {
+        if (existing.Lifetime == EGraphResourceLifetime::TRANSIENT ||
+            resource.Lifetime == EGraphResourceLifetime::TRANSIENT || existing.Kind != resource.Kind) {
             continue;
         }
         if (resource.Kind == EGraphResourceKind::SWAPCHAIN) {
@@ -313,6 +332,13 @@ GraphResourceId RenderGraphBuilder::ImportSwapchain(const std::shared_ptr<const 
     return AddResource(std::move(resource));
 }
 
+GraphResourceId RenderGraphBuilder::CreateTransientImage(GraphImageDescription description) {
+    ImportedGraphResource resource;
+    resource.Lifetime = EGraphResourceLifetime::TRANSIENT;
+    resource.ImageDescription = description;
+    return AddResource(std::move(resource));
+}
+
 GraphPassId RenderGraphBuilder::AddGraphicsPass(GraphicsPassDescription description) {
     GraphPassId id;
     id.m_graph = m_identity;
@@ -346,6 +372,10 @@ CompiledGraph RenderGraphBuilder::Compile() const {
     for (const GraphDependency& edge: m_dependencies) {
         edges.emplace_back(Resolve(edge.Before), Resolve(edge.After));
     }
+    std::vector<std::vector<std::size_t>> producers(count);
+    for (const GraphDependency& edge: m_dependencies) {
+        producers[Resolve(edge.After)].push_back(Resolve(edge.Before));
+    }
     std::vector<std::size_t> writers(m_resources.size(), none);
     std::vector<std::vector<std::size_t>> readers(m_resources.size());
     // Declaration order versions each whole resource. Explicit edges may reorder
@@ -361,6 +391,15 @@ CompiledGraph RenderGraphBuilder::Compile() const {
             ValidateUsage(m_resources[resource], use.Usage, false);
             if (writers[resource] != none) {
                 edges.emplace_back(writers[resource], index);
+                bool consumesContents = !isWrite;
+                for (const GraphAttachment& attachment: pass.ColorAttachments) {
+                    consumesContents |= attachment.Resource == use.Resource && attachment.Load == EAttachmentLoad::LOAD;
+                }
+                consumesContents |= pass.DepthAttachment && pass.DepthAttachment->Resource == use.Resource &&
+                                    pass.DepthAttachment->Load == EAttachmentLoad::LOAD;
+                if (consumesContents) {
+                    producers[index].push_back(writers[resource]);
+                }
             }
             if (isWrite) {
                 for (const std::size_t reader: readers[resource]) {
@@ -500,8 +539,163 @@ CompiledGraph RenderGraphBuilder::Compile() const {
         }
     }
     Require(result.m_passes.size() == count, "RenderGraph contains a cycle");
+    std::vector<bool> live(count);
+    std::vector<std::size_t> pending;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (m_passes[index].HasSideEffects) {
+            pending.push_back(index);
+        }
+    }
+    // All imported terminal states are observable outputs. Only the final writer
+    // and its data/explicit prerequisites are roots; WAW/WAR do not retain dead work.
     for (std::size_t resource = 0; resource < m_resources.size(); ++resource) {
-        Require(initialized[resource], "Final usage requires initialized resource contents");
+        if (m_resources[resource].Lifetime == EGraphResourceLifetime::IMPORTED) {
+            Require(initialized[resource], "Final usage requires initialized resource contents");
+            if (writers[resource] != none) {
+                pending.push_back(writers[resource]);
+            }
+        }
+    }
+    while (!pending.empty()) {
+        const std::size_t pass = pending.back();
+        pending.pop_back();
+        if (!live[pass]) {
+            live[pass] = true;
+            pending.insert(pending.end(), producers[pass].begin(), producers[pass].end());
+        }
+    }
+    std::erase_if(result.m_passes, [&](const CompiledGraphicsPass& pass) { return !live[Resolve(pass.Id)]; });
+    std::erase_if(result.m_dependencies, [&](const GraphDependency& edge) {
+        return !live[Resolve(edge.Before)] || !live[Resolve(edge.After)];
+    });
+    // Removing an intervening dead write can expose a new WAR/WAW hazard
+    // between surviving passes. Rebuild resource edges for the executable DAG.
+    std::vector<std::optional<GraphPassId>> liveWriters(m_resources.size());
+    std::vector<std::vector<GraphPassId>> liveReaders(m_resources.size());
+    for (const CompiledGraphicsPass& pass: result.m_passes) {
+        const auto registerHazard = [&](const GraphResourceUse& use, bool isWrite) {
+            const std::size_t resource = Resolve(use.Resource);
+            if (liveWriters[resource]) {
+                result.m_dependencies.push_back({*liveWriters[resource], pass.Id});
+            }
+            if (isWrite) {
+                for (const GraphPassId reader: liveReaders[resource]) {
+                    result.m_dependencies.push_back({reader, pass.Id});
+                }
+                liveReaders[resource].clear();
+                liveWriters[resource] = pass.Id;
+            } else {
+                liveReaders[resource].push_back(pass.Id);
+            }
+        };
+        for (const GraphResourceUse& use: pass.Description.Reads) {
+            registerHazard(use, false);
+        }
+        for (const GraphResourceUse& use: pass.Description.Writes) {
+            registerHazard(use, true);
+        }
+    }
+    result.m_resources.clear();
+    std::vector<std::optional<std::size_t>> lifetimes(m_resources.size());
+    std::vector<std::vector<GraphPassId>> resourceUses(m_resources.size());
+    std::vector<EResourceUsage> states;
+    states.reserve(m_resources.size());
+    for (const ImportedGraphResource& resource: m_resources) {
+        states.push_back(resource.InitialUsage);
+    }
+    for (std::size_t index = 0; index < result.m_passes.size(); ++index) {
+        const GraphicsPassDescription& pass = result.m_passes[index].Description;
+        const auto useResource = [&](const GraphResourceUse& use) {
+            const std::size_t resource = Resolve(use.Resource);
+            if (!lifetimes[resource]) {
+                lifetimes[resource] = result.m_lifetimes.size();
+                result.m_lifetimes.push_back({use.Resource, index, index, std::nullopt});
+                result.m_resources.push_back(m_resources[resource]);
+            }
+            result.m_lifetimes[*lifetimes[resource]].LastPass = index;
+            resourceUses[resource].push_back(result.m_passes[index].Id);
+            bool readsAttachment = false;
+            for (const GraphAttachment& attachment: pass.ColorAttachments) {
+                readsAttachment |= attachment.Resource == use.Resource &&
+                                   (attachment.Load == EAttachmentLoad::LOAD || !pass.DrawCommands.empty());
+            }
+            readsAttachment |= pass.DepthAttachment && pass.DepthAttachment->Resource == use.Resource &&
+                               (pass.DepthAttachment->Load == EAttachmentLoad::LOAD || !pass.DrawCommands.empty());
+            result.m_transitions.push_back({use.Resource, index, states[resource], use.Usage, readsAttachment});
+            states[resource] = use.Usage;
+        };
+        for (const GraphResourceUse& use: pass.Reads) {
+            useResource(use);
+        }
+        for (const GraphResourceUse& use: pass.Writes) {
+            useResource(use);
+        }
+        constexpr std::size_t drawsPerRange = 64;
+        if (pass.DrawCommands.empty()) {
+            result.m_recordingRanges.push_back({index, 0, 0});
+        }
+        for (std::size_t first = 0; first < pass.DrawCommands.size(); first += drawsPerRange) {
+            result.m_recordingRanges.push_back(
+                    {index, first, std::min(drawsPerRange, pass.DrawCommands.size() - first)});
+        }
+    }
+    // An imported output with no passes still needs its terminal transition.
+    for (std::size_t resource = 0; resource < m_resources.size(); ++resource) {
+        const ImportedGraphResource& imported = m_resources[resource];
+        if (imported.Lifetime != EGraphResourceLifetime::IMPORTED) {
+            continue;
+        }
+        if (!lifetimes[resource] && imported.InitialUsage == imported.FinalUsage) {
+            continue;
+        }
+        if (!lifetimes[resource]) {
+            result.m_resources.push_back(imported);
+        }
+        result.m_transitions.push_back(
+                {imported.Id, result.m_passes.size(), states[resource], imported.FinalUsage, false});
+    }
+    struct PoolEntry {
+        GraphImageDescription Description;
+        std::size_t LastPass;
+        std::size_t Resource;
+    };
+    std::vector<PoolEntry> pool;
+    const auto sameImage = [](const GraphImageDescription& a, const GraphImageDescription& b) {
+        return a.Extent.Width == b.Extent.Width && a.Extent.Height == b.Extent.Height &&
+               a.Extent.Depth == b.Extent.Depth && a.Format == b.Format && a.Samples == b.Samples && a.Usage == b.Usage;
+    };
+    for (GraphResourceLifetime& lifetime: result.m_lifetimes) {
+        const ImportedGraphResource& resource = m_resources[Resolve(lifetime.Resource)];
+        if (resource.Lifetime != EGraphResourceLifetime::TRANSIENT) {
+            continue;
+        }
+        std::size_t allocation = 0;
+        while (allocation < pool.size() && (pool[allocation].LastPass >= lifetime.FirstPass ||
+                                            !sameImage(pool[allocation].Description, resource.ImageDescription))) {
+            ++allocation;
+        }
+        if (allocation == pool.size()) {
+            pool.push_back({resource.ImageDescription, lifetime.LastPass, Resolve(lifetime.Resource)});
+        } else {
+            // Reuse imposes GPU execution ordering even on logically independent
+            // passes. Recording may still run in parallel; primary barriers cannot.
+            for (const GraphPassId source: resourceUses[pool[allocation].Resource]) {
+                result.m_dependencies.push_back({source, result.m_passes[lifetime.FirstPass].Id});
+            }
+            pool[allocation].LastPass = lifetime.LastPass;
+            pool[allocation].Resource = Resolve(lifetime.Resource);
+        }
+        lifetime.Allocation = allocation;
+    }
+    std::ranges::sort(result.m_dependencies, [&](const GraphDependency& left, const GraphDependency& right) {
+        return std::pair{Resolve(left.Before), Resolve(left.After)} <
+               std::pair{Resolve(right.Before), Resolve(right.After)};
+    });
+    result.m_dependencies.erase(std::unique(result.m_dependencies.begin(), result.m_dependencies.end()),
+                                result.m_dependencies.end());
+    result.m_resourceLookup.assign(m_resources.size(), result.m_resources.size());
+    for (std::size_t index = 0; index < result.m_resources.size(); ++index) {
+        result.m_resourceLookup[Resolve(result.m_resources[index].Id)] = index;
     }
     return result;
 }

@@ -109,6 +109,8 @@ struct GraphicsPassDescription {
     std::vector<GraphAttachment> ColorAttachments;
     std::optional<GraphAttachment> DepthAttachment;
     std::vector<DrawCommandData> DrawCommands;
+    // Keep work with externally observable effects that are not represented by outputs.
+    bool HasSideEffects = false;
 };
 
 enum class EGraphResourceKind {
@@ -117,8 +119,14 @@ enum class EGraphResourceKind {
     SWAPCHAIN,
 };
 
+enum class EGraphResourceLifetime {
+    IMPORTED,
+    TRANSIENT,
+};
+
 struct ImportedGraphResource {
     GraphResourceId Id;
+    EGraphResourceLifetime Lifetime = EGraphResourceLifetime::IMPORTED;
     EGraphResourceKind Kind = EGraphResourceKind::IMAGE;
     const NGraphics::Graphics* Graphics = nullptr;
     NGraphics::ImageHandle Image;
@@ -136,6 +144,30 @@ struct GraphDependency {
     [[nodiscard]] friend bool operator==(GraphDependency, GraphDependency) noexcept = default;
 };
 
+// Indices refer to the compiled pass order, never declaration order. Final
+// transitions execute at PassIndex == GetPasses().size(), outside rendering scopes.
+struct GraphTransition {
+    GraphResourceId Resource;
+    std::size_t PassIndex = 0;
+    EResourceUsage Before = EResourceUsage::UNDEFINED;
+    EResourceUsage After = EResourceUsage::UNDEFINED;
+    bool ReadsAttachment = false;
+};
+
+struct GraphResourceLifetime {
+    GraphResourceId Resource;
+    std::size_t FirstPass = 0;
+    std::size_t LastPass = 0;
+    // Only transient resources have a pool allocation; no native memory aliasing.
+    std::optional<std::size_t> Allocation;
+};
+
+struct GraphRecordingRange {
+    std::size_t PassIndex = 0;
+    std::size_t FirstDraw = 0;
+    std::size_t DrawCount = 0;
+};
+
 struct CompiledGraphicsPass {
     GraphPassId Id;
     GraphicsPassDescription Description;
@@ -151,6 +183,11 @@ public:
     [[nodiscard]] const ImportedGraphResource& GetResource(GraphResourceId resource) const;
     [[nodiscard]] std::span<const CompiledGraphicsPass> GetPasses() const noexcept;
     [[nodiscard]] std::span<const GraphDependency> GetDependencies() const noexcept;
+    [[nodiscard]] std::span<const GraphTransition> GetTransitions() const noexcept;
+    [[nodiscard]] std::span<const GraphResourceLifetime> GetLifetimes() const noexcept;
+    // Ranges own disjoint draw intervals, may record concurrently, and must be
+    // executed in this order with the pass barriers on the primary command buffer.
+    [[nodiscard]] std::span<const GraphRecordingRange> GetRecordingRanges() const noexcept;
     // Executor must call this immediately before recording, on the owning thread.
     // Resource mutation/release and execution must be externally serialized.
     void ValidateResources(RenderFrameIdentity frame) const;
@@ -161,8 +198,12 @@ private:
 private:
     RenderFrameIdentity m_frame;
     std::vector<ImportedGraphResource> m_resources;
+    std::vector<std::size_t> m_resourceLookup;
     std::vector<CompiledGraphicsPass> m_passes;
     std::vector<GraphDependency> m_dependencies;
+    std::vector<GraphTransition> m_transitions;
+    std::vector<GraphResourceLifetime> m_lifetimes;
+    std::vector<GraphRecordingRange> m_recordingRanges;
     friend class RenderGraphBuilder;
 };
 
@@ -182,6 +223,9 @@ public:
                                                EResourceUsage finalUsage);
     [[nodiscard]] GraphResourceId ImportSwapchain(const std::shared_ptr<const SwapchainGraphTarget>& target,
                                                   EResourceUsage initialUsage);
+    // Transient images start undefined, cannot escape the graph, and are pooled
+    // only across disjoint compiled lifetimes. Imported resources are never pooled.
+    [[nodiscard]] GraphResourceId CreateTransientImage(GraphImageDescription description);
     [[nodiscard]] GraphPassId AddGraphicsPass(GraphicsPassDescription description);
     void AddDependency(GraphPassId before, GraphPassId after);
     [[nodiscard]] CompiledGraph Compile() const;

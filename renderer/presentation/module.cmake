@@ -1,6 +1,6 @@
 MODULE(GraphPresentation)
 API(presentation.h)
-SOURCES(presentation.cpp)
+SOURCES(presentation.cpp graph_state.h graph_state.cpp)
 PUBLIC_DEPENDS(Renderer Window)
 PRIVATE_DEPENDS(VulkanBackend VulkanMemoryAllocator)
 RECURSE(test)
