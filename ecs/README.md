@@ -44,3 +44,32 @@
 
 Выборочный расчёт производных матриц и контракт для extraction/culling описаны
 в [документации TransformResolver](internal/transform_resolver.md).
+
+
+## Отложенный пользовательский structural intake
+
+`World::QueueCreateEntity`, `QueueDestroyEntity`, `QueueAddComponent<T>`, `QueueRemoveComponent<T>`,
+`QueueSetEnabled`, `QueueSetComponentEnabled<T>` и `QueueReparent` только записывают команды.
+Они используют существующий World, generational `EntityReference` и producer buffers, без второго storage.
+Это foundation для EntityRef/Scene API (FEATURE-0082), а не новый Builder. Pending create не виден `Query`/`Get`.
+`GetStructuralState` различает pending create, alive, pending destroy и destroyed; stale/foreign mutation отвергается.
+
+Локальные повторные Add/Remove и implicit Replace отклоняются при enqueue. Между producers commit проверяет
+весь детерминированно объединённый пакет на shadow metadata/topology до первой мутации; конфликт отбрасывает
+пакет и reservations целиком. Повторный Destroy в одном commit идемпотентен. Компоненты, в том числе move-only,
+не копируются при preflight. Ошибки синхронного commit — проектные исключения; async SystemRun публикует FAILED/Error.
+
+`CommitPending` разрешён только host в quiescence без активных producer buffers/topology readers и не реентерабелен.
+SystemRun автоматически публикует initialization перед системами и команды систем после их полного retirement.
+Failed/cancelled systems сохраняют прежний discard/ticket protocol. Detached worker не получает права на intake.
+Ни commit, ни producers не ожидают дочернюю работу на worker.
+
+Preflight даёт strong guarantee относительно живых сущностей/компонентов/topology. Если allocation/конструктор
+падает уже при apply, возможен изменённый префикс: World явно poisoned до teardown, дальнейшие systems, mutation,
+Query/Get и topology extraction отвергаются. Это не успешная публикация и не обещание rollback in-place writes.
+`IsExecutionPoisoned` доступен для диагностики. Ошибка preflight сама по себе не требует poison.
+
+Legacy immediate `CreateEntity/AddComponent` и `Defer*` сохраняют прежнюю семантику совместимости, включая
+replace/partial apply в чисто legacy пакете. При смешивании с Queue-командами весь commit проходит preflight.
+Enabled metadata публикуется здесь; изменение фильтрации Query и новый EntityRef относятся к FEATURE-0083/0084.
+Имена и fluent Scene-фасад добавляются в FEATURE-0082, runtime Scene capability integration — в FEATURE-0087.
