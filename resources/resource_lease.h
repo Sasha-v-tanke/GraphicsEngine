@@ -7,6 +7,10 @@
 #include <GraphicsEngine/resources/resource_handle.h>
 #include <GraphicsEngine/resources/resource_use_record.h>
 
+namespace NRenderer::NInternal {
+class RenderWorldBuilder;
+}
+
 namespace NResources {
 
 class ResourceManager;
@@ -75,6 +79,7 @@ private:
     std::shared_ptr<const void> m_gpu;
 
     friend class ResourceManager;
+    friend class NRenderer::NInternal::RenderWorldBuilder;
 };
 
 } // namespace NResources
