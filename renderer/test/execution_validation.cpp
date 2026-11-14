@@ -65,6 +65,16 @@ TEST_F(GraphExecutionTest, RejectsNonfiniteViewProjectionBeforeRecording) {
     NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { Validate(Build(Draw)); });
 }
 
+TEST_F(GraphExecutionTest, ValidatesExactResolvedMatrixInCompiledDrawRanges) {
+    Draw.ResolvedWorldTransform = NMath::Mat4::Identity();
+    (*Draw.ResolvedWorldTransform)(0, 1) = 0.5F;
+    Draw.WorldTransform.Translation.X = std::numeric_limits<float>::infinity();
+    EXPECT_NO_THROW(Validate(Build(Draw)));
+    (*Draw.ResolvedWorldTransform)(0, 3) = std::numeric_limits<float>::quiet_NaN();
+    Draw.WorldTransform = {};
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { Validate(Build(Draw)); });
+}
+
 TEST_F(GraphExecutionTest, RejectsForeignFrameAndMissingPreparedVersions) {
     const auto graph = Build(Draw);
     auto other = Frame;
