@@ -758,8 +758,10 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
                 statistics.UpdatedObjects = updated.size();
                 statistics.UpdatedViews = updatedViews.size();
                 std::shared_ptr<const ExtractionData> published = data;
-                if (previous && updated.empty() && removed.empty() && updatedViews.empty() && removedViews.empty() &&
-                    data->Views.size() == previous->Views.size() && sameDiagnostics) {
+                // Invisible candidates still carry matrices and resolver state for later readiness.
+                // A dirty capture must commit that state even when the visible delta is empty.
+                if (!dirty && previous && updated.empty() && removed.empty() && updatedViews.empty() &&
+                    removedViews.empty() && data->Views.size() == previous->Views.size() && sameDiagnostics) {
                     published = previous;
                 }
 

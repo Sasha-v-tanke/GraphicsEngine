@@ -389,6 +389,26 @@ TEST_P(Incremental, CompletionFailureAfterResolverKeepsCursorAndRetriesWarmHiera
     EXPECT_EQ(Cache.GetStatistics().RecomputedTransforms, 0U);
 }
 
+TEST_P(Incremental, SkippedObjectRetainsUpdatedHierarchyWhenDiagnosticsDoNotChange) {
+    Resources.RequestUnload(Material);
+    Resources.CompleteUnload(Material);
+    const auto operation = Resources.BeginLoading(Material);
+    EXPECT_TRUE(Extract().GetObjects().empty());
+    auto local = NMath::Mat4::Identity();
+    local(0, 3) = 9;
+    World.SetLocalTransform(World.GetEntityReference(Objects.front()), local);
+    const auto& stillLoading = Extract();
+    EXPECT_TRUE(stillLoading.GetObjects().empty());
+    EXPECT_TRUE(stillLoading.GetDelta().UpdatedObjects.empty());
+    Resources.PublishReady(operation,
+                           std::make_shared<NGraphics::Material>(NResources::ResourceIdentity{"pipeline", "loaded"}));
+    const auto& ready = Extract();
+    ASSERT_EQ(ready.GetObjects().size(), Objects.size());
+    EXPECT_FLOAT_EQ((*ready.GetObjects()[0].ResolvedWorldTransform)(0, 3), 10);
+    EXPECT_FLOAT_EQ((*ready.GetObjects()[1].ResolvedWorldTransform)(0, 3), 1);
+    EXPECT_EQ(Cache.GetStatistics().RecomputedTransforms, 0U);
+}
+
 INSTANTIATE_TEST_SUITE_P(WorkersAndFrameSlots,
                          Incremental,
                          testing::Values(std::pair{1U, 1U},
