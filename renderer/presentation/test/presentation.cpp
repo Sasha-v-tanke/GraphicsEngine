@@ -264,6 +264,8 @@ TEST(GraphPresentation, CompiledSemanticsLowerThroughSharedStateTracker) {
               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::TRANSFER_DESTINATION)).Layout,
               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::SAMPLED_READ)).StageMask,
+              VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT);
     EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::SAMPLED_READ)).AccessMask,
               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::PRESENT)).Layout,

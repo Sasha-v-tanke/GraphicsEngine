@@ -568,8 +568,36 @@ CompiledGraph RenderGraphBuilder::Compile() const {
     std::erase_if(result.m_dependencies, [&](const GraphDependency& edge) {
         return !live[Resolve(edge.Before)] || !live[Resolve(edge.After)];
     });
+    // Removing an intervening dead write can expose a new WAR/WAW hazard
+    // between surviving passes. Rebuild resource edges for the executable DAG.
+    std::vector<std::optional<GraphPassId>> liveWriters(m_resources.size());
+    std::vector<std::vector<GraphPassId>> liveReaders(m_resources.size());
+    for (const CompiledGraphicsPass& pass: result.m_passes) {
+        const auto registerHazard = [&](const GraphResourceUse& use, bool isWrite) {
+            const std::size_t resource = Resolve(use.Resource);
+            if (liveWriters[resource]) {
+                result.m_dependencies.push_back({*liveWriters[resource], pass.Id});
+            }
+            if (isWrite) {
+                for (const GraphPassId reader: liveReaders[resource]) {
+                    result.m_dependencies.push_back({reader, pass.Id});
+                }
+                liveReaders[resource].clear();
+                liveWriters[resource] = pass.Id;
+            } else {
+                liveReaders[resource].push_back(pass.Id);
+            }
+        };
+        for (const GraphResourceUse& use: pass.Description.Reads) {
+            registerHazard(use, false);
+        }
+        for (const GraphResourceUse& use: pass.Description.Writes) {
+            registerHazard(use, true);
+        }
+    }
     result.m_resources.clear();
     std::vector<std::optional<std::size_t>> lifetimes(m_resources.size());
+    std::vector<std::vector<GraphPassId>> resourceUses(m_resources.size());
     std::vector<EResourceUsage> states;
     states.reserve(m_resources.size());
     for (const ImportedGraphResource& resource: m_resources) {
@@ -585,6 +613,7 @@ CompiledGraph RenderGraphBuilder::Compile() const {
                 result.m_resources.push_back(m_resources[resource]);
             }
             result.m_lifetimes[*lifetimes[resource]].LastPass = index;
+            resourceUses[resource].push_back(result.m_passes[index].Id);
             bool readsAttachment = false;
             for (const GraphAttachment& attachment: pass.ColorAttachments) {
                 readsAttachment |= attachment.Resource == use.Resource &&
@@ -628,6 +657,7 @@ CompiledGraph RenderGraphBuilder::Compile() const {
     struct PoolEntry {
         GraphImageDescription Description;
         std::size_t LastPass;
+        std::size_t Resource;
     };
     std::vector<PoolEntry> pool;
     const auto sameImage = [](const GraphImageDescription& a, const GraphImageDescription& b) {
@@ -645,19 +675,24 @@ CompiledGraph RenderGraphBuilder::Compile() const {
             ++allocation;
         }
         if (allocation == pool.size()) {
-            pool.push_back({resource.ImageDescription, lifetime.LastPass});
+            pool.push_back({resource.ImageDescription, lifetime.LastPass, Resolve(lifetime.Resource)});
         } else {
             // Reuse imposes GPU execution ordering even on logically independent
             // passes. Recording may still run in parallel; primary barriers cannot.
-            const GraphDependency reuse{result.m_passes[pool[allocation].LastPass].Id,
-                                        result.m_passes[lifetime.FirstPass].Id};
-            if (std::ranges::find(result.m_dependencies, reuse) == result.m_dependencies.end()) {
-                result.m_dependencies.push_back(reuse);
+            for (const GraphPassId source: resourceUses[pool[allocation].Resource]) {
+                result.m_dependencies.push_back({source, result.m_passes[lifetime.FirstPass].Id});
             }
             pool[allocation].LastPass = lifetime.LastPass;
+            pool[allocation].Resource = Resolve(lifetime.Resource);
         }
         lifetime.Allocation = allocation;
     }
+    std::ranges::sort(result.m_dependencies, [&](const GraphDependency& left, const GraphDependency& right) {
+        return std::pair{Resolve(left.Before), Resolve(left.After)} <
+               std::pair{Resolve(right.Before), Resolve(right.After)};
+    });
+    result.m_dependencies.erase(std::unique(result.m_dependencies.begin(), result.m_dependencies.end()),
+                                result.m_dependencies.end());
     result.m_resourceLookup.assign(m_resources.size(), result.m_resources.size());
     for (std::size_t index = 0; index < result.m_resources.size(); ++index) {
         result.m_resourceLookup[Resolve(result.m_resources[index].Id)] = index;

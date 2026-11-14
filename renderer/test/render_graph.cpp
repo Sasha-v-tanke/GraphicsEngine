@@ -45,6 +45,12 @@ GraphicsPassDescription ColorPass(GraphResourceId target,
     return pass;
 }
 
+GraphicsPassDescription SideEffectPass(bool hasSideEffects = true) {
+    GraphicsPassDescription pass;
+    pass.HasSideEffects = hasSideEffects;
+    return pass;
+}
+
 // No GPU calls are needed to exercise Graphics ownership/generation validation.
 class ResourceBackend final: public NGraphics::NBackend::IGraphicsBackend {
 public:
@@ -143,9 +149,9 @@ TEST(RenderGraph, IndependentPassesHaveStableDeclarationOrderAndRepeatableCompil
 
 TEST(RenderGraph, ExplicitOrderReordersIndependentPassesAndDeduplicatesEdges) {
     RenderGraphBuilder builder{FRAME};
-    const auto first = builder.AddGraphicsPass({.HasSideEffects = true});
-    const auto second = builder.AddGraphicsPass({.HasSideEffects = true});
-    const auto third = builder.AddGraphicsPass({.HasSideEffects = true});
+    const auto first = builder.AddGraphicsPass(SideEffectPass());
+    const auto second = builder.AddGraphicsPass(SideEffectPass());
+    const auto third = builder.AddGraphicsPass(SideEffectPass());
     builder.AddDependency(third, first);
     builder.AddDependency(third, first);
     const auto graph = builder.Compile();
@@ -180,9 +186,9 @@ TEST(RenderGraph, BuildsRawWarWawAndReadReadDoesNotAddDependencies) {
 TEST(RenderGraph, RejectsCyclesSelfDependenciesAndForeignPasses) {
     RenderGraphBuilder builder{FRAME};
     RenderGraphBuilder foreign{FRAME};
-    const auto a = builder.AddGraphicsPass({.HasSideEffects = true});
-    const auto b = builder.AddGraphicsPass({.HasSideEffects = true});
-    const auto c = foreign.AddGraphicsPass({.HasSideEffects = true});
+    const auto a = builder.AddGraphicsPass(SideEffectPass());
+    const auto b = builder.AddGraphicsPass(SideEffectPass());
+    const auto c = foreign.AddGraphicsPass(SideEffectPass());
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { builder.AddDependency(a, a); });
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { builder.AddDependency(a, c); });
     builder.AddDependency(a, b);
@@ -659,7 +665,7 @@ TEST(RenderGraph, DeepExplicitDagCullingIsIterativeAndDeterministic) {
     RenderGraphBuilder builder{FRAME};
     auto previous = builder.AddGraphicsPass({});
     for (std::size_t index = 0; index < 10000; ++index) {
-        const auto next = builder.AddGraphicsPass({.HasSideEffects = index == 9999});
+        const auto next = builder.AddGraphicsPass(SideEffectPass(index == 9999));
         builder.AddDependency(previous, next);
         previous = next;
     }
@@ -721,6 +727,49 @@ TEST(RenderGraph, SeededRandomDagMatchesReferenceReachabilityAndPoolIntervals) {
             }
         }
     }
+}
+
+TEST(RenderGraph, CullingInterveningWriteRebuildsWarBetweenSurvivingPasses) {
+    auto graphics = MakeGraphics();
+    const auto image = graphics.CreateImage(ImageDescription());
+    RenderGraphBuilder builder{FRAME};
+    const auto imported =
+            builder.ImportImage(graphics, image, EResourceUsage::SAMPLED_READ, EResourceUsage::SAMPLED_READ);
+    GraphicsPassDescription read;
+    read.Reads = {{imported, EResourceUsage::SAMPLED_READ}};
+    read.HasSideEffects = true;
+    const auto reader = builder.AddGraphicsPass(read);
+    const auto dead = builder.AddGraphicsPass(ColorPass(imported));
+    const auto writer = builder.AddGraphicsPass(ColorPass(imported));
+    const auto graph = builder.Compile();
+    ASSERT_EQ(graph.GetPasses().size(), 2);
+    EXPECT_EQ(graph.GetPasses()[0].Id, reader);
+    EXPECT_EQ(graph.GetPasses()[1].Id, writer);
+    EXPECT_NE(std::ranges::find(graph.GetDependencies(), NRenderer::GraphDependency{reader, writer}),
+              graph.GetDependencies().end());
+    EXPECT_TRUE(std::ranges::none_of(graph.GetDependencies(),
+                                     [&](const auto& edge) { return edge.Before == dead || edge.After == dead; }));
+}
+
+TEST(RenderGraph, PoolReuseWaitsForEveryIndependentReader) {
+    RenderGraphBuilder builder{FRAME};
+    const auto first = builder.CreateTransientImage(TargetDescription());
+    const auto next = builder.CreateTransientImage(TargetDescription());
+    (void)builder.AddGraphicsPass(ColorPass(first));
+    GraphicsPassDescription read;
+    read.Reads = {{first, EResourceUsage::SAMPLED_READ}};
+    read.HasSideEffects = true;
+    const auto a = builder.AddGraphicsPass(read);
+    const auto b = builder.AddGraphicsPass(read);
+    auto write = ColorPass(next);
+    write.HasSideEffects = true;
+    const auto reuse = builder.AddGraphicsPass(write);
+    const auto graph = builder.Compile();
+    EXPECT_EQ(graph.GetLifetimes()[0].Allocation, graph.GetLifetimes()[1].Allocation);
+    EXPECT_NE(std::ranges::find(graph.GetDependencies(), NRenderer::GraphDependency{a, reuse}),
+              graph.GetDependencies().end());
+    EXPECT_NE(std::ranges::find(graph.GetDependencies(), NRenderer::GraphDependency{b, reuse}),
+              graph.GetDependencies().end());
 }
 
 } // namespace

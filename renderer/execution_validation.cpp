@@ -42,10 +42,8 @@ void ValidateColorExecution(
         if (desc.Writes.size() != 1 || desc.ColorAttachments.size() != 1 || desc.DepthAttachment) {
             invalid("Color executor requires one color attachment per pass");
         }
-        for (const GraphResourceUse& read: desc.Reads) {
-            if (read.Usage != EResourceUsage::SAMPLED_READ) {
-                invalid("Unsupported color executor read usage");
-            }
+        if (!desc.Reads.empty()) {
+            invalid("Color executor does not bind graph resources to material inputs");
         }
         const GraphImageDescription& attachment = graph.GetResource(desc.ColorAttachments[0].Resource).ImageDescription;
         for (const auto& draw: desc.DrawCommands) {

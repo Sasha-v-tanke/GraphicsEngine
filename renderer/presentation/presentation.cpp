@@ -222,6 +222,8 @@ public:
                                                .Lifetime = NGraphics::EImageLifetime::FrameLocal};
         created->Allocation = NVulkan::CreateVulkanImage(Memory, image);
         const VkImageViewCreateInfo view{.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                         .pNext = nullptr,
+                                         .flags = 0,
                                          .image = created->Allocation.GetImage(),
                                          .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                          .format = NVulkan::ToVulkanFormat(image.Format),

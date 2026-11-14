@@ -14,7 +14,7 @@ NVulkan::EVulkanResourceUsage VulkanUsage(EResourceUsage usage, bool readsAttach
     case EResourceUsage::DEPTH_STENCIL_WRITE:
         return readsAttachment ? EVulkanResourceUsage::DepthStencilReadWrite : EVulkanResourceUsage::DepthStencilWrite;
     case EResourceUsage::SAMPLED_READ:
-        return EVulkanResourceUsage::ShaderSampledRead;
+        return EVulkanResourceUsage::GraphicsSampledRead;
     case EResourceUsage::VERTEX_READ:
         return EVulkanResourceUsage::VertexRead;
     case EResourceUsage::INDEX_READ:

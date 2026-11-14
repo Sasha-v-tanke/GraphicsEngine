@@ -82,4 +82,27 @@ TEST_F(GraphExecutionTest, RejectsForeignFrameAndMissingPreparedVersions) {
                          }),
                  std::runtime_error);
 }
+
+TEST_F(GraphExecutionTest, RejectsTransientSampledInputWithoutAnExecutableMaterialBinding) {
+    NRenderer::RenderGraphBuilder builder{Frame};
+    const auto output = builder.ImportSwapchain(Target, NRenderer::EResourceUsage::UNDEFINED);
+    const auto image =
+            builder.CreateTransientImage({{64, 64, 1},
+                                          NGraphics::EPixelFormat::RGBA8_UNORM,
+                                          NGraphics::ESampleCount::X1,
+                                          NGraphics::EImageUsage::ColorAttachment | NGraphics::EImageUsage::Sampled});
+    NRenderer::GraphicsPassDescription producer;
+    producer.Writes = {{image, NRenderer::EResourceUsage::COLOR_ATTACHMENT_WRITE}};
+    producer.ColorAttachments = {{.Resource = image}};
+    (void)builder.AddGraphicsPass(producer);
+    NRenderer::GraphicsPassDescription consumer;
+    consumer.Reads = {{image, NRenderer::EResourceUsage::SAMPLED_READ}};
+    consumer.Writes = {{output, NRenderer::EResourceUsage::COLOR_ATTACHMENT_WRITE}};
+    consumer.ColorAttachments = {{.Resource = output}};
+    (void)builder.AddGraphicsPass(consumer);
+    const auto graph = builder.Compile();
+    ASSERT_EQ(graph.GetPasses().size(), 2);
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { Validate(graph); });
+}
+
 } // namespace
