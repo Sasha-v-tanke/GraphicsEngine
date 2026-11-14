@@ -335,4 +335,41 @@ TEST(EcsStructuralCommit, CancelClosesUserProducerAdmissionAndRetiresPendingCrea
     EXPECT_EQ(world->GetStructuralState(pending), State::DESTROYED);
     EXPECT_FALSE(world->IsExecutionPoisoned());
 }
+
+TEST(EcsStructuralCommit, ActiveQueryRejectsUserCommitAndKeepsCommittedMembership) {
+    NEcs::World world;
+    const auto entity = world.QueueCreateEntity();
+    world.QueueAddComponent<Value>(entity, 9);
+    world.CommitPending();
+    world.Query<Value>([&](auto, auto& value) {
+        world.QueueRemoveComponent<Value>(entity);
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.CommitPending(); });
+        EXPECT_EQ(value.Number, 9);
+    });
+    world.CommitPending();
+    EXPECT_FALSE(world.HasComponent<Value>(entity.Identity));
+}
+
+TEST(EcsStructuralCommit, ConcurrentQuiescentQueryPreventsUserPublication) {
+    NEcs::World world;
+    const auto entity = world.QueueCreateEntity();
+    world.QueueAddComponent<Value>(entity, 9);
+    world.CommitPending();
+    world.QueueRemoveComponent<Value>(entity);
+    std::binary_semaphore entered{0};
+    std::binary_semaphore release{0};
+    std::thread reader([&] {
+        std::as_const(world).Query<Value>([&](auto, const auto& value) {
+            entered.release();
+            release.acquire();
+            EXPECT_EQ(value.Number, 9);
+        });
+    });
+    entered.acquire();
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { world.CommitPending(); });
+    release.release();
+    reader.join();
+    world.CommitPending();
+    EXPECT_FALSE(world.HasComponent<Value>(entity.Identity));
+}
 } // namespace

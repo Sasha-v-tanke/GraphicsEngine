@@ -240,6 +240,7 @@ public:
     template<typename... TComponents, typename TCallback>
     void Query(TCallback&& callback) {
         ValidateUnscopedAccess();
+        QueryReadGuard queryGuard{*this};
         std::vector<Entity> entities;
         entities.reserve(Entities_.size());
 
@@ -264,6 +265,7 @@ public:
     template<typename... TComponents, typename TCallback>
     void Query(TCallback&& callback) const {
         ValidateUnscopedAccess();
+        QueryReadGuard queryGuard{*this};
         std::vector<Entity> entities;
         entities.reserve(Entities_.size());
 
@@ -302,6 +304,16 @@ public:
     void ApplyDeferredStructuralChanges();
 
 private:
+    class QueryReadGuard final {
+    public:
+        explicit QueryReadGuard(const World& world);
+        ~QueryReadGuard();
+        QueryReadGuard(const QueryReadGuard&) = delete;
+        QueryReadGuard& operator=(const QueryReadGuard&) = delete;
+
+    private:
+        const World& m_world;
+    };
     class StructuralWriteGuard final {
     public:
         explicit StructuralWriteGuard(World& world);
@@ -572,6 +584,7 @@ private:
     std::shared_ptr<SystemRunState> ActiveSystemRun_;
     std::atomic_bool ExecutionPoisoned_ = false;
     std::atomic_bool m_isCommitting = false;
+    mutable std::atomic_size_t m_activeQueries = 0;
     bool m_commitRejectedBeforePublication = false;
     struct SystemInvocation;
     [[nodiscard]] SystemInvocation* GetCurrentSystemInvocation() const noexcept;

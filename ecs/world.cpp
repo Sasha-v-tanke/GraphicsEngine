@@ -27,6 +27,21 @@ std::uint64_t AllocateWorldId() {
 }
 } // namespace
 
+World::QueryReadGuard::QueryReadGuard(const World& world)
+    : m_world(world) {
+    if (m_world.m_isCommitting) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query cannot enter structural publication");
+    }
+    m_world.m_activeQueries.fetch_add(1);
+    if (m_world.m_isCommitting) {
+        m_world.m_activeQueries.fetch_sub(1);
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query raced structural publication");
+    }
+}
+World::QueryReadGuard::~QueryReadGuard() {
+    m_world.m_activeQueries.fetch_sub(1);
+}
+
 World::StructuralWriteGuard::StructuralWriteGuard(World& world)
     : m_world(world) {
     m_world.m_topology->BeginWrite();
@@ -1363,6 +1378,9 @@ void World::ApplyDeferredStructuralChanges(bool requireAllBuffers) {
         const bool userCommit = requireAllBuffers || hasStrict(DeferredStructuralCommands_) ||
                                 std::ranges::any_of(DeferredStructuralBatches_,
                                                     [&](const auto& batch) { return hasStrict(batch.Commands); });
+        if (userCommit && m_activeQueries.load() != 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "User commit requires retired Query readers");
+        }
         if (OutstandingDeferredReservationBufferCount_ != 0 || (userCommit && m_outstandingDeferredBuffers != 0)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS deferred reservation buffers must be submitted or discarded before commit");
