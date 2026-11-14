@@ -27,6 +27,21 @@ std::uint64_t AllocateWorldId() {
 }
 } // namespace
 
+World::QueryReadGuard::QueryReadGuard(const World& world)
+    : m_world(world) {
+    if (m_world.m_isCommitting) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query cannot enter structural publication");
+    }
+    m_world.m_activeQueries.fetch_add(1);
+    if (m_world.m_isCommitting) {
+        m_world.m_activeQueries.fetch_sub(1);
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query raced structural publication");
+    }
+}
+World::QueryReadGuard::~QueryReadGuard() {
+    m_world.m_activeQueries.fetch_sub(1);
+}
+
 World::StructuralWriteGuard::StructuralWriteGuard(World& world)
     : m_world(world) {
     m_world.m_topology->BeginWrite();
@@ -38,6 +53,9 @@ EntityReference World::GetEntityReference(Entity entity) const noexcept {
     return {m_topology->WorldId, entity};
 }
 TopologySnapshot World::AcquireTopologySnapshot() const {
+    if (ExecutionPoisoned_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS World is poisoned");
+    }
     return TopologySnapshot{std::make_shared<NInternal::TopologyLease>(m_topology)};
 }
 void World::SetLocalTransform(EntityReference entity, const NMath::Mat4& local) {
@@ -52,6 +70,11 @@ World::DeferredReparentCommand::DeferredReparentCommand(EntityReference child,
     : m_child(child)
     , m_parent(parent)
     , m_mode(mode) {
+    Description = {.Kind = ECommandKind::REPARENT,
+                   .Identity = child.Identity,
+                   .WorldId = child.WorldId,
+                   .Parent = parent,
+                   .ReparentMode = mode};
 }
 void World::DeferredReparentCommand::Apply(World& world) {
     world.m_pendingChanges.AllDomains = true;
@@ -293,8 +316,10 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
             } catch (...) {
                 world->ExecutionPoisoned_ = true;
             }
-            // A failed commit can retain partially applied commands; require teardown/recovery.
-            world->ExecutionPoisoned_ = true;
+            if (!world->m_commitRejectedBeforePublication) {
+                // Legacy/publishing failures may have changed live data; preflight rejection has not.
+                world->ExecutionPoisoned_ = true;
+            }
         }
         CommittingWorld_ = previous;
         world->CollectScopedDirty(Invocations);
@@ -326,14 +351,18 @@ NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
     if (!owner) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Async ECS requires a World owner");
     }
-    if (owner->IsRunningSystems_.exchange(true)) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+    {
+        std::scoped_lock lock{owner->DeferredStructuralMutex_};
+        if (owner->IsRunningSystems_.exchange(true)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+        }
     }
     try {
         if (owner->ExecutionPoisoned_) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS execution requires recovery after cleanup failure");
         }
+        owner->CommitUserInitialization();
         auto state = std::make_shared<World::SystemRunState>();
         state->Lease = owner;
         state->Tasks = &tasks;
@@ -395,6 +424,7 @@ struct World::DeferredStructuralCommandBuffer::State {
     std::shared_ptr<SystemRunState> Run;
     std::size_t InvocationIndex = 0;
     bool DeclaredProducer = false;
+    bool Counted = false;
     bool Submitted = false;
     bool HasClaimedReservations = false;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
@@ -432,6 +462,9 @@ World::DeferredStructuralCommandBuffer::State::~State() {
             {
                 std::scoped_lock lock{Owner->DeferredStructuralMutex_};
                 Owner->ReleaseUnusedDeferredEntityReservationsLocked(EntityReservations, NextEntityReservation);
+                if (Counted) {
+                    --Owner->m_outstandingDeferredBuffers;
+                }
                 if (HasClaimedReservations) {
                     --Owner->OutstandingDeferredReservationBufferCount_;
                 }
@@ -491,6 +524,7 @@ Entity World::CreateEntity() {
 World::DeferredCreateEntityCommand::DeferredCreateEntityCommand(Entity entity, bool reusedFreeSlot)
     : Entity_(entity)
     , ReusedFreeSlot_(reusedFreeSlot) {
+    Description = {.Kind = ECommandKind::CREATE, .Identity = entity};
 }
 
 void World::DeferredCreateEntityCommand::Apply(World& world) {
@@ -553,6 +587,7 @@ void World::DeferredCreateEntityCommand::RollbackReservation(World& world) {
 
 World::DeferredDestroyEntityCommand::DeferredDestroyEntityCommand(Entity entity)
     : Entity_(entity) {
+    Description = {.Kind = ECommandKind::DESTROY, .Identity = entity};
 }
 
 void World::DeferredDestroyEntityCommand::Apply(World& world) {
@@ -709,6 +744,11 @@ void World::DestroyEntity(Entity entity) {
     }
 
     m_topology->Destroy(entity);
+    m_disabledEntities.erase(entity.Index);
+    for (auto& [type, disabled]: m_disabledComponents) {
+        static_cast<void>(type);
+        disabled.erase(entity.Index);
+    }
     auto& state = Entities_[entity.Index];
     state.Alive = false;
     state.Reserved = false;
@@ -906,6 +946,9 @@ void World::BeginDeferredStructuralPhase(std::vector<DeferredProducer> producers
 World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder) {
     DeferredStructuralCommandBuffer buffer{*this, producerOrder};
     std::scoped_lock lock{DeferredStructuralMutex_};
+    if (m_isCommitting || ExecutionPoisoned_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural producer intake is closed");
+    }
     if (IsRunningSystems_) {
         ValidateSystemDeferredCommandCollectionLocked();
         const auto* invocation = GetCurrentSystemInvocation();
@@ -933,6 +976,8 @@ World::DeferredStructuralCommandBuffer World::CreateDeferredStructuralCommandBuf
             }
         }
     }
+    buffer.State_->Counted = true;
+    ++m_outstandingDeferredBuffers;
     return buffer;
 }
 
@@ -997,6 +1042,10 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
         if (buffer.State_->HasClaimedReservations) {
             --OutstandingDeferredReservationBufferCount_;
             buffer.State_->HasClaimedReservations = false;
+        }
+        if (buffer.State_->Counted) {
+            --m_outstandingDeferredBuffers;
+            buffer.State_->Counted = false;
         }
         buffer.State_->Submitted = true;
     }
@@ -1234,8 +1283,11 @@ void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
 }
 
 void World::RunSystemsImpl() {
-    if (IsRunningSystems_.exchange(true)) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        if (IsRunningSystems_.exchange(true)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+        }
     }
     std::vector<SystemInvocation> invocations;
     try {
@@ -1243,6 +1295,7 @@ void World::RunSystemsImpl() {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS execution requires recovery after cleanup failure");
         }
+        CommitUserInitialization();
         const SystemExecutionGraph graph = BuildSystemExecutionGraph(false);
         invocations.resize(Systems_.size());
         for (const std::size_t index: graph.Order) {
@@ -1291,7 +1344,25 @@ void World::RunSystemsImpl() {
 }
 
 void World::ApplyDeferredStructuralChanges() {
+    ApplyDeferredStructuralChanges(false);
+}
+
+void World::ApplyDeferredStructuralChanges(bool requireAllBuffers) {
+    m_commitRejectedBeforePublication = false;
+    if (ExecutionPoisoned_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                              "ECS World is poisoned after structural publication failure");
+    }
     StructuralWriteGuard structuralGuard{*this};
+    if (m_isCommitting.exchange(true)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural commit is not reentrant");
+    }
+    struct CommitGuard {
+        std::atomic_bool& Active;
+        ~CommitGuard() {
+            Active.store(false);
+        }
+    } commitGuard{m_isCommitting};
     if (IsRunningSystems_ && CommittingWorld_ != this) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS deferred structural changes cannot be explicitly committed during system execution");
@@ -1301,7 +1372,16 @@ void World::ApplyDeferredStructuralChanges() {
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
-        if (OutstandingDeferredReservationBufferCount_ != 0) {
+        const auto hasStrict = [](const auto& pending) {
+            return std::ranges::any_of(pending, [](const auto& command) { return command->Description.Strict; });
+        };
+        const bool userCommit = requireAllBuffers || hasStrict(DeferredStructuralCommands_) ||
+                                std::ranges::any_of(DeferredStructuralBatches_,
+                                                    [&](const auto& batch) { return hasStrict(batch.Commands); });
+        if (userCommit && m_activeQueries.load() != 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "User commit requires retired Query readers");
+        }
+        if (OutstandingDeferredReservationBufferCount_ != 0 || (userCommit && m_outstandingDeferredBuffers != 0)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS deferred reservation buffers must be submitted or discarded before commit");
         }
@@ -1346,6 +1426,16 @@ void World::ApplyDeferredStructuralChanges() {
         commands.swap(DeferredStructuralCommands_);
     }
 
+    const bool strict = std::ranges::any_of(commands, [](const auto& command) { return command->Description.Strict; });
+    if (strict) {
+        try {
+            PreflightStructuralCommands(commands);
+        } catch (...) {
+            RollbackDeferredStructuralCommands(commands);
+            m_commitRejectedBeforePublication = true;
+            throw;
+        }
+    }
     std::size_t nextCommand = 0;
 
     try {
@@ -1354,6 +1444,17 @@ void World::ApplyDeferredStructuralChanges() {
             ++nextCommand;
         }
     } catch (...) {
+        if (strict) {
+            // Preflight is non-mutating. Publication may allocate/construct T: after such a failure
+            // the partial World is quarantined and can only be torn down, never extracted or run again.
+            ExecutionPoisoned_ = true;
+            for (std::size_t index = nextCommand + 1; index < commands.size(); ++index) {
+                std::scoped_lock lock{DeferredStructuralMutex_};
+                ReservedDeferredEntityCount_ -= commands[index]->GetReservedEntityCount();
+                commands[index]->RollbackReservation(*this);
+            }
+            throw;
+        }
         {
             std::scoped_lock lock{DeferredStructuralMutex_};
             DeferredStructuralCommands_.insert(
@@ -1387,6 +1488,9 @@ void World::ValidateSystemIndex(std::size_t index) const {
 }
 
 void World::ValidateUnscopedAccess() const {
+    if (ExecutionPoisoned_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS World is poisoned");
+    }
     const auto* invocation = GetCurrentSystemInvocation();
     if (invocation && invocation->Batch) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Scoped systems must access components through views");
@@ -1394,6 +1498,9 @@ void World::ValidateUnscopedAccess() const {
 }
 
 void World::ValidateStructuralWriteAllowed() const {
+    if (ExecutionPoisoned_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS World is poisoned");
+    }
     if (IsRunningSystems_ && CommittingWorld_ != this) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS structural changes during system execution must be deferred");
@@ -1454,6 +1561,320 @@ void World::RollbackDeferredStructuralCommands(std::vector<std::unique_ptr<IDefe
         }
     }
     commands.clear();
+}
+
+bool World::IsPendingIdentity(Entity entity) const {
+    if (FindPendingDeferredAppendGeneration(entity.Index) == entity.Generation) {
+        return true;
+    }
+    return entity.Index < Entities_.size() && !Entities_[entity.Index].Alive &&
+           Entities_[entity.Index].Generation == entity.Generation &&
+           std::ranges::find(FreeEntityIndices_, entity.Index) == FreeEntityIndices_.end();
+}
+
+void World::ValidateUserIdentity(EntityReference entity) const {
+    if (ExecutionPoisoned_) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS World is poisoned");
+    }
+    if (entity.WorldId != m_topology->WorldId || !entity.Identity.IsValid()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Entity belongs to another World");
+    }
+    if (!IsAlive(entity.Identity) && !IsPendingIdentity(entity.Identity)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Entity generation is stale");
+    }
+}
+
+World::EStructuralState World::GetStructuralState(EntityReference entity) const {
+    if (m_isCommitting || (IsRunningSystems_ && !GetCurrentSystemInvocation())) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Entity state requires an owner phase");
+    }
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    if (entity.WorldId != m_topology->WorldId || !entity.Identity.IsValid()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Entity belongs to another World");
+    }
+    if (IsPendingIdentity(entity.Identity)) {
+        return EStructuralState::PENDING_CREATE;
+    }
+    if (!IsAlive(entity.Identity)) {
+        return EStructuralState::DESTROYED;
+    }
+    const auto destroys = [entity](const auto& commands) {
+        return std::ranges::any_of(commands, [entity](const auto& command) {
+            return command->Description.Kind == ECommandKind::DESTROY &&
+                   command->Description.Identity == entity.Identity;
+        });
+    };
+    if (destroys(DeferredStructuralCommands_)) {
+        return EStructuralState::PENDING_DESTROY;
+    }
+    for (const auto& batch: DeferredStructuralBatches_) {
+        if (destroys(batch.Commands)) {
+            return EStructuralState::PENDING_DESTROY;
+        }
+    }
+    if (const auto* invocation = GetCurrentSystemInvocation(); invocation && destroys(invocation->Commands)) {
+        return EStructuralState::PENDING_DESTROY;
+    }
+    return EStructuralState::ALIVE;
+}
+
+void World::CommitUserInitialization() {
+    const auto strict = [](const auto& commands) {
+        return std::ranges::any_of(commands, [](const auto& command) { return command->Description.Strict; });
+    };
+    if (!strict(DeferredStructuralCommands_) &&
+        !std::ranges::any_of(DeferredStructuralBatches_, [&](const auto& batch) { return strict(batch.Commands); })) {
+        return;
+    }
+    World* previous = CommittingWorld_;
+    CommittingWorld_ = this;
+    try {
+        ApplyDeferredStructuralChanges();
+    } catch (...) {
+        CommittingWorld_ = previous;
+        throw;
+    }
+    CommittingWorld_ = previous;
+}
+
+void World::CommitPending() {
+    if (NCommon::TaskSystem::IsCurrentThreadWorker() || IsRunningSystems_ || CommittingWorld_ != nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "CommitPending requires a quiescent host");
+    }
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        if (m_outstandingDeferredBuffers != 0) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "CommitPending requires retired producer buffers");
+        }
+    }
+    ApplyDeferredStructuralChanges(true);
+}
+
+EntityReference World::QueueCreateEntity() {
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    ValidateStructuralWriteAllowed();
+    if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Worker creates require a producer capability");
+    }
+    if (m_isCommitting) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural publication cannot enqueue commands");
+    }
+    const Entity identity = ReserveDeferredEntityLocked(DeferredStructuralCommands_);
+    DeferredStructuralCommands_.back()->Description.Strict = true;
+    return GetEntityReference(identity);
+}
+
+EntityReference World::QueueCreateEntity(DeferredStructuralCommandBuffer& buffer) {
+    ValidateDeferredStructuralCommandBuffer(buffer);
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    if (ExecutionPoisoned_ || m_isCommitting ||
+        (buffer.State_->Run && (buffer.State_->Run->Cancelled || buffer.State_->Run->Failed))) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural intake is closed");
+    }
+    auto& state = *buffer.State_;
+    if (state.NextEntityReservation == state.EntityReservations.size()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Producer has no remaining create reservation");
+    }
+    const auto& reservation = state.EntityReservations[state.NextEntityReservation];
+    auto command = std::make_unique<DeferredCreateEntityCommand>(reservation.Identity, reservation.ReusesFreeSlot);
+    command->Description.Strict = true;
+    state.Commands.push_back(std::move(command));
+    ++state.NextEntityReservation;
+    return GetEntityReference(reservation.Identity);
+}
+
+void World::ValidateUserBatch(const std::vector<std::unique_ptr<IDeferredCommand>>& commands,
+                              const CommandDescription& incoming) {
+    for (const auto& command: commands) {
+        const auto& previous = command->Description;
+        if (previous.Identity != incoming.Identity) {
+            continue;
+        }
+        if (previous.Kind == ECommandKind::DESTROY && incoming.Kind != ECommandKind::DESTROY) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Entity is pending destruction");
+        }
+        if (previous.Component == incoming.Component &&
+            (incoming.Kind == ECommandKind::ADD || incoming.Kind == ECommandKind::REMOVE) &&
+            (previous.Kind == ECommandKind::ADD || previous.Kind == ECommandKind::REMOVE)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::ALREADY_EXISTS, "Conflicting component commands in one epoch");
+        }
+    }
+}
+
+void World::QueueUserCommand(EntityReference entity, std::unique_ptr<IDeferredCommand> command) {
+    command->Description.Strict = true;
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    if (m_isCommitting) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural publication cannot enqueue commands");
+    }
+    ValidateUserIdentity(entity);
+    if (IsRunningSystems_) {
+        ValidateSystemDeferredCommandCollectionLocked();
+        if (ActiveSystemRun_ && (ActiveSystemRun_->Cancelled || ActiveSystemRun_->Failed)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural intake is closed");
+        }
+    } else if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Detached worker has no structural capability");
+    }
+    auto& commands = IsRunningSystems_ ? GetCurrentSystemInvocation()->Commands : DeferredStructuralCommands_;
+    ValidateUserBatch(commands, command->Description);
+    if (!IsRunningSystems_ && IsAlive(entity.Identity)) {
+        const auto& description = command->Description;
+        const auto storage = ComponentStorageByType_.find(description.Component);
+        const bool present =
+                storage != ComponentStorageByType_.end() && storage->second->Contains(entity.Identity.Index);
+        if (description.Kind == ECommandKind::ADD && present) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::ALREADY_EXISTS, "ECS component already exists");
+        }
+        if ((description.Kind == ECommandKind::REMOVE ||
+             (description.Kind == ECommandKind::ENABLE && description.Component != typeid(void))) &&
+            !present) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "ECS component does not exist");
+        }
+    }
+    commands.push_back(std::move(command));
+}
+
+void World::QueueUserCommand(DeferredStructuralCommandBuffer& buffer,
+                             EntityReference entity,
+                             std::unique_ptr<IDeferredCommand> command) {
+    if (!buffer.State_ || !buffer.State_->Owner || buffer.State_->OwnerLifetime.expired() || buffer.State_->Submitted) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural producer capability expired");
+    }
+    World& world = *buffer.State_->Owner;
+    command->Description.Strict = true;
+    std::scoped_lock lock{world.DeferredStructuralMutex_};
+    if (world.m_isCommitting || (buffer.State_->Run && (buffer.State_->Run->Cancelled || buffer.State_->Run->Failed))) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural intake is closed");
+    }
+    world.ValidateUserIdentity(entity);
+    ValidateUserBatch(buffer.State_->Commands, command->Description);
+    buffer.State_->Commands.push_back(std::move(command));
+}
+
+void World::QueueDestroyEntity(EntityReference entity) {
+    QueueUserCommand(entity, std::make_unique<DeferredDestroyEntityCommand>(entity.Identity));
+}
+void World::QueueDestroyEntity(DeferredStructuralCommandBuffer& buffer, EntityReference entity) {
+    QueueUserCommand(buffer, entity, std::make_unique<DeferredDestroyEntityCommand>(entity.Identity));
+}
+void World::QueueReparent(EntityReference child, EntityReference parent, EReparentMode mode) {
+    if (parent != EntityReference{} && parent.WorldId != child.WorldId) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Parent belongs to another World");
+    }
+    QueueUserCommand(child, std::make_unique<DeferredReparentCommand>(child, parent, mode));
+}
+void World::QueueReparent(DeferredStructuralCommandBuffer& buffer,
+                          EntityReference child,
+                          EntityReference parent,
+                          EReparentMode mode) {
+    if (parent != EntityReference{} && parent.WorldId != child.WorldId) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Parent belongs to another World");
+    }
+    QueueUserCommand(buffer, child, std::make_unique<DeferredReparentCommand>(child, parent, mode));
+}
+World::DeferredEnabledCommand::DeferredEnabledCommand(Entity entity, std::type_index component, bool enabled) {
+    Description = {.Kind = ECommandKind::ENABLE, .Identity = entity, .Component = component, .Enabled = enabled};
+}
+void World::DeferredEnabledCommand::Apply(World& world) {
+    world.m_pendingChanges.AllDomains = true;
+    auto& disabled = Description.Component == typeid(void) ? world.m_disabledEntities
+                                                           : world.m_disabledComponents[Description.Component];
+    if (Description.Enabled) {
+        disabled.erase(Description.Identity.Index);
+    } else {
+        disabled.insert(Description.Identity.Index);
+    }
+}
+void World::QueueSetEnabled(EntityReference entity, bool enabled) {
+    QueueUserCommand(entity, std::make_unique<DeferredEnabledCommand>(entity.Identity, typeid(void), enabled));
+}
+void World::QueueSetEnabled(DeferredStructuralCommandBuffer& buffer, EntityReference entity, bool enabled) {
+    QueueUserCommand(buffer, entity, std::make_unique<DeferredEnabledCommand>(entity.Identity, typeid(void), enabled));
+}
+bool World::IsEntityEnabled(EntityReference entity) const {
+    ValidateUnscopedAccess();
+    ValidateUserIdentity(entity);
+    return IsAlive(entity.Identity) && !m_disabledEntities.contains(entity.Identity.Index);
+}
+bool World::IsComponentDisabled(Entity entity, std::type_index component) const {
+    const auto found = m_disabledComponents.find(component);
+    return found != m_disabledComponents.end() && found->second.contains(entity.Index);
+}
+
+void World::PreflightStructuralCommands(const std::vector<std::unique_ptr<IDeferredCommand>>& commands) const {
+    // This shadow owns metadata only. No T is copied or constructed and no live topology is changed.
+    NInternal::TopologyState topology{m_topology->WorldId};
+    topology.Nodes = m_topology->Nodes;
+    topology.Epoch = m_topology->Epoch;
+    using ComponentKey = std::tuple<std::uint32_t, std::uint32_t, std::type_index>;
+    struct ComponentState {
+        bool Present = false;
+        bool Added = false;
+        bool Removed = false;
+        bool Strict = false;
+    };
+    std::map<ComponentKey, ComponentState> components;
+    std::set<std::pair<std::uint32_t, std::uint32_t>> destroyed;
+    for (const auto& command: commands) {
+        const auto& description = command->Description;
+        const Entity entity = description.Identity;
+        const EntityReference reference{topology.WorldId, entity};
+        if (description.Kind == ECommandKind::CREATE) {
+            if (topology.IsAlive(reference)) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Duplicate deferred create");
+            }
+            topology.Prepare(entity.Index);
+            topology.Create(entity);
+            continue;
+        }
+        const bool alive = topology.IsAlive(reference);
+        if (description.Kind == ECommandKind::DESTROY && destroyed.contains({entity.Index, entity.Generation})) {
+            continue;
+        }
+        if (!alive) {
+            if (description.Strict || description.Kind == ECommandKind::REPARENT) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural command targets a stale entity");
+            }
+            continue;
+        }
+        if (description.Kind == ECommandKind::DESTROY) {
+            destroyed.emplace(entity.Index, entity.Generation);
+            topology.Destroy(entity);
+        } else if (description.Kind == ECommandKind::REPARENT) {
+            topology.Reparent({description.WorldId, entity}, description.Parent, description.ReparentMode);
+        } else if (description.Kind == ECommandKind::ADD || description.Kind == ECommandKind::REMOVE ||
+                   (description.Kind == ECommandKind::ENABLE && description.Component != typeid(void))) {
+            const ComponentKey key{entity.Index, entity.Generation, description.Component};
+            auto [found, inserted] = components.try_emplace(key);
+            auto& component = found->second;
+            if (inserted) {
+                const auto storage = ComponentStorageByType_.find(description.Component);
+                component.Present = storage != ComponentStorageByType_.end() &&
+                                    storage->second->Contains(entity.Index) && IsAlive(entity);
+            }
+            if (description.Kind == ECommandKind::ADD) {
+                if ((description.Strict && component.Present) ||
+                    ((description.Strict || component.Strict) && (component.Added || component.Removed))) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::ALREADY_EXISTS, "Duplicate Add or implicit Replace");
+                }
+                component.Present = true;
+                component.Added = true;
+            } else if (description.Kind == ECommandKind::REMOVE) {
+                if ((description.Strict || component.Strict) && (component.Added || component.Removed)) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::ALREADY_EXISTS, "Conflicting component removal");
+                }
+                if (description.Strict && !component.Present) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "Cannot remove missing component");
+                }
+                component.Present = false;
+                component.Removed = true;
+            } else if (!component.Present) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::NOT_FOUND, "Cannot enable missing component");
+            }
+            component.Strict = component.Strict || description.Strict;
+        }
+    }
 }
 
 } // namespace NEcs

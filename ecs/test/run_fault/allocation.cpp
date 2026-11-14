@@ -497,4 +497,41 @@ TEST(EcsRunFault, TraversalDynamicSpawnFailureDoesNotPublishResultsOrLeakLease) 
     EXPECT_FALSE(output->TryAcquire(tasks));
     EXPECT_NO_THROW(world.CreateEntity());
 }
+
+TEST(EcsRunFault, UserCommitAllocationFailuresNeverPublishFalseSuccess) {
+    int rejected = 0;
+    int poisoned = 0;
+    int succeeded = 0;
+    for (std::ptrdiff_t budget = 0; budget < 100; ++budget) {
+        NEcs::World world;
+        const auto first = world.QueueCreateEntity();
+        const auto second = world.QueueCreateEntity();
+        world.QueueAddComponent<int>(first, 10);
+        world.QueueAddComponent<std::unique_ptr<int>>(second, std::make_unique<int>(20));
+        world.QueueSetEnabled(first, false);
+        AllocationBudget = budget;
+        try {
+            world.CommitPending();
+            AllocationBudget = -1;
+            ++succeeded;
+            EXPECT_EQ(world.GetComponent<int>(first.Identity), 10);
+            EXPECT_EQ(*world.GetComponent<std::unique_ptr<int>>(second.Identity), 20);
+            EXPECT_FALSE(world.IsEntityEnabled(first));
+        } catch (const std::bad_alloc&) {
+            AllocationBudget = -1;
+            if (world.IsExecutionPoisoned()) {
+                ++poisoned;
+                EXPECT_THROW(world.CommitPending(), NCommon::Exception);
+                EXPECT_THROW(world.RunSystems(), NCommon::Exception);
+            } else {
+                ++rejected;
+                EXPECT_EQ(world.GetAliveEntityCount(), 0U);
+                EXPECT_NO_THROW(world.CommitPending());
+            }
+        }
+    }
+    EXPECT_GT(rejected, 0);
+    EXPECT_GT(poisoned, 0);
+    EXPECT_GT(succeeded, 0);
+}
 } // namespace
