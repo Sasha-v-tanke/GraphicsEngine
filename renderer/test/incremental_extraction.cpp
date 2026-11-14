@@ -113,6 +113,7 @@ TEST_P(Incremental, UnchangedFrameSharesBackingAndScopedWriteChangesOneObject) {
     EXPECT_TRUE(second.GetDelta().UpdatedObjects.empty());
     EXPECT_EQ(Cache.GetStatistics().RecomputedTransforms, 0U);
     EXPECT_EQ(Cache.GetStatistics().ResourceObservations, 2U);
+    const auto secondFrame = second.GetFrame();
     const auto changed = World.GetEntityReference(Objects[2]);
     NEcs::NInternal::ScopedWorldAccess::Register(
             World,
@@ -128,6 +129,9 @@ TEST_P(Incremental, UnchangedFrameSharesBackingAndScopedWriteChangesOneObject) {
     EXPECT_FALSE(third.GetDelta().FullRebuild);
     EXPECT_FLOAT_EQ((*third.GetObjects()[2].ResolvedWorldTransform)(0, 3), 7);
     EXPECT_EQ(Cache.GetStatistics().UpdatedObjects, 1U);
+    EXPECT_EQ(Cache.GetStatistics().RecomputedTransforms, 0U);
+    ASSERT_TRUE(third.GetDelta().PreviousFrame);
+    EXPECT_EQ(*third.GetDelta().PreviousFrame, secondFrame);
     if (GetParam().second > 1) {
         EXPECT_FLOAT_EQ((*second.GetObjects()[2].ResolvedWorldTransform)(0, 3), 1);
     }
@@ -327,6 +331,62 @@ TEST_P(Incremental, PerspectiveUsesInverseAffineCameraAndRejectsSingularMatrix) 
     EXPECT_THROW(
             (void)NRenderer::Renderer::Prepare(singular, Frames->GetFrameStorage(Active.back()).GetMemoryResource()),
             std::exception);
+}
+
+TEST_P(Incremental, CameraMembershipChangesProduceDeterministicViewDeltas) {
+    (void)Extract();
+    World.RemoveComponent<CameraComponent>(Camera);
+    const auto& removed = Extract();
+    EXPECT_TRUE(removed.GetViews().empty());
+    ASSERT_EQ(removed.GetDelta().RemovedViews.size(), 1U);
+    EXPECT_EQ(removed.GetDelta().RemovedViews[0].Index, Camera.Index);
+    World.AddComponent<CameraComponent>(Camera);
+    const auto& added = Extract();
+    ASSERT_EQ(added.GetViews().size(), 1U);
+    ASSERT_EQ(added.GetDelta().UpdatedViews.size(), 1U);
+    EXPECT_EQ(added.GetDelta().UpdatedViews[0], added.GetViews()[0].Id);
+}
+
+TEST_P(Incremental, CompletionFailureAfterResolverKeepsCursorAndRetriesWarmHierarchy) {
+    const auto& first = Extract();
+    const auto firstFrame = first.GetFrame();
+    const auto before = Cache.GetStatistics();
+    auto local = NMath::Mat4::Identity();
+    local(0, 3) = 9;
+    World.SetLocalTransform(World.GetEntityReference(Objects.front()), local);
+    Resources.RequestUnload(Material);
+    Resources.CompleteUnload(Material);
+    PublishMaterial();
+    const auto frame = Begin();
+    bool reachedCompletion = false;
+    NCommon::TaskHandle join;
+    const auto root = Tasks->Submit([&](NCommon::TaskContext& task) {
+        join = Cache.Schedule(World,
+                              Resources,
+                              Frames->GetFrameStorage(frame),
+                              *Tasks,
+                              task,
+                              [&](const NRenderer::RenderWorld& snapshot) {
+                                  reachedCompletion = true;
+                                  EXPECT_FLOAT_EQ((*snapshot.GetObjects()[0].ResolvedWorldTransform)(0, 3), 10);
+                                  EXPECT_EQ(snapshot.GetObjects()[0].Material.GetVersion(), 2U);
+                                  throw std::runtime_error("publication failed after successful resolve");
+                              });
+    });
+    Tasks->Wait(root);
+    ASSERT_TRUE(join.IsValid());
+    Tasks->Wait(join);
+    Tasks->WaitIdle();
+    EXPECT_TRUE(reachedCompletion);
+    EXPECT_EQ(Tasks->GetStatus(join), NCommon::ETaskStatus::FAILED);
+    EXPECT_EQ(Cache.GetStatistics().RecomputedTransforms, before.RecomputedTransforms);
+    const auto& retry = Extract();
+    ASSERT_TRUE(retry.GetDelta().PreviousFrame);
+    EXPECT_EQ(*retry.GetDelta().PreviousFrame, firstFrame);
+    EXPECT_EQ(retry.GetDelta().UpdatedObjects.size(), Objects.size());
+    EXPECT_FLOAT_EQ((*retry.GetObjects()[0].ResolvedWorldTransform)(0, 3), 10);
+    EXPECT_EQ(retry.GetObjects()[0].Material.GetVersion(), 2U);
+    EXPECT_EQ(Cache.GetStatistics().RecomputedTransforms, 0U);
 }
 
 INSTANTIATE_TEST_SUITE_P(WorkersAndFrameSlots,

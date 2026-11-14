@@ -1,4 +1,6 @@
+#include <cstdint>
 #include <memory>
+#include <utility>
 
 #include <benchmark/benchmark.h>
 #include <ecs/internal/scoped_batch.h>

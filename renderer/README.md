@@ -98,7 +98,7 @@ Lease дублируется только внутренним builder без п
 
 ### Иерархия и матрицы
 
-При dirty inputs TransformResolver получает объединение всех камер и render
+При полной invalidation TransformResolver получает объединение всех камер и render
 кандидатов, включая предков. Продолжение зависит от успешного resolver completion;
 worker не вызывает Wait. World-компоненты копируются на границе и после неё не
 читаются. Resolver удерживает topology lease до retirement обхода.
@@ -144,4 +144,24 @@ Sparse изменения не создают task-per-entity. Продолже�
 scoped single-object write, parent/shear, retry/hot reload, create/destroy/recycle,
 missing history, смену World, capture-before-ready и failure rollback. Benchmark
 BM_RenderWorldExtraction сравнивает неизменившийся кадр с parallel IMPROVE-0023:
-1024/16384 объектов, 1/4 workers, режим 0 — baseline, 1 — incremental.
+1024/16384 объектов, 1/4 workers, режим 0 — baseline, 1 — incremental, static/single-write workload.
+Результаты и команда повторения — в [измерениях](../benchmarks/renderer/README.md).
+
+### Сериализация и остановка Engine
+
+`SceneRuntime` использует один cache на все slots. В Engine::RunExtraction продолжение
+FinishDraw зависит от возвращённого extraction handle; только FinishDraw открывает
+m_updateAdmissionOpen для N+1. Terminal status TaskSystem включает retirement callable,
+поэтому Admission::~Admission уже снял Busy до следующего ScheduleExtract. Draw N и
+GPU работа могут продолжаться параллельно Update/Extract N+1; две mutable/extraction
+фазы одного потока не пересекаются. EnginePhaseGates.EveryExtractionReaderMustRetireBeforeNextAdmission
+проверяет сам gate. Интеграционный SceneRuntime тест удерживает реальный Draw N, пока
+N+1 обновляет и извлекает тот же World/cache (workers 2/4, slots 2/3).
+
+Engine::Stop завершает semantic producers и TaskSystem::WaitIdle до вызова Drain.
+StopDrainsRunningIncrementalPublicationBeforeNoexceptReset удерживает именно callable
+публикации IncrementalExtraction; Stop не возвращается и не вызывает cache Reset до
+его retirement (workers 1/4, slots 2/3). Поэтому Reset в noexcept Drain вызывается
+только idle. Отдельный CompletionFailureAfterResolverKeepsCursorAndRetriesWarmHierarchy
+бросает исключение из completion после успешного resolver и проверяет retry с прежним
+PreviousFrame, новой material version, корректной матрицей/дельтой и cache-hit resolver.

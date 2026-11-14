@@ -349,7 +349,8 @@ struct ExtractionData {
     std::vector<RenderObject> Objects;
     std::vector<NCommon::ResourceUseRecord> Records;
     std::vector<ResourceReadinessDiagnostic> Diagnostics;
-    std::map<std::uint32_t, NMath::Mat4> Matrices;
+    std::vector<NMath::Mat4> ObjectMatrices;
+    std::optional<NEcs::NInternal::ResolvedTransforms> Transforms;
     std::vector<ResourceSelection> Selections;
 };
 
@@ -374,6 +375,17 @@ bool Contains(const NCommon::ChangeCapture& changes, NEcs::Entity entity) {
     return changes.FullDirty || std::ranges::any_of(changes.Ranges, [entity](const NCommon::DirtyRange range) {
                return entity.Index >= range.Begin && entity.Index - range.Begin < range.Count;
            });
+}
+
+// Both capture paths preserve ascending entity-slot order. Merge consumes old IDs once,
+// without rebuilding an index or depending on worker completion order.
+template<typename T>
+const T*
+FindPrevious(std::span<const T> previous, std::size_t& index, RenderObjectId id, std::vector<RenderObjectId>& removed) {
+    while (index < previous.size() && previous[index].Id.Index < id.Index) {
+        removed.push_back(previous[index++].Id);
+    }
+    return index < previous.size() && previous[index].Id.Index == id.Index ? &previous[index++] : nullptr;
 }
 
 bool SameMatrix(const NMath::Mat4& left, const NMath::Mat4& right) {
@@ -574,7 +586,7 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
     auto resolver = m_state->Resolver;
     std::optional<NEcs::NInternal::TransformResolve> resolve;
     std::vector<NCommon::TaskHandle> dependencies{task.GetTask()};
-    if (dirty) {
+    if (full) {
         if (!resolver || m_state->WorldId != worldId) {
             resolver = std::make_shared<NEcs::NInternal::TransformResolver>();
         }
@@ -605,6 +617,7 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
              storage,
              completion = std::move(completion),
              statistics,
+             transformChanges,
              dirty,
              cursor = changes.GetCursor(),
              worldId,
@@ -650,30 +663,29 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
                 if (resolve) {
                     transforms = resolve->ReadResolved(tasks);
                     statistics.RecomputedTransforms = transforms->GetRecomputedCount();
+                } else {
+                    transforms = previous->Transforms;
                 }
+                data->Transforms = transforms;
                 std::vector<RenderObjectId> updated;
                 std::vector<RenderObjectId> removed;
                 std::vector<RenderObjectId> updatedViews;
                 std::vector<RenderObjectId> removedViews;
                 data->Views.reserve(inputs->Views.size());
                 data->Objects.reserve(inputs->Objects.size());
-                std::map<std::uint32_t, const RenderView*> oldViews;
-                std::map<std::uint32_t, const RenderObject*> oldObjects;
-                if (previous) {
-                    for (const auto& view: previous->Views) {
-                        oldViews.emplace(view.Id.Index, &view);
-                    }
-                    for (const auto& object: previous->Objects) {
-                        oldObjects.emplace(object.Id.Index, &object);
-                    }
-                }
+                const auto oldViews =
+                        previous ? std::span<const RenderView>{previous->Views} : std::span<const RenderView>{};
+                const auto oldObjects =
+                        previous ? std::span<const RenderObject>{previous->Objects} : std::span<const RenderObject>{};
+                std::size_t oldViewIndex = 0;
+                std::size_t oldObjectIndex = 0;
                 for (const auto& input: inputs->Views) {
                     const auto id = MakeRenderObjectId(input.Entity);
-                    const auto found = oldViews.find(id.Index);
-                    const RenderView* old = found == oldViews.end() ? nullptr : found->second;
-                    NMath::Mat4 matrix = transforms ? transforms->Get({worldId, input.Entity}).Value *
-                                                              NMath::ComposeTransform(input.Transform.Value)
-                                                    : *old->ResolvedWorldTransform;
+                    const RenderView* old = FindPrevious(oldViews, oldViewIndex, id, removedViews);
+                    const NMath::Mat4 matrix = resolve || Contains(transformChanges, input.Entity)
+                                                     ? transforms->Get({worldId, input.Entity}).Value *
+                                                               NMath::ComposeTransform(input.Transform.Value)
+                                                     : *old->ResolvedWorldTransform;
                     const auto& projection = input.Camera.Projection;
                     const bool same = old && old->Id == id && SameMatrix(*old->ResolvedWorldTransform, matrix) &&
                                       old->Projection.VerticalFovRadians == projection.VerticalFovRadians &&
@@ -687,27 +699,20 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
                     if (old && old->Id != id) {
                         removedViews.push_back(old->Id);
                     }
-                    oldViews.erase(id.Index);
                 }
-                for (const auto& [index, old]: oldViews) {
-                    (void)index;
-                    removedViews.push_back(old->Id);
+                for (; oldViewIndex < oldViews.size(); ++oldViewIndex) {
+                    removedViews.push_back(oldViews[oldViewIndex].Id);
                 }
+                data->ObjectMatrices.reserve(inputs->Objects.size());
                 for (std::size_t index = 0; index < inputs->Objects.size(); ++index) {
                     const auto& input = inputs->Objects[index];
                     const auto id = MakeRenderObjectId(input.Entity);
-                    const auto found = oldObjects.find(id.Index);
-                    const RenderObject* old = found == oldObjects.end() ? nullptr : found->second;
-                    NMath::Mat4 matrix = transforms ? transforms->Get({worldId, input.Entity}).Value *
-                                                              NMath::ComposeTransform(input.Transform.Value)
-                                       : old        ? *old->ResolvedWorldTransform
-                                                    : NMath::Mat4::Identity();
-                    // A skipped object also needs its matrix for a future readiness transition.
-                    if (!transforms && !old) {
-                        // Cached input already owns the last resolved matrix (see publication below).
-                        matrix = previous->Matrices.at(input.Entity.Index);
-                    }
-                    data->Matrices.emplace(input.Entity.Index, matrix);
+                    const RenderObject* old = FindPrevious(oldObjects, oldObjectIndex, id, removed);
+                    const NMath::Mat4 matrix = resolve || Contains(transformChanges, input.Entity)
+                                                     ? transforms->Get({worldId, input.Entity}).Value *
+                                                               NMath::ComposeTransform(input.Transform.Value)
+                                                     : previous->ObjectMatrices[index];
+                    data->ObjectMatrices.push_back(matrix);
                     auto& captured = (*resources)[index];
                     data->Selections.push_back({captured.Mesh.Lease ? captured.Mesh.Lease->GetVersion() : 0,
                                                 captured.Material.Lease ? captured.Material.Lease->GetVersion() : 0,
@@ -720,7 +725,15 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
                                       captured.Material.Lease->GetVersion() == old->Material.GetVersion() &&
                                       SameMatrix(*old->ResolvedWorldTransform, matrix);
                     const std::size_t before = data->Objects.size();
-                    AppendObject(id, input.Transform.Value, captured, data->Objects, data->Diagnostics);
+                    if (same && captured.Policy == EResourceReadinessPolicy::SKIP_OBJECT) {
+                        data->Objects.push_back({old->Id,
+                                                 old->WorldTransform,
+                                                 RenderWorldBuilder::Retain(old->Mesh),
+                                                 RenderWorldBuilder::Retain(old->Material),
+                                                 matrix});
+                    } else {
+                        AppendObject(id, input.Transform.Value, captured, data->Objects, data->Diagnostics);
+                    }
                     if (before != data->Objects.size()) {
                         auto& object = data->Objects.back();
                         object.ResolvedWorldTransform = matrix;
@@ -733,11 +746,9 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
                     if (old && (old->Id != id || before == data->Objects.size())) {
                         removed.push_back(old->Id);
                     }
-                    oldObjects.erase(id.Index);
                 }
-                for (const auto& [index, old]: oldObjects) {
-                    (void)index;
-                    removed.push_back(old->Id);
+                for (; oldObjectIndex < oldObjects.size(); ++oldObjectIndex) {
+                    removed.push_back(oldObjects[oldObjectIndex].Id);
                 }
                 const bool sameDiagnostics = previous && data->Diagnostics.size() == previous->Diagnostics.size() &&
                                              std::equal(data->Diagnostics.begin(),
