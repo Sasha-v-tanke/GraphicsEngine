@@ -372,4 +372,35 @@ TEST(EcsStructuralCommit, ConcurrentQuiescentQueryPreventsUserPublication) {
     world.CommitPending();
     EXPECT_FALSE(world.HasComponent<Value>(entity.Identity));
 }
+
+TEST(EcsStructuralCommit, SubmittedSystemProducerReportsPendingDestroyLikeDirectIntake) {
+    for (unsigned workers: {0U, 1U, 2U}) {
+        for (bool useProducer: {false, true}) {
+            NEcs::World world;
+            const auto entity = world.GetEntityReference(world.CreateEntity());
+            world.RegisterSystem(
+                    {},
+                    [&](NEcs::World& current) {
+                        if (useProducer) {
+                            auto producer = current.CreateDeferredStructuralCommandBuffer(1);
+                            NEcs::World::QueueDestroyEntity(producer, entity);
+                            current.SubmitDeferredStructuralCommands(std::move(producer));
+                        } else {
+                            current.QueueDestroyEntity(entity);
+                        }
+                        EXPECT_EQ(current.GetStructuralState(entity), State::PENDING_DESTROY);
+                        EXPECT_TRUE(current.IsAlive(entity.Identity));
+                    },
+                    NEcs::SystemSchedule{.Id = 10},
+                    10);
+            if (workers == 0) {
+                world.RunSystems();
+            } else {
+                NCommon::TaskSystem tasks{workers};
+                world.RunSystems(tasks);
+            }
+            EXPECT_EQ(world.GetStructuralState(entity), State::DESTROYED);
+        }
+    }
+}
 } // namespace

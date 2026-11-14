@@ -1612,8 +1612,15 @@ World::EStructuralState World::GetStructuralState(EntityReference entity) const 
             return EStructuralState::PENDING_DESTROY;
         }
     }
-    if (const auto* invocation = GetCurrentSystemInvocation(); invocation && destroys(invocation->Commands)) {
-        return EStructuralState::PENDING_DESTROY;
+    if (const auto* invocation = GetCurrentSystemInvocation()) {
+        if (destroys(invocation->Commands)) {
+            return EStructuralState::PENDING_DESTROY;
+        }
+        for (const auto& batch: invocation->WorkerBatches) {
+            if (destroys(batch.Commands)) {
+                return EStructuralState::PENDING_DESTROY;
+            }
+        }
     }
     return EStructuralState::ALIVE;
 }
