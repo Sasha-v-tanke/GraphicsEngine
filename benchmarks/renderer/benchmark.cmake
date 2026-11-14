@@ -1,6 +1,7 @@
 BENCHMARK(Renderer)
 
 SOURCES(
+    extraction.cpp
     preparation.cpp
 )
 

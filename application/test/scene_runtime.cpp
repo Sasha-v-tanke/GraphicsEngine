@@ -4,6 +4,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <semaphore>
 #include <stop_token>
 #include <thread>
 #include <vector>
@@ -296,6 +297,163 @@ TEST(SceneRuntime, ThrowingPublicationAbortsReservationAndStopDrainsBoundScene) 
     engine->Stop();
     EXPECT_TRUE(lifetime.expired());
     EXPECT_FALSE(engine->GetLastError());
+}
+
+TEST(SceneRuntime, IncrementalExtractionRetiresBeforeNextUpdateWhileDrawAndStopOverlap) {
+    for (const std::size_t workers: {2U, 4U}) {
+        for (const std::size_t slots: {2U, 3U}) {
+            NResources::ResourceManager resources;
+            const auto mesh = resources.Request<NResources::MeshData>({"mesh", "overlap"});
+            resources.PublishReady(resources.BeginLoading(mesh), std::make_shared<NResources::MeshData>());
+            const auto material = resources.Request<NGraphics::Material>({"material", "overlap"});
+            resources.PublishReady(
+                    resources.BeginLoading(material),
+                    std::make_shared<NGraphics::Material>(NResources::ResourceIdentity{"pipeline", "overlap"}));
+            NScene::SceneManager scenes;
+            const auto scene = scenes.CreateScene("overlap");
+            scenes.Activate(scene);
+            auto source = scenes.Acquire(scene);
+            auto& world = source->GetWorld();
+            const auto camera = world.CreateEntity();
+            world.AddComponent<NRenderer::TransformComponent>(camera);
+            world.AddComponent<NRenderer::CameraComponent>(camera);
+            const auto object = world.CreateEntity();
+            world.AddComponent<NRenderer::TransformComponent>(object);
+            world.AddComponent<NRenderer::RenderableComponent>(
+                    object,
+                    NRenderer::RenderableComponent{.Mesh = mesh, .Material = material});
+            std::binary_semaphore releaseDraw{0};
+            std::promise<void> firstEntered;
+            std::promise<void> secondEntered;
+            auto firstReady = firstEntered.get_future();
+            auto secondReady = secondEntered.get_future();
+            std::atomic_uint draws = 0;
+            const NRenderer::RenderWorld* first = nullptr;
+            const NRenderer::RenderWorld* second = nullptr;
+            auto runtime = std::make_unique<NApplication::NRuntime::SceneRuntime>(
+                    resources,
+                    [&](const auto&, const auto&, const NRenderer::RenderWorld& snapshot, const auto&) {
+                        if (draws.fetch_add(1) == 0) {
+                            first = &snapshot;
+                            firstEntered.set_value();
+                            releaseDraw.acquire();
+                        } else {
+                            second = &snapshot;
+                            secondEntered.set_value();
+                        }
+                    });
+            auto* host = runtime.get();
+            auto engine = NEngine::NRuntime::EngineFactory::Create({slots, workers}, std::move(runtime));
+            struct ReleaseGuard {
+                std::binary_semaphore& Gate;
+                bool Released = false;
+                ~ReleaseGuard() {
+                    if (!Released) {
+                        Gate.release();
+                    }
+                }
+            } guard{releaseDraw};
+            engine->Start();
+            const auto admit = [&](float x) {
+                std::optional<NEngine::FrameKey> frame;
+                if (!Eventually([&] {
+                        frame = host->TryBeginFrame(*engine, scenes, [&](auto&) {
+                            world.GetComponent<NRenderer::TransformComponent>(object).Value.Translation.X = x;
+                        });
+                        return frame.has_value();
+                    })) {
+                    return false;
+                }
+                return engine->CompleteUserUpdate(*frame) && engine->Draw();
+            };
+            ASSERT_TRUE(admit(1));
+            ASSERT_EQ(firstReady.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            // Frame N Draw remains executing while frame N+1 mutates and extracts the same World/cache.
+            ASSERT_TRUE(admit(2));
+            ASSERT_EQ(secondReady.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            ASSERT_NE(first, nullptr);
+            ASSERT_NE(second, nullptr);
+            EXPECT_FLOAT_EQ((*first->GetObjects()[0].ResolvedWorldTransform)(0, 3), 1);
+            EXPECT_FLOAT_EQ((*second->GetObjects()[0].ResolvedWorldTransform)(0, 3), 2);
+            EXPECT_EQ(second->GetDelta().PreviousFrame, first->GetFrame());
+            EXPECT_FALSE(engine->GetLastError());
+            auto stopped = std::async(std::launch::async, [&] { engine->Stop(); });
+            EXPECT_TRUE(Eventually([&] { return engine->GetState() == NEngine::EEngineState::STOPPING; }));
+            EXPECT_EQ(stopped.wait_for(std::chrono::milliseconds{5}), std::future_status::timeout);
+            releaseDraw.release();
+            guard.Released = true;
+            ASSERT_EQ(stopped.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            stopped.get();
+            EXPECT_FALSE(engine->GetLastError());
+        }
+    }
+}
+
+class HeldIncrementalRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    NResources::ResourceManager Resources;
+    NEcs::World World;
+    NRenderer::NInternal::IncrementalExtraction Cache;
+    NCommon::TaskSystem* Tasks = nullptr;
+    std::promise<void> Entered;
+    std::binary_semaphore Release{0};
+    bool Drained = false;
+
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+    }
+    void ScheduleUpdate(const NEngine::NRuntime::FrameContext&,
+                        NCommon::TaskSystem& tasks,
+                        std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) override {
+        Tasks = &tasks;
+        completion->Finish();
+    }
+    NCommon::TaskHandle ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,
+                                        NCommon::TaskContext& task) override {
+        return Cache.Schedule(World, Resources, frame.GetStorage(), *Tasks, task, [&](const auto&) {
+            Entered.set_value();
+            Release.acquire();
+        });
+    }
+    void Draw(const NEngine::NRuntime::FrameContext&) override {
+    }
+    void Drain() noexcept override {
+        Cache.Reset();
+        Drained = true;
+    }
+};
+
+TEST(SceneRuntime, StopDrainsRunningIncrementalPublicationBeforeNoexceptReset) {
+    for (const std::size_t workers: {1U, 4U}) {
+        for (const std::size_t slots: {2U, 3U}) {
+            auto runtime = std::make_unique<HeldIncrementalRuntime>();
+            auto& observed = *runtime;
+            auto entered = observed.Entered.get_future();
+            auto engine = NEngine::NRuntime::EngineFactory::Create({slots, workers}, std::move(runtime));
+            struct ReleaseGuard {
+                HeldIncrementalRuntime& Runtime;
+                bool Released = false;
+                ~ReleaseGuard() {
+                    if (!Released) {
+                        Runtime.Release.release();
+                    }
+                }
+            } guard{observed};
+            engine->Start();
+            ASSERT_TRUE(engine->Update());
+            ASSERT_TRUE(engine->Draw());
+            ASSERT_EQ(entered.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            EXPECT_FALSE(engine->TryBeginFrame());
+            auto stopped = std::async(std::launch::async, [&] { engine->Stop(); });
+            EXPECT_TRUE(Eventually([&] { return engine->GetState() == NEngine::EEngineState::STOPPING; }));
+            EXPECT_EQ(stopped.wait_for(std::chrono::milliseconds{5}), std::future_status::timeout);
+            observed.Release.release();
+            guard.Released = true;
+            ASSERT_EQ(stopped.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            stopped.get();
+            EXPECT_TRUE(observed.Drained);
+            EXPECT_FALSE(engine->GetLastError());
+        }
+    }
 }
 
 INSTANTIATE_TEST_SUITE_P(Workers, SceneSwitching, testing::Values(1U, 4U));

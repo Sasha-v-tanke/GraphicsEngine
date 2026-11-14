@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <engine/runtime/frame_runtime.h>
+#include <renderer/extraction.h>
 #include <renderer/renderer.h>
 #include <scene/scene_manager.h>
 
@@ -60,6 +61,7 @@ private:
     std::mutex m_mutex;
     std::vector<std::shared_ptr<Binding>> m_slots;
     NEcs::World m_empty;
+    NRenderer::NInternal::IncrementalExtraction m_extraction;
 };
 
 } // namespace NApplication::NRuntime

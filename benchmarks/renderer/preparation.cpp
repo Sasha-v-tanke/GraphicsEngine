@@ -8,11 +8,8 @@
 #include <renderer/extraction.h>
 #include <renderer/render_components.h>
 #include <renderer/renderer.h>
+#include <resources/mesh_data.h>
 #include <resources/resource_manager.h>
-
-namespace NResources {
-class MeshData {};
-} // namespace NResources
 
 namespace {
 

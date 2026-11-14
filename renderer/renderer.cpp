@@ -1,6 +1,7 @@
 #include "renderer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -68,7 +69,47 @@ namespace {
     const NMath::Mat4 inverseRotation = NMath::ToMatrix({-rotation.X, -rotation.Y, -rotation.Z, rotation.W});
     const NMath::Mat4 inverseTranslation = NMath::ComposeTransform(
             {.Translation = {-transform.Translation.X, -transform.Translation.Y, -transform.Translation.Z}});
-    const NMath::Mat4 matrix = NMath::Perspective(projection) * inverseScale * inverseRotation * inverseTranslation;
+    NMath::Mat4 inverse = inverseScale * inverseRotation * inverseTranslation;
+    if (view.ResolvedWorldTransform) {
+        std::array<std::array<double, 8>, 4> rows{};
+        for (std::size_t row = 0; row < 4; ++row) {
+            for (std::size_t column = 0; column < 4; ++column) {
+                rows[row][column] = (*view.ResolvedWorldTransform)(row, column);
+            }
+            rows[row][row + 4] = 1;
+        }
+        for (std::size_t column = 0; column < 4; ++column) {
+            std::size_t pivot = column;
+            for (std::size_t row = column + 1; row < 4; ++row) {
+                if (std::abs(rows[row][column]) > std::abs(rows[pivot][column])) {
+                    pivot = row;
+                }
+            }
+            if (rows[pivot][column] == 0 || !std::isfinite(rows[pivot][column])) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Singular resolved camera transform");
+            }
+            std::swap(rows[pivot], rows[column]);
+            const double divisor = rows[column][column];
+            for (double& value: rows[column]) {
+                value /= divisor;
+            }
+            for (std::size_t row = 0; row < 4; ++row) {
+                if (row == column) {
+                    continue;
+                }
+                const double factor = rows[row][column];
+                for (std::size_t entry = 0; entry < 8; ++entry) {
+                    rows[row][entry] -= factor * rows[column][entry];
+                }
+            }
+        }
+        for (std::size_t row = 0; row < 4; ++row) {
+            for (std::size_t column = 0; column < 4; ++column) {
+                inverse(row, column) = static_cast<float>(rows[row][column + 4]);
+            }
+        }
+    }
+    const NMath::Mat4 matrix = NMath::Perspective(projection) * inverse;
     for (float value: matrix.GetValues()) {
         if (!std::isfinite(value)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Nonfinite camera transform");
@@ -87,7 +128,8 @@ namespace {
             object.Mesh.GetVersion(),
             object.Material.GetResource(),
             object.Material.GetVersion(),
-            ViewProjection(view)};
+            ViewProjection(view),
+            object.ResolvedWorldTransform};
 }
 
 [[nodiscard]] DrawCommandData* AllocateCommands(std::size_t count, std::pmr::memory_resource& memory) {
