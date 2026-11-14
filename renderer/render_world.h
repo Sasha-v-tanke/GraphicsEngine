@@ -131,7 +131,7 @@ private:
                 const NCommon::ResourceUseRecord* resourceUseRecords,
                 std::size_t resourceUseRecordCount,
                 std::span<const ResourceReadinessDiagnostic> resourceDiagnostics,
-                RenderWorldDelta delta = {}) noexcept
+                const RenderWorldDelta& delta = {}) noexcept
         : m_frame(frame)
         , m_views(views, viewCount)
         , m_objects(objects, objectCount)

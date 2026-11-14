@@ -117,7 +117,7 @@ public:
                                                   const Objects& objects,
                                                   const Records& resourceUseRecords,
                                                   const Diagnostics& diagnostics,
-                                                  RenderWorldDelta delta = {}) {
+                                                  const RenderWorldDelta& delta = {}) {
         void* storage = memory.allocate(sizeof(RenderWorld), alignof(RenderWorld));
 
         return *::new (storage) RenderWorld{frame,
@@ -356,7 +356,7 @@ struct ExtractionData {
 
 const RenderWorld& PublishExtraction(const NEngine::NController::FrameStorage& storage,
                                      const std::shared_ptr<const ExtractionData>& data,
-                                     RenderWorldDelta delta) {
+                                     const RenderWorldDelta& delta) {
     (void)storage.Emplace<std::shared_ptr<const ExtractionData>>(data);
     const auto frame = storage.GetFrame();
     return RenderWorldBuilder::Build(storage.GetMemoryResource(),
@@ -512,6 +512,8 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
     const auto objectDomain = WorldChangeAccess::Domain<RenderableComponent>(world);
     (void)WorldChangeAccess::PublishEpoch(world);
     const auto changes = WorldChangeAccess::CaptureSnapshot(world);
+    // A cursor belongs to its tracker lifetime, not the World address. Rebase before
+    // CaptureChanges rejects a foreign cursor; lost bounded history remains full-dirty.
     const auto since =
             m_state->Cursor.TrackerId == changes.GetCursor().TrackerId ? m_state->Cursor : NCommon::ChangeCursor{};
     const auto transformChanges = changes.CaptureChanges(since, transformDomain);
@@ -565,6 +567,8 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
     ExtractionStatistics statistics{.FullRebuild = full};
     std::vector<CapturedResources> capturedResources;
     capturedResources.reserve(inputs->Objects.size());
+    // Resource publication has an independent clock: poll even when ECS is clean,
+    // but sample each shared handle once so every candidate selects the same version.
     ObservationCache<NResources::MeshData> meshes;
     ObservationCache<NGraphics::Material> materials;
     for (const auto& input: inputs->Objects) {
@@ -586,6 +590,8 @@ NCommon::TaskHandle IncrementalExtraction::Schedule(NEcs::World& world,
     auto resolver = m_state->Resolver;
     std::optional<NEcs::NInternal::TransformResolve> resolve;
     std::vector<NCommon::TaskHandle> dependencies{task.GetTask()};
+    // Scoped flat TRS edits reuse the immutable hierarchy result. Local hierarchy
+    // writes contribute coarse invalidation, so only that path needs a new resolve.
     if (full) {
         if (!resolver || m_state->WorldId != worldId) {
             resolver = std::make_shared<NEcs::NInternal::TransformResolver>();
