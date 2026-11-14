@@ -18,4 +18,4 @@ PRIVATE_DEPENDS(
     Thread
 )
 
-RECURSE(retirement)
+RECURSE(retirement registration)

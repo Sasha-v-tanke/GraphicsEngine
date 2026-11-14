@@ -27,6 +27,7 @@ class ResourceManager final: private NCommon::NonTransferable {
 public:
     ResourceManager();
 
+    // Registration is atomic: allocation failure preserves identities, handles and generations.
     template<typename T>
     [[nodiscard]] ResourceHandle<T> Request(ResourceIdentity identity) {
         RetiredPayload retired;
