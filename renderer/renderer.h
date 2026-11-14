@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory_resource>
+#include <optional>
 #include <span>
 
 #include <GraphicsEngine/lib/thread/task/task_system.h>

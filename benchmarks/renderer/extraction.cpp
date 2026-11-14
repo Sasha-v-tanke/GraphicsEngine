@@ -1,6 +1,7 @@
 #include <memory>
 
 #include <benchmark/benchmark.h>
+#include <ecs/internal/scoped_batch.h>
 #include <ecs/world.h>
 #include <engine/controller/frame_scheduler.h>
 #include <graphics/material.h>
@@ -31,6 +32,20 @@ void BM_RenderWorldExtraction(benchmark::State& state) {
     NCommon::TaskSystem tasks{static_cast<std::size_t>(state.range(2))};
     NRenderer::NInternal::IncrementalExtraction cache;
     NEngine::NController::FrameScheduler frames{NEngine::EngineConfig{.MaxActiveFrames = 1}};
+    if (state.range(3) != 0) {
+        NEcs::Entity target;
+        std::as_const(world).Query<NRenderer::RenderableComponent>(
+                [&](NEcs::Entity entity, const auto&) { target = entity; });
+        const auto reference = world.GetEntityReference(target);
+        NEcs::NInternal::ScopedWorldAccess::Register(
+                world,
+                {NEcs::NInternal::ScopedWrite<NRenderer::TransformComponent>(
+                        NEcs::NInternal::BatchScope::Entity(reference))},
+                [reference](NEcs::NInternal::ScopedBatchContext& context) {
+                    context.Write<NRenderer::TransformComponent>().Get(reference).Value.Translation.X += 1;
+                },
+                NEcs::SystemSchedule{.Id = 1});
+    }
     bool warm = false;
     for ([[maybe_unused]] auto _: state) {
         state.PauseTiming();
@@ -41,6 +56,9 @@ void BM_RenderWorldExtraction(benchmark::State& state) {
         frames.SignalDraw(frame);
         frames.BeginFinalize(frame);
         const auto storage = frames.GetFrameStorage(frame);
+        if (state.range(3) != 0) {
+            world.RunSystems(tasks);
+        }
         if (!warm && state.range(1) != 0) {
             NCommon::TaskHandle initial;
             const auto root = tasks.Submit([&](NCommon::TaskContext& task) {
@@ -79,6 +97,6 @@ void BM_RenderWorldExtraction(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations() * state.range(0));
 }
 
-BENCHMARK(BM_RenderWorldExtraction)->ArgsProduct({{1024, 16384}, {0, 1}, {1, 4}})->UseRealTime();
+BENCHMARK(BM_RenderWorldExtraction)->ArgsProduct({{1024, 16384}, {0, 1}, {1, 4}, {0, 1}})->UseRealTime();
 
 } // namespace
