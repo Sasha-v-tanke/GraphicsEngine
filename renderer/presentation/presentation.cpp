@@ -19,10 +19,12 @@
 #include <graphics/vulkan/memory.h>
 #include <graphics/vulkan/pipeline_manager.h>
 #include <graphics/vulkan/rendering_scope.h>
+#include <graphics/vulkan/resource_conversion.h>
 #include <graphics/vulkan/upload_manager.h>
 #include <lib/common/error/exception.h>
 #include <math/transform.h>
 #include <renderer/execution_validation.h>
+#include <renderer/presentation/graph_state.h>
 
 namespace NRenderer {
 namespace {
@@ -101,6 +103,7 @@ public:
         , Pipelines(std::make_shared<NVulkan::VulkanPipelineManager>(Device, Physical))
         , Descriptors(
                   std::make_shared<NVulkan::VulkanDescriptorManager>(Device.GetHandle(), Device.GetDescriptorLimits()))
+        , Transients(config.MaxActiveFrames)
         , Swapchain(Device, Physical, Surface.GetHandle(), window.GetFramebufferSize())
         , Path(Device, Swapchain, config.MaxActiveFrames)
         , MaxFrames(config.MaxActiveFrames) {
@@ -153,6 +156,18 @@ public:
     std::shared_ptr<NVulkan::VulkanDescriptorManager> Descriptors;
     std::vector<Mesh> Meshes;
     std::vector<Material> Materials;
+    struct TransientImage {
+        VkDevice Device = VK_NULL_HANDLE;
+        GraphImageDescription Description;
+        NVulkan::VulkanImageAllocation Allocation;
+        VkImageView View = VK_NULL_HANDLE;
+        ~TransientImage() {
+            vkDestroyImageView(Device, View, nullptr);
+        }
+    };
+    // Each ring slot is reused only after Path observes its exact GPU completion.
+    // Shared use records also retain replaced allocations across failed present.
+    std::vector<std::vector<std::shared_ptr<TransientImage>>> Transients;
     NVulkan::VulkanSwapchain Swapchain;
     NVulkan::VulkanClearPresentPath Path;
     std::size_t MaxFrames;
@@ -180,6 +195,40 @@ public:
         if (found == Materials.end())
             Invalid("Draw material version was not prepared");
         return *found;
+    }
+
+    std::shared_ptr<TransientImage>
+    AcquireTransient(std::size_t slot, std::size_t allocation, const GraphImageDescription& description) {
+        auto& pool = Transients.at(slot);
+        if (allocation >= pool.size()) {
+            pool.resize(allocation + 1);
+        }
+        auto& cached = pool[allocation];
+        if (cached && cached->Description.Extent.Width == description.Extent.Width &&
+            cached->Description.Extent.Height == description.Extent.Height &&
+            cached->Description.Format == description.Format && cached->Description.Usage == description.Usage) {
+            return cached;
+        }
+        auto created = std::make_shared<TransientImage>();
+        created->Device = Device.GetHandle();
+        created->Description = description;
+        const NGraphics::ImageDescriptor image{.Extent = description.Extent,
+                                               .Format = description.Format == NGraphics::EPixelFormat::RGBA8_UNORM
+                                                               ? NGraphics::EImageFormat::RGBA8_UNORM
+                                                               : NGraphics::EImageFormat::BGRA8_UNORM,
+                                               .Usage = description.Usage,
+                                               .Access = NGraphics::EImageAccess::GpuRead |
+                                                         NGraphics::EImageAccess::GpuWrite,
+                                               .Lifetime = NGraphics::EImageLifetime::FrameLocal};
+        created->Allocation = NVulkan::CreateVulkanImage(Memory, image);
+        const VkImageViewCreateInfo view{.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                         .image = created->Allocation.GetImage(),
+                                         .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                         .format = NVulkan::ToVulkanFormat(image.Format),
+                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        Check(vkCreateImageView(Device.GetHandle(), &view, nullptr, &created->View));
+        cached = created;
+        return created;
     }
 
     void Record(VkCommandBuffer command,
@@ -210,6 +259,24 @@ public:
                     (void)FindMesh(draw);
                     return FindMaterial(draw).Key.GetDescriptor();
                 });
+        std::vector<std::pair<GraphResourceId, std::shared_ptr<TransientImage>>> transients;
+        for (const GraphResourceLifetime& lifetime: graph.GetLifetimes()) {
+            if (lifetime.Allocation) {
+                auto transient = AcquireTransient(frame.FrameSlotIndex,
+                                                  *lifetime.Allocation,
+                                                  graph.GetResource(lifetime.Resource).ImageDescription);
+                uses.push_back(transient);
+                transients.emplace_back(lifetime.Resource, std::move(transient));
+            }
+        }
+        const auto nativeImage = [&](GraphResourceId resource) {
+            const auto found = std::ranges::find(transients, resource, [](const auto& entry) { return entry.first; });
+            return found == transients.end() ? image : found->second->Allocation.GetImage();
+        };
+        const auto nativeView = [&](GraphResourceId resource) {
+            const auto found = std::ranges::find(transients, resource, [](const auto& entry) { return entry.first; });
+            return found == transients.end() ? view : found->second->View;
+        };
         const VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                              .pNext = nullptr,
                                              .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -218,25 +285,46 @@ public:
         NVulkan::VulkanResourceStateTracker tracker;
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         tracker.ImportImage(image, range, NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Undefined));
-        for (const auto& pass: graph.GetPasses()) {
-            if (const auto barrier = tracker.TransitionImage(
-                        {image, NVulkan::EVulkanResourceUsage::ColorAttachmentReadWrite, range})) {
-                NVulkan::RecordVulkanResourceBarrier(command, *barrier);
+        for (const auto& entry: transients) {
+            tracker.ImportImage(entry.second->Allocation.GetImage(),
+                                range,
+                                NVulkan::MakeVulkanImageState(NVulkan::EVulkanResourceUsage::Undefined));
+        }
+        std::size_t transitionIndex = 0;
+        const auto transitions = graph.GetTransitions();
+        const auto applyTransitions = [&](std::size_t passIndex) {
+            while (transitionIndex < transitions.size() && transitions[transitionIndex].PassIndex == passIndex) {
+                const GraphTransition& transition = transitions[transitionIndex++];
+                if (const auto barrier = tracker.TransitionImage(
+                            {nativeImage(transition.Resource),
+                             NInternal::VulkanUsage(transition.After, transition.ReadsAttachment),
+                             range})) {
+                    NVulkan::RecordVulkanResourceBarrier(command, *barrier);
+                }
             }
+        };
+        for (std::size_t passIndex = 0; passIndex < graph.GetPasses().size(); ++passIndex) {
+            const auto& pass = graph.GetPasses()[passIndex];
+            applyTransitions(passIndex);
             const auto& color = pass.Description.ColorAttachments[0];
+            const auto& extent = graph.GetResource(color.Resource).ImageDescription.Extent;
+            const VkExtent2D renderExtent{extent.Width, extent.Height};
             VkClearColorValue clear{};
             std::copy(color.ClearColor.begin(), color.ClearColor.end(), clear.float32);
-            const NVulkan::VulkanColorAttachment attachment{view, Load(color.Load), Store(color.Store), clear};
+            const NVulkan::VulkanColorAttachment attachment{nativeView(color.Resource),
+                                                            Load(color.Load),
+                                                            Store(color.Store),
+                                                            clear};
             const NVulkan::VulkanRenderingScope rendering{command,
-                                                          {.offset = {}, .extent = plan.Extent},
+                                                          {.offset = {}, .extent = renderExtent},
                                                           std::span{&attachment, 1}};
             const VkViewport viewport{0,
                                       0,
-                                      static_cast<float>(plan.Extent.width),
-                                      static_cast<float>(plan.Extent.height),
+                                      static_cast<float>(renderExtent.width),
+                                      static_cast<float>(renderExtent.height),
                                       0,
                                       1};
-            const VkRect2D scissor{.offset = {}, .extent = plan.Extent};
+            const VkRect2D scissor{.offset = {}, .extent = renderExtent};
             vkCmdSetViewport(command, 0, 1, &viewport);
             vkCmdSetScissor(command, 0, 1, &scissor);
             for (const auto& draw: pass.Description.DrawCommands) {
@@ -277,9 +365,7 @@ public:
                 vkCmdDrawIndexed(command, static_cast<std::uint32_t>(mesh.Lease->GetIndices().size()), 1, 0, 0, 0);
             }
         }
-        if (const auto barrier = tracker.TransitionImage({image, NVulkan::EVulkanResourceUsage::Present, range})) {
-            NVulkan::RecordVulkanResourceBarrier(command, *barrier);
-        }
+        applyTransitions(graph.GetPasses().size());
         Check(vkEndCommandBuffer(command));
     }
 };

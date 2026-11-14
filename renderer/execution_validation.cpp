@@ -16,18 +16,38 @@ void ValidateColorExecution(
     const auto invalid = [](std::string_view message) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "{}", message);
     };
-    if (!target || !target->IsValid() || !resolve || graph.GetResources().size() != 1 ||
-        graph.GetResources()[0].Kind != EGraphResourceKind::SWAPCHAIN ||
-        graph.GetResources()[0].Swapchain.lock() != target ||
-        graph.GetResources()[0].InitialUsage != EResourceUsage::UNDEFINED || graph.GetPasses().empty()) {
-        invalid("Graph must import exactly the current acquired target in Undefined state");
+    if (!target || !target->IsValid() || !resolve || graph.GetPasses().empty()) {
+        invalid("Graph requires the current acquired target and executable passes");
+    }
+    std::size_t targets = 0;
+    for (const ImportedGraphResource& resource: graph.GetResources()) {
+        if (resource.Kind == EGraphResourceKind::SWAPCHAIN) {
+            if (resource.Swapchain.lock() != target || resource.InitialUsage != EResourceUsage::UNDEFINED) {
+                invalid("Graph must use exactly the acquired swapchain target in Undefined state");
+            }
+            ++targets;
+        } else if (resource.Lifetime != EGraphResourceLifetime::TRANSIENT ||
+                   resource.Kind != EGraphResourceKind::IMAGE ||
+                   resource.ImageDescription.Samples != NGraphics::ESampleCount::X1 ||
+                   (resource.ImageDescription.Format != NGraphics::EPixelFormat::RGBA8_UNORM &&
+                    resource.ImageDescription.Format != NGraphics::EPixelFormat::BGRA8_UNORM)) {
+            invalid("Color executor supports single-sample RGBA8/BGRA8 transient images and the acquired target");
+        }
+    }
+    if (targets != 1) {
+        invalid("Graph must import exactly the acquired target");
     }
     for (const auto& pass: graph.GetPasses()) {
         const auto& desc = pass.Description;
-        if (!desc.Reads.empty() || desc.Writes.size() != 1 || desc.ColorAttachments.size() != 1 ||
-            desc.DepthAttachment || desc.ColorAttachments[0].Resource != graph.GetResources()[0].Id) {
-            invalid("Unsupported graph pass resources; R3 requires one acquired color attachment");
+        if (desc.Writes.size() != 1 || desc.ColorAttachments.size() != 1 || desc.DepthAttachment) {
+            invalid("Color executor requires one color attachment per pass");
         }
+        for (const GraphResourceUse& read: desc.Reads) {
+            if (read.Usage != EResourceUsage::SAMPLED_READ) {
+                invalid("Unsupported color executor read usage");
+            }
+        }
+        const GraphImageDescription& attachment = graph.GetResource(desc.ColorAttachments[0].Resource).ImageDescription;
         for (const auto& draw: desc.DrawCommands) {
             if (!draw.Mesh.IsValid() || !draw.Material.IsValid() || draw.MeshVersion == 0 ||
                 draw.MaterialVersion == 0) {
@@ -39,8 +59,8 @@ void ValidateColorExecution(
                     invalid("Nonfinite draw transform");
             }
             const auto& pipeline = resolve(draw);
-            if (pipeline.ColorAttachmentFormats != std::vector{target->GetDescription().Format} ||
-                pipeline.Samples != target->GetDescription().Samples || pipeline.DepthState.TestEnabled ||
+            if (pipeline.ColorAttachmentFormats != std::vector{attachment.Format} ||
+                pipeline.Samples != attachment.Samples || pipeline.DepthState.TestEnabled ||
                 pipeline.DepthState.WriteEnabled ||
                 pipeline.DepthAttachmentFormat != NGraphics::EPixelFormat::UNDEFINED) {
                 invalid("Prepared draw pipeline is incompatible with the acquired color target");

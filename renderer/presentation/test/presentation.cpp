@@ -2,10 +2,12 @@
 
 #include <atomic>
 #include <string>
+#include <thread>
 
 #include <graphics/vulkan/test/wsi_result_override.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <renderer/presentation/graph_state.h>
 #include <samples/sample_5_triangle/scenario.h>
 #include <samples/sample_6_textured/scenario.h>
 #include <samples/sample_7_model/scenario.h>
@@ -242,4 +244,110 @@ TEST(GraphPresentation, AcquireRetriesDoNotBuildGraphsAndConsumedTargetsExpire) 
     }
     EXPECT_EQ(errors.load(), 0);
 }
+
+TEST(GraphPresentation, CompiledSemanticsLowerThroughSharedStateTracker) {
+    using NRenderer::EResourceUsage;
+    using NRenderer::NInternal::VulkanUsage;
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::COLOR_ATTACHMENT_WRITE, false)).AccessMask,
+              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::COLOR_ATTACHMENT_WRITE, true)).AccessMask,
+              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::DEPTH_STENCIL_WRITE, true)).Layout,
+              VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    EXPECT_EQ(NVulkan::MakeVulkanBufferState(VulkanUsage(EResourceUsage::VERTEX_READ)).StageMask,
+              VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT);
+    EXPECT_EQ(NVulkan::MakeVulkanBufferState(VulkanUsage(EResourceUsage::INDEX_READ)).AccessMask,
+              VK_ACCESS_2_INDEX_READ_BIT);
+    EXPECT_EQ(NVulkan::MakeVulkanBufferState(VulkanUsage(EResourceUsage::UNIFORM_READ)).AccessMask,
+              VK_ACCESS_2_UNIFORM_READ_BIT);
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::TRANSFER_SOURCE)).Layout,
+              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::TRANSFER_DESTINATION)).Layout,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::SAMPLED_READ)).AccessMask,
+              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    EXPECT_EQ(NVulkan::MakeVulkanImageState(VulkanUsage(EResourceUsage::PRESENT)).Layout,
+              VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+}
+
+TEST(GraphPresentation, TransientMultipassPoolingResizeAndFrameSlotsValidationClean) {
+    std::atomic<int> errors{0};
+    try {
+        NWindow::WindowRuntime runtime;
+        NWindow::Window window{NWindow::WindowConfig{NWindow::EWindowType::GLFW}};
+        for (std::size_t slots: {1U, 3U}) {
+            NRenderer::GraphPresentation presentation{window,
+                                                      {.MaxActiveFrames = slots,
+                                                       .RequireValidation = true,
+                                                       .ValidationErrorHandler = [&](std::string_view message) {
+                                                           ++errors;
+                                                           std::cerr << message << '\n';
+                                                       }}};
+            std::vector<NGraphics::CompletionPoint> completions;
+            for (std::size_t index = 0; index < 24; ++index) {
+                if (index == 12) {
+                    presentation.SetPresentationSize(128, 96);
+                }
+                const NRenderer::RenderFrameIdentity frame{.ApplicationFrameIndex = index,
+                                                           .FrameSlotIndex = index % slots,
+                                                           .Generation = index / slots + 1};
+                bool submitted = false;
+                for (std::size_t retry = 0; retry < 10000 && !submitted; ++retry) {
+                    const auto result = presentation.Render(frame, [&](const auto& target) {
+                        NRenderer::RenderGraphBuilder builder{frame};
+                        const auto output = builder.ImportSwapchain(target, NRenderer::EResourceUsage::UNDEFINED);
+                        const NRenderer::GraphImageDescription description{
+                                {32U + static_cast<std::uint32_t>(index % 2), 32, 1},
+                                NGraphics::EPixelFormat::RGBA8_UNORM,
+                                NGraphics::ESampleCount::X1,
+                                NGraphics::EImageUsage::ColorAttachment | NGraphics::EImageUsage::Sampled};
+                        const auto a = builder.CreateTransientImage(description);
+                        const auto b = builder.CreateTransientImage(description);
+                        const auto dead = builder.CreateTransientImage(description);
+                        const auto color = [&](NRenderer::GraphResourceId image) {
+                            NRenderer::GraphicsPassDescription pass;
+                            pass.Writes = {{image, NRenderer::EResourceUsage::COLOR_ATTACHMENT_WRITE}};
+                            pass.ColorAttachments = {{.Resource = image}};
+                            return pass;
+                        };
+                        (void)builder.AddGraphicsPass(color(dead));
+                        const auto first = builder.AddGraphicsPass(color(a));
+                        const auto second = builder.AddGraphicsPass(color(b));
+                        const auto final = builder.AddGraphicsPass(color(output));
+                        builder.AddDependency(first, second);
+                        builder.AddDependency(second, final);
+                        const auto graph = builder.Compile();
+                        EXPECT_EQ(graph.GetPasses().size(), 3);
+                        EXPECT_EQ(graph.GetLifetimes()[0].Allocation, graph.GetLifetimes()[1].Allocation);
+                        return graph;
+                    });
+                    if (result.Failure) {
+                        std::rethrow_exception(result.Failure);
+                    }
+                    if (result.Completion.IsValid()) {
+                        completions.push_back(result.Completion);
+                        submitted = true;
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+                ASSERT_TRUE(submitted);
+            }
+            for (const auto completion: completions) {
+                std::size_t retry = 0;
+                while (!presentation.IsCompleted(completion) && ++retry < 1000000) {
+                    std::this_thread::yield();
+                }
+                EXPECT_TRUE(presentation.IsCompleted(completion));
+            }
+        }
+    } catch (const NCommon::Exception& error) {
+        if (error.code() == NCommon::EError::UNSUPPORTED && errors.load() == 0) {
+            GTEST_SKIP() << error.GetMessage();
+        }
+        throw;
+    }
+    EXPECT_EQ(errors.load(), 0);
+}
+
 } // namespace

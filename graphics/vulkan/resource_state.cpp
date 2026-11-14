@@ -280,6 +280,19 @@ VulkanImageState MakeVulkanImageState(EVulkanResourceUsage usage, std::uint32_t 
                 .Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 .QueueFamilyIndex = queueFamilyIndex,
         };
+    case EVulkanResourceUsage::DepthStencilWrite:
+    case EVulkanResourceUsage::DepthStencilReadWrite:
+        return {.StageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                .AccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                              (usage == EVulkanResourceUsage::DepthStencilReadWrite
+                                       ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                                       : 0),
+                .Layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                .QueueFamilyIndex = queueFamilyIndex};
+    case EVulkanResourceUsage::VertexRead:
+    case EVulkanResourceUsage::IndexRead:
+    case EVulkanResourceUsage::UniformRead:
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Buffer-only image state");
     case EVulkanResourceUsage::ShaderSampledRead:
         return {
                 .StageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -325,6 +338,17 @@ VulkanBufferState MakeVulkanBufferState(EVulkanResourceUsage usage, std::uint32_
                 .AccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
                 .QueueFamilyIndex = queueFamilyIndex,
         };
+    case EVulkanResourceUsage::DepthStencilWrite:
+    case EVulkanResourceUsage::DepthStencilReadWrite:
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Image-only buffer state");
+    case EVulkanResourceUsage::VertexRead:
+        return {VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT,
+                VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+                queueFamilyIndex};
+    case EVulkanResourceUsage::IndexRead:
+        return {VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT, queueFamilyIndex};
+    case EVulkanResourceUsage::UniformRead:
+        return {VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_UNIFORM_READ_BIT, queueFamilyIndex};
     case EVulkanResourceUsage::ShaderSampledRead:
         return {
                 .StageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,

@@ -142,9 +142,9 @@ TEST(RenderGraph, IndependentPassesHaveStableDeclarationOrderAndRepeatableCompil
 
 TEST(RenderGraph, ExplicitOrderReordersIndependentPassesAndDeduplicatesEdges) {
     RenderGraphBuilder builder{FRAME};
-    const auto first = builder.AddGraphicsPass({});
-    const auto second = builder.AddGraphicsPass({});
-    const auto third = builder.AddGraphicsPass({});
+    const auto first = builder.AddGraphicsPass({.HasSideEffects = true});
+    const auto second = builder.AddGraphicsPass({.HasSideEffects = true});
+    const auto third = builder.AddGraphicsPass({.HasSideEffects = true});
     builder.AddDependency(third, first);
     builder.AddDependency(third, first);
     const auto graph = builder.Compile();
@@ -161,6 +161,7 @@ TEST(RenderGraph, BuildsRawWarWawAndReadReadDoesNotAddDependencies) {
     const auto image = builder.ImportImage(graphics, handle, EResourceUsage::UNDEFINED, EResourceUsage::SAMPLED_READ);
     const auto write = builder.AddGraphicsPass(ColorPass(image));
     GraphicsPassDescription sample;
+    sample.HasSideEffects = true;
     sample.Reads.push_back({image, EResourceUsage::SAMPLED_READ});
     const auto readA = builder.AddGraphicsPass(sample);
     const auto readB = builder.AddGraphicsPass(sample);
@@ -178,9 +179,9 @@ TEST(RenderGraph, BuildsRawWarWawAndReadReadDoesNotAddDependencies) {
 TEST(RenderGraph, RejectsCyclesSelfDependenciesAndForeignPasses) {
     RenderGraphBuilder builder{FRAME};
     RenderGraphBuilder foreign{FRAME};
-    const auto a = builder.AddGraphicsPass({});
-    const auto b = builder.AddGraphicsPass({});
-    const auto c = foreign.AddGraphicsPass({});
+    const auto a = builder.AddGraphicsPass({.HasSideEffects = true});
+    const auto b = builder.AddGraphicsPass({.HasSideEffects = true});
+    const auto c = foreign.AddGraphicsPass({.HasSideEffects = true});
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { builder.AddDependency(a, a); });
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { builder.AddDependency(a, c); });
     builder.AddDependency(a, b);
@@ -389,6 +390,7 @@ TEST(RenderGraph, BufferImportSupportsSemanticReadsAndTracksRecycledHandle) {
     const auto id = builder.ImportBuffer(graphics, buffer, EResourceUsage::VERTEX_READ, EResourceUsage::VERTEX_READ);
     GraphicsPassDescription pass;
     pass.Reads.push_back({id, EResourceUsage::VERTEX_READ});
+    pass.HasSideEffects = true;
     (void)builder.AddGraphicsPass(pass);
     const auto graph = builder.Compile();
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] {
@@ -488,6 +490,7 @@ TEST(RenderGraph, ReadAfterDiscardLoadRequiresSubsequentClear) {
             builder.ImportImage(graphics, handle, EResourceUsage::SAMPLED_READ, EResourceUsage::SAMPLED_READ);
     (void)builder.AddGraphicsPass(ColorPass(image, EAttachmentLoad::DISCARD));
     GraphicsPassDescription sample;
+    sample.HasSideEffects = true;
     sample.Reads.push_back({image, EResourceUsage::SAMPLED_READ});
     (void)builder.AddGraphicsPass(sample);
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)builder.Compile(); });
@@ -530,6 +533,139 @@ TEST(RenderGraph, TransferDestinationStateIsNotAWritePayload) {
     read.Reads.push_back({buffer, EResourceUsage::VERTEX_READ});
     (void)builder.AddGraphicsPass(read);
     ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)builder.Compile(); });
+}
+
+TEST(RenderGraph, CullsDeadTransientBranchesAndOverwrittenImportedOutput) {
+    RenderGraphBuilder builder{FRAME};
+    const auto target = Target();
+    const auto output = builder.ImportSwapchain(target, EResourceUsage::UNDEFINED);
+    const auto dead = builder.CreateTransientImage(TargetDescription());
+    const auto live = builder.CreateTransientImage(TargetDescription());
+    (void)builder.AddGraphicsPass(ColorPass(dead));
+    (void)builder.AddGraphicsPass(ColorPass(output));
+    const auto producer = builder.AddGraphicsPass(ColorPass(live));
+    auto final = ColorPass(output);
+    final.Reads.push_back({live, EResourceUsage::SAMPLED_READ});
+    const auto consumer = builder.AddGraphicsPass(final);
+    const auto graph = builder.Compile();
+    ASSERT_EQ(graph.GetPasses().size(), 2);
+    EXPECT_EQ(graph.GetPasses()[0].Id, producer);
+    EXPECT_EQ(graph.GetPasses()[1].Id, consumer);
+    EXPECT_EQ(graph.GetResources().size(), 2);
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graph.GetResource(dead); });
+    EXPECT_EQ(graph.GetResource(live).Lifetime, NRenderer::EGraphResourceLifetime::TRANSIENT);
+    EXPECT_EQ(graph.GetDependencies().size(), 1);
+}
+
+TEST(RenderGraph, PoolsOnlyCompatibleDisjointLifetimesAndAddsReuseOrdering) {
+    RenderGraphBuilder builder{FRAME};
+    const auto first = builder.CreateTransientImage(TargetDescription());
+    const auto overlapping = builder.CreateTransientImage(TargetDescription());
+    const auto reused = builder.CreateTransientImage(TargetDescription());
+    const auto different = builder.CreateTransientImage(TargetDescription(32));
+    auto firstPass = ColorPass(first);
+    firstPass.HasSideEffects = true;
+    const auto a = builder.AddGraphicsPass(firstPass);
+    auto secondPass = ColorPass(overlapping);
+    secondPass.Reads.push_back({first, EResourceUsage::SAMPLED_READ});
+    secondPass.HasSideEffects = true;
+    const auto b = builder.AddGraphicsPass(secondPass);
+    auto thirdPass = ColorPass(reused);
+    thirdPass.HasSideEffects = true;
+    const auto c = builder.AddGraphicsPass(thirdPass);
+    auto fourthPass = ColorPass(different);
+    fourthPass.HasSideEffects = true;
+    (void)builder.AddGraphicsPass(fourthPass);
+    const auto graph = builder.Compile();
+    const auto lifetimes = graph.GetLifetimes();
+    ASSERT_EQ(lifetimes.size(), 4);
+    EXPECT_EQ(lifetimes[0].FirstPass, 0);
+    EXPECT_EQ(lifetimes[0].LastPass, 1);
+    EXPECT_NE(lifetimes[0].Allocation, lifetimes[1].Allocation);
+    EXPECT_EQ(lifetimes[0].Allocation, lifetimes[2].Allocation);
+    EXPECT_NE(lifetimes[0].Allocation, lifetimes[3].Allocation);
+    EXPECT_NE(std::ranges::find(graph.GetDependencies(), NRenderer::GraphDependency{a, b}),
+              graph.GetDependencies().end());
+    EXPECT_NE(std::ranges::find(graph.GetDependencies(), NRenderer::GraphDependency{b, c}),
+              graph.GetDependencies().end());
+}
+
+TEST(RenderGraph, LoadAndExplicitDependenciesRetainProducersButClearDoesNot) {
+    RenderGraphBuilder builder{FRAME};
+    const auto target = Target();
+    const auto output = builder.ImportSwapchain(target, EResourceUsage::UNDEFINED);
+    const auto discarded = builder.AddGraphicsPass(ColorPass(output));
+    const auto prerequisite = builder.AddGraphicsPass({});
+    const auto clear = builder.AddGraphicsPass(ColorPass(output));
+    const auto load = builder.AddGraphicsPass(ColorPass(output, EAttachmentLoad::LOAD));
+    builder.AddDependency(prerequisite, load);
+    const auto graph = builder.Compile();
+    ASSERT_EQ(graph.GetPasses().size(), 3);
+    EXPECT_EQ(graph.GetPasses()[0].Id, prerequisite);
+    EXPECT_EQ(graph.GetPasses()[1].Id, clear);
+    EXPECT_EQ(graph.GetPasses()[2].Id, load);
+    EXPECT_TRUE(std::ranges::none_of(graph.GetPasses(), [&](const auto& pass) { return pass.Id == discarded; }));
+    const auto transitions = graph.GetTransitions();
+    ASSERT_EQ(transitions.size(), 3);
+    EXPECT_EQ(transitions[0].Before, EResourceUsage::UNDEFINED);
+    EXPECT_FALSE(transitions[0].ReadsAttachment);
+    EXPECT_EQ(transitions[1].Before, EResourceUsage::COLOR_ATTACHMENT_WRITE);
+    EXPECT_TRUE(transitions[1].ReadsAttachment);
+    EXPECT_EQ(transitions[2].After, EResourceUsage::PRESENT);
+    EXPECT_EQ(transitions[2].PassIndex, graph.GetPasses().size());
+}
+
+TEST(RenderGraph, RecordingRangesPartitionDrawsAndStayStableAcrossCompileAndFrameSlots) {
+    RenderGraphBuilder builder{FRAME};
+    const auto target = Target();
+    const auto output = builder.ImportSwapchain(target, EResourceUsage::UNDEFINED);
+    auto pass = ColorPass(output);
+    pass.DrawCommands.resize(155);
+    (void)builder.AddGraphicsPass(pass);
+    const auto graph = builder.Compile();
+    const auto repeated = builder.Compile();
+    const auto ranges = graph.GetRecordingRanges();
+    ASSERT_EQ(ranges.size(), 3);
+    std::size_t next = 0;
+    for (std::size_t index = 0; index < ranges.size(); ++index) {
+        EXPECT_EQ(ranges[index].PassIndex, 0);
+        EXPECT_EQ(ranges[index].FirstDraw, next);
+        EXPECT_LE(ranges[index].DrawCount, 64);
+        EXPECT_EQ(ranges[index].FirstDraw, repeated.GetRecordingRanges()[index].FirstDraw);
+        next += ranges[index].DrawCount;
+    }
+    EXPECT_EQ(next, pass.DrawCommands.size());
+}
+
+TEST(RenderGraph, UnusedImportedResourcesAreNotValidatedAtExecutionAndNeverPooled) {
+    auto graphics = MakeGraphics();
+    const auto handle = graphics.CreateImage(ImageDescription());
+    RenderGraphBuilder builder{FRAME};
+    const auto unused =
+            builder.ImportImage(graphics, handle, EResourceUsage::SAMPLED_READ, EResourceUsage::SAMPLED_READ);
+    const auto target = Target();
+    const auto output = builder.ImportSwapchain(target, EResourceUsage::UNDEFINED);
+    (void)builder.AddGraphicsPass(ColorPass(output));
+    const auto graph = builder.Compile();
+    graphics.DestroyImage(handle);
+    EXPECT_NO_THROW(graph.ValidateResources(FRAME));
+    EXPECT_EQ(graph.GetResources().size(), 1);
+    EXPECT_FALSE(graph.GetLifetimes()[0].Allocation);
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)graph.GetResource(unused); });
+}
+
+TEST(RenderGraph, DeepExplicitDagCullingIsIterativeAndDeterministic) {
+    RenderGraphBuilder builder{FRAME};
+    auto previous = builder.AddGraphicsPass({});
+    for (std::size_t index = 0; index < 10000; ++index) {
+        const auto next = builder.AddGraphicsPass({.HasSideEffects = index == 9999});
+        builder.AddDependency(previous, next);
+        previous = next;
+    }
+    const auto graph = builder.Compile();
+    ASSERT_EQ(graph.GetPasses().size(), 10001);
+    EXPECT_EQ(graph.GetPasses().back().Id, previous);
+    EXPECT_EQ(graph.GetDependencies().size(), 10000);
 }
 
 } // namespace
