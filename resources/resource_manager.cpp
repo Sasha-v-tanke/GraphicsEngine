@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 #include <lib/common/error/exception.h>
@@ -69,6 +70,12 @@ ResourceManager::Request(ResourceIdentity identity, std::type_index type, Retire
                               slotIndex);
     }
 
+    // Prepare the index before publishing a slot. Failed vector growth or index insertion
+    // leaves only an unoccupied slot; the commit below cannot throw or consume a generation.
+    static_assert(std::is_nothrow_move_assignable_v<ResourceIdentity>);
+    static_assert(std::is_nothrow_move_constructible_v<Entry>);
+    m_identityIndex.emplace(identity, slotIndex);
+
     ++entry.Generation;
     entry.Occupied = true;
     entry.Identity = std::move(identity);
@@ -78,8 +85,6 @@ ResourceManager::Request(ResourceIdentity identity, std::type_index type, Retire
     entry.PublishedVersion = 0;
     RetirePayload(entry, retired);
     entry.Failure.reset();
-
-    m_identityIndex.emplace(entry.Identity, slotIndex);
 
     return InternalHandle{
             .SlotIndex = slotIndex,
