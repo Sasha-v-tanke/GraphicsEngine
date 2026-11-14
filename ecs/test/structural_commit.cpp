@@ -1,4 +1,6 @@
 #include <memory>
+#include <optional>
+#include <semaphore>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -269,5 +271,68 @@ TEST(EcsStructuralCommit, ReentrantPublicationCannotOpenAnotherCommitOrIntake) {
     world.CommitPending();
     EXPECT_FALSE(world.IsExecutionPoisoned());
     EXPECT_TRUE(world.HasComponent<ReentrantCommit>(entity.Identity));
+}
+
+TEST(EcsStructuralCommit, ConcurrentProducersOwnDisjointPendingCommands) {
+    NEcs::World world;
+    world.BeginDeferredStructuralPhase({{.Order = 10, .EntityCreateCount = 1}, {.Order = 20, .EntityCreateCount = 1}});
+    auto first = world.CreateDeferredStructuralCommandBuffer(10);
+    auto second = world.CreateDeferredStructuralCommandBuffer(20);
+    NEcs::EntityReference low;
+    NEcs::EntityReference high;
+    std::binary_semaphore entered{0};
+    std::binary_semaphore release{0};
+    std::thread slow([&] {
+        low = world.QueueCreateEntity(first);
+        entered.release();
+        release.acquire();
+        NEcs::World::QueueAddComponent<Value>(first, low, 10);
+    });
+    std::thread fast([&] {
+        entered.acquire();
+        high = world.QueueCreateEntity(second);
+        NEcs::World::QueueAddComponent<Value>(second, high, 20);
+        release.release();
+    });
+    slow.join();
+    fast.join();
+    world.SubmitDeferredStructuralCommands(std::move(second));
+    world.SubmitDeferredStructuralCommands(std::move(first));
+    world.CommitPending();
+    EXPECT_EQ(world.GetComponent<Value>(low.Identity).Number, 10);
+    EXPECT_EQ(world.GetComponent<Value>(high.Identity).Number, 20);
+    EXPECT_LT(low.Identity.Index, high.Identity.Index);
+}
+
+TEST(EcsStructuralCommit, CancelClosesUserProducerAdmissionAndRetiresPendingCreate) {
+    auto world = std::make_shared<NEcs::World>();
+    world->BeginDeferredStructuralPhase({{.Order = 1, .EntityCreateCount = 1, .SystemOrder = 10}});
+    std::optional<NEcs::World::DeferredStructuralCommandBuffer> producer;
+    NEcs::EntityReference pending;
+    std::binary_semaphore entered{0};
+    world->RegisterSystem(
+            {},
+            [&](NEcs::World& current) {
+                producer.emplace(current.CreateDeferredStructuralCommandBuffer(1));
+                pending = current.QueueCreateEntity(*producer);
+                entered.release();
+            },
+            NEcs::SystemSchedule{.Id = 10},
+            10);
+    NCommon::TaskSystem tasks{1};
+    auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [](const auto&) {});
+    const auto run = prepared.GetHandle();
+    prepared.Start();
+    entered.acquire();
+    run.RequestCancel();
+    NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                       [&] { NEcs::World::QueueAddComponent<Value>(*producer, pending, 1); });
+    EXPECT_FALSE(run.IsTerminal());
+    producer.reset();
+    tasks.WaitIdle();
+    ASSERT_TRUE(run.TryGetOutcome());
+    EXPECT_EQ(run.TryGetOutcome()->Status, NEcs::NInternal::ESystemRunStatus::CANCELLED);
+    EXPECT_EQ(world->GetStructuralState(pending), State::DESTROYED);
+    EXPECT_FALSE(world->IsExecutionPoisoned());
 }
 } // namespace
