@@ -52,6 +52,72 @@ public:
 
     class DeferredStructuralCommandBuffer;
 
+    enum class EStructuralState {
+        PENDING_CREATE,
+        ALIVE,
+        PENDING_DESTROY,
+        DESTROYED
+    };
+
+    // User structural intake. Commands publish only at a quiescent commit boundary.
+    // EntityReference carries the owning World identity; legacy immediate/Defer APIs retain their contracts.
+    [[nodiscard]] EntityReference QueueCreateEntity();
+    [[nodiscard]] EntityReference QueueCreateEntity(DeferredStructuralCommandBuffer& buffer);
+    void QueueDestroyEntity(EntityReference entity);
+    static void QueueDestroyEntity(DeferredStructuralCommandBuffer& buffer, EntityReference entity);
+    void QueueReparent(EntityReference child, EntityReference parent, EReparentMode mode = EReparentMode::KEEP_LOCAL);
+    static void QueueReparent(DeferredStructuralCommandBuffer& buffer,
+                              EntityReference child,
+                              EntityReference parent,
+                              EReparentMode mode = EReparentMode::KEEP_LOCAL);
+    void QueueSetEnabled(EntityReference entity, bool enabled);
+    static void QueueSetEnabled(DeferredStructuralCommandBuffer& buffer, EntityReference entity, bool enabled);
+    [[nodiscard]] EStructuralState GetStructuralState(EntityReference entity) const;
+    [[nodiscard]] bool IsEntityEnabled(EntityReference entity) const;
+    // Host-only offline commit. Runtime SystemRun finalization uses the same commit automatically.
+    void CommitPending();
+    [[nodiscard]] bool IsExecutionPoisoned() const noexcept {
+        return ExecutionPoisoned_;
+    }
+
+    template<typename T, typename... TArgs>
+    void QueueAddComponent(EntityReference entity, TArgs&&... args) {
+        auto command =
+                std::make_unique<DeferredAddComponentCommand<T, std::decay_t<TArgs>...>>(entity.Identity,
+                                                                                         std::forward<TArgs>(args)...);
+        QueueUserCommand(entity, std::move(command));
+    }
+    template<typename T, typename... TArgs>
+    static void QueueAddComponent(DeferredStructuralCommandBuffer& buffer, EntityReference entity, TArgs&&... args) {
+        auto command =
+                std::make_unique<DeferredAddComponentCommand<T, std::decay_t<TArgs>...>>(entity.Identity,
+                                                                                         std::forward<TArgs>(args)...);
+        QueueUserCommand(buffer, entity, std::move(command));
+    }
+    template<typename T>
+    void QueueRemoveComponent(EntityReference entity) {
+        QueueUserCommand(entity, std::make_unique<DeferredRemoveComponentCommand<T>>(entity.Identity));
+    }
+    template<typename T>
+    static void QueueRemoveComponent(DeferredStructuralCommandBuffer& buffer, EntityReference entity) {
+        QueueUserCommand(buffer, entity, std::make_unique<DeferredRemoveComponentCommand<T>>(entity.Identity));
+    }
+    template<typename T>
+    void QueueSetComponentEnabled(EntityReference entity, bool enabled) {
+        QueueUserCommand(entity, std::make_unique<DeferredEnabledCommand>(entity.Identity, typeid(T), enabled));
+    }
+    template<typename T>
+    static void
+    QueueSetComponentEnabled(DeferredStructuralCommandBuffer& buffer, EntityReference entity, bool enabled) {
+        QueueUserCommand(buffer, entity, std::make_unique<DeferredEnabledCommand>(entity.Identity, typeid(T), enabled));
+    }
+    template<typename T>
+    [[nodiscard]] bool IsComponentEnabled(EntityReference entity) const {
+        ValidateUnscopedAccess();
+        ValidateUserIdentity(entity);
+        return HasComponent<T>(entity.Identity) && !IsComponentDisabled(entity.Identity, typeid(T));
+    }
+
     World();
     ~World();
 
@@ -103,6 +169,7 @@ public:
 
     template<typename T>
     [[nodiscard]] bool HasComponent(Entity entity) const {
+        ValidateUnscopedAccess();
         if (!IsAlive(entity)) {
             return false;
         }
@@ -151,7 +218,13 @@ public:
         if (storage != nullptr && storage->Contains(entity.Index)) {
             TrackComponentAccess(typeid(T));
         }
-        return storage != nullptr && storage->RemoveComponent(entity.Index);
+        const bool removed = storage != nullptr && storage->RemoveComponent(entity.Index);
+        if (removed) {
+            if (const auto disabled = m_disabledComponents.find(typeid(T)); disabled != m_disabledComponents.end()) {
+                disabled->second.erase(entity.Index);
+            }
+        }
+        return removed;
     }
 
     template<typename T>
@@ -166,6 +239,8 @@ public:
 
     template<typename... TComponents, typename TCallback>
     void Query(TCallback&& callback) {
+        ValidateUnscopedAccess();
+        QueryReadGuard queryGuard{*this};
         std::vector<Entity> entities;
         entities.reserve(Entities_.size());
 
@@ -189,6 +264,8 @@ public:
 
     template<typename... TComponents, typename TCallback>
     void Query(TCallback&& callback) const {
+        ValidateUnscopedAccess();
+        QueryReadGuard queryGuard{*this};
         std::vector<Entity> entities;
         entities.reserve(Entities_.size());
 
@@ -227,6 +304,16 @@ public:
     void ApplyDeferredStructuralChanges();
 
 private:
+    class QueryReadGuard final {
+    public:
+        explicit QueryReadGuard(const World& world);
+        ~QueryReadGuard();
+        QueryReadGuard(const QueryReadGuard&) = delete;
+        QueryReadGuard& operator=(const QueryReadGuard&) = delete;
+
+    private:
+        const World& m_world;
+    };
     class StructuralWriteGuard final {
     public:
         explicit StructuralWriteGuard(World& world);
@@ -248,9 +335,29 @@ private:
         bool ReusesFreeSlot = false;
     };
 
+    enum class ECommandKind {
+        CREATE,
+        DESTROY,
+        ADD,
+        REMOVE,
+        REPARENT,
+        ENABLE
+    };
+    struct CommandDescription {
+        ECommandKind Kind = ECommandKind::DESTROY;
+        Entity Identity;
+        std::uint64_t WorldId = 0;
+        std::type_index Component = typeid(void);
+        bool Strict = false;
+        EntityReference Parent = {};
+        EReparentMode ReparentMode = EReparentMode::KEEP_LOCAL;
+        bool Enabled = true;
+    };
+
     class IDeferredCommand {
     public:
         virtual ~IDeferredCommand() = default;
+        CommandDescription Description;
 
         virtual void Apply(World& world) = 0;
         [[nodiscard]] virtual std::uint32_t GetReservedEntityCount() const noexcept;
@@ -333,6 +440,7 @@ private:
         DeferredAddComponentCommand(Entity entity, TValues&&... args)
             : Entity_(entity)
             , Args_(std::forward<TValues>(args)...) {
+            this->Description = {.Kind = ECommandKind::ADD, .Identity = entity, .Component = typeid(T)};
         }
 
         void Apply(World& world) override {
@@ -353,6 +461,7 @@ private:
     public:
         explicit DeferredRemoveComponentCommand(Entity entity)
             : Entity_(entity) {
+            this->Description = {.Kind = ECommandKind::REMOVE, .Identity = entity, .Component = typeid(T)};
         }
 
         void Apply(World& world) override {
@@ -363,11 +472,18 @@ private:
         Entity Entity_;
     };
 
+    class DeferredEnabledCommand final: public IDeferredCommand {
+    public:
+        DeferredEnabledCommand(Entity entity, std::type_index component, bool enabled);
+        void Apply(World& world) override;
+    };
+
     class IComponentStorage {
     public:
         virtual ~IComponentStorage() = default;
 
         virtual void RemoveEntity(std::uint32_t entityIndex) = 0;
+        [[nodiscard]] virtual bool Contains(std::uint32_t entityIndex) const = 0;
     };
 
     template<typename T>
@@ -381,7 +497,7 @@ private:
             return iterator->second;
         }
 
-        [[nodiscard]] bool Contains(std::uint32_t entityIndex) const {
+        [[nodiscard]] bool Contains(std::uint32_t entityIndex) const override {
             return Values_.contains(entityIndex);
         }
 
@@ -439,6 +555,18 @@ private:
         return *static_cast<ComponentStorage<T>*>(iterator->second.get());
     }
 
+    void ApplyDeferredStructuralChanges(bool requireAllBuffers);
+    void CommitUserInitialization();
+    void ValidateUserIdentity(EntityReference entity) const;
+    [[nodiscard]] bool IsPendingIdentity(Entity entity) const;
+    [[nodiscard]] bool IsComponentDisabled(Entity entity, std::type_index component) const;
+    void QueueUserCommand(EntityReference entity, std::unique_ptr<IDeferredCommand> command);
+    static void QueueUserCommand(DeferredStructuralCommandBuffer& buffer,
+                                 EntityReference entity,
+                                 std::unique_ptr<IDeferredCommand> command);
+    static void ValidateUserBatch(const std::vector<std::unique_ptr<IDeferredCommand>>& commands,
+                                  const CommandDescription& incoming);
+    void PreflightStructuralCommands(const std::vector<std::unique_ptr<IDeferredCommand>>& commands) const;
     void ValidateAlive(Entity entity) const;
     void ValidateSystemIndex(std::size_t index) const;
     struct SystemExecutionGraph {
@@ -454,7 +582,10 @@ private:
     void TrackComponentAccess(std::type_index type);
     struct SystemRunState;
     std::shared_ptr<SystemRunState> ActiveSystemRun_;
-    bool ExecutionPoisoned_ = false;
+    std::atomic_bool ExecutionPoisoned_ = false;
+    std::atomic_bool m_isCommitting = false;
+    mutable std::atomic_size_t m_activeQueries = 0;
+    bool m_commitRejectedBeforePublication = false;
     struct SystemInvocation;
     [[nodiscard]] SystemInvocation* GetCurrentSystemInvocation() const noexcept;
     void RunSystemsImpl();
@@ -493,7 +624,9 @@ private:
     std::vector<EntityState> Entities_;
     std::vector<std::uint32_t> FreeEntityIndices_;
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> ComponentStorageByType_;
-    std::mutex DeferredStructuralMutex_;
+    std::set<std::uint32_t> m_disabledEntities;
+    std::map<std::type_index, std::set<std::uint32_t>> m_disabledComponents;
+    mutable std::mutex DeferredStructuralMutex_;
     std::vector<std::unique_ptr<IDeferredCommand>> DeferredStructuralCommands_;
     std::vector<DeferredCommandBatch> DeferredStructuralBatches_;
     std::vector<Entity> PendingDeferredAppendEntities_;
@@ -501,6 +634,7 @@ private:
             PlannedDeferredEntityReservations_;
     std::uint32_t PendingDeferredEntityCreateCount_ = 0;
     std::uint32_t OutstandingDeferredReservationBufferCount_ = 0;
+    std::uint32_t m_outstandingDeferredBuffers = 0;
     std::uint32_t ReservedDeferredEntityCount_ = 0;
     std::uint32_t NextNewEntityGeneration_ = 0;
     std::uint64_t NextDeferredBatchSubmissionOrder_ = 0;
