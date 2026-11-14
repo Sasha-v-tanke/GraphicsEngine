@@ -336,8 +336,11 @@ NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
     if (!owner) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Async ECS requires a World owner");
     }
-    if (owner->IsRunningSystems_.exchange(true)) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+    {
+        std::scoped_lock lock{owner->DeferredStructuralMutex_};
+        if (owner->IsRunningSystems_.exchange(true)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+        }
     }
     try {
         if (owner->ExecutionPoisoned_) {
@@ -1239,7 +1242,7 @@ void World::DiscardPublishedCommands() {
 
 void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
     std::scoped_lock lock{DeferredStructuralMutex_};
-    if (m_outstandingDeferredBuffers != 0) {
+    if (OutstandingDeferredReservationBufferCount_ != 0) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS deferred reservation buffers must be submitted or discarded before commit");
     }
@@ -1265,8 +1268,11 @@ void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
 }
 
 void World::RunSystemsImpl() {
-    if (IsRunningSystems_.exchange(true)) {
-        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        if (IsRunningSystems_.exchange(true)) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
+        }
     }
     std::vector<SystemInvocation> invocations;
     try {
@@ -1323,6 +1329,10 @@ void World::RunSystemsImpl() {
 }
 
 void World::ApplyDeferredStructuralChanges() {
+    ApplyDeferredStructuralChanges(false);
+}
+
+void World::ApplyDeferredStructuralChanges(bool requireAllBuffers) {
     m_commitRejectedBeforePublication = false;
     if (ExecutionPoisoned_) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
@@ -1347,7 +1357,13 @@ void World::ApplyDeferredStructuralChanges() {
 
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
-        if (m_outstandingDeferredBuffers != 0) {
+        const auto hasStrict = [](const auto& pending) {
+            return std::ranges::any_of(pending, [](const auto& command) { return command->Description.Strict; });
+        };
+        const bool userCommit = requireAllBuffers || hasStrict(DeferredStructuralCommands_) ||
+                                std::ranges::any_of(DeferredStructuralBatches_,
+                                                    [&](const auto& batch) { return hasStrict(batch.Commands); });
+        if (OutstandingDeferredReservationBufferCount_ != 0 || (userCommit && m_outstandingDeferredBuffers != 0)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS deferred reservation buffers must be submitted or discarded before commit");
         }
@@ -1613,7 +1629,7 @@ void World::CommitPending() {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "CommitPending requires retired producer buffers");
         }
     }
-    ApplyDeferredStructuralChanges();
+    ApplyDeferredStructuralChanges(true);
 }
 
 EntityReference World::QueueCreateEntity() {

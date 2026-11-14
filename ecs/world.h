@@ -543,6 +543,7 @@ private:
         return *static_cast<ComponentStorage<T>*>(iterator->second.get());
     }
 
+    void ApplyDeferredStructuralChanges(bool requireAllBuffers);
     void CommitUserInitialization();
     void ValidateUserIdentity(EntityReference entity) const;
     [[nodiscard]] bool IsPendingIdentity(Entity entity) const;
