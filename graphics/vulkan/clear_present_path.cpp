@@ -65,15 +65,6 @@ VkImageSubresourceRange ColorRange() {
     };
 }
 
-void RecordBarrier(VkCommandBuffer commandBuffer, const VkImageMemoryBarrier2& barrier) {
-    const VkDependencyInfo dependencyInfo{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &barrier,
-    };
-    vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-}
-
 } // namespace
 
 struct VulkanClearPresentPath::FrameResources {
@@ -334,7 +325,7 @@ void VulkanClearPresentPath::RecordClear(VkCommandBuffer commandBuffer,
             .Usage = EVulkanResourceUsage::ColorAttachmentWrite,
             .SubresourceRange = ColorRange(),
     });
-    RecordBarrier(commandBuffer, *colorBarrier);
+    RecordVulkanResourceBarrier(commandBuffer, *colorBarrier);
     const VulkanColorAttachment attachment{.View = view, .Clear = clearColor};
     {
         const VulkanRenderingScope rendering{commandBuffer,
@@ -347,7 +338,7 @@ void VulkanClearPresentPath::RecordClear(VkCommandBuffer commandBuffer,
             .Usage = EVulkanResourceUsage::Present,
             .SubresourceRange = ColorRange(),
     });
-    RecordBarrier(commandBuffer, *presentBarrier);
+    RecordVulkanResourceBarrier(commandBuffer, *presentBarrier);
     result = vkEndCommandBuffer(commandBuffer);
     if (result != VK_SUCCESS) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
