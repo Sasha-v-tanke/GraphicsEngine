@@ -19,6 +19,12 @@ enum class EVulkanResourceUsage {
     TransferRead,
     TransferWrite,
     ShaderSampledRead,
+    GraphicsSampledRead,
+    DepthStencilWrite,
+    DepthStencilReadWrite,
+    VertexRead,
+    IndexRead,
+    UniformRead,
 };
 
 struct VulkanImageState {
