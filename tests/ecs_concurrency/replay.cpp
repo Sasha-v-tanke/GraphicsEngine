@@ -7,6 +7,7 @@
 #include <memory>
 #include <numeric>
 #include <random>
+#include <semaphore>
 #include <stdexcept>
 #include <utility>
 
@@ -189,6 +190,72 @@ TEST(EcsAcceptance, RandomScopedReplayVersionsReparentAndLazyMatricesMatchIndepe
     }
 }
 
+TEST(EcsAcceptance, ConflictDiagnosticsCancellationAndOwnerIsolationMatchReplay) {
+    for (const unsigned workers: WORKERS) {
+        NCommon::TaskSystem tasks{workers};
+        NEcs::NInternal::AccessCoordinator coordinator{tasks};
+        auto values = std::make_shared<std::array<std::uint64_t, 16>>();
+        auto other = std::make_shared<std::array<std::uint64_t, 16>>();
+        const NEcs::NInternal::DataDomainKey domain{1, 1, 1};
+        coordinator.RegisterDomain(domain, values);
+        coordinator.RegisterDomain({2, 1, 1}, other);
+        std::binary_semaphore entered{0};
+        std::binary_semaphore release{0};
+        NEcs::NInternal::AccessFootprint exclusive;
+        exclusive.Domain = domain;
+        exclusive.Requirement = NEcs::NInternal::EAccessRequirement::EXCLUSIVE;
+        (void)coordinator.Schedule({exclusive}, [&] {
+            entered.release();
+            // A bounded test barrier controls admission; the engine never waits on a worker join.
+            if (!release.try_acquire_for(std::chrono::seconds{10})) {
+                throw std::runtime_error{"acceptance admission barrier timed out"};
+            }
+        });
+        const bool admitted = entered.try_acquire_for(std::chrono::seconds{10});
+        EXPECT_TRUE(admitted);
+        std::array<std::uint64_t, 16> expected{};
+        std::size_t conflicts = 0;
+        for (std::uint64_t salt = 1; salt <= 64; ++salt) {
+            const std::size_t index = static_cast<std::size_t>(salt % expected.size());
+            NEcs::NInternal::AccessFootprint footprint;
+            footprint.Domain = domain;
+            footprint.Requirement = NEcs::NInternal::EAccessRequirement::WRITE;
+            footprint.Scope.Kind = NEcs::NInternal::EAccessScope::ENTITY;
+            footprint.Scope.Begin = index;
+            const auto operation = coordinator.Schedule({footprint}, [values, index, salt] {
+                (*values)[index] = (*values)[index] * 31 + salt;
+            });
+            const auto reasons = coordinator.GetConflicts(operation);
+            EXPECT_FALSE(reasons.empty());
+            conflicts += reasons.size();
+            for (const auto& reason: reasons) {
+                EXPECT_EQ(reason.Domain, domain);
+                EXPECT_LT(reason.Predecessor.GetSequence(), operation.GetSequence());
+            }
+            if (salt == 64) {
+                EXPECT_TRUE(coordinator.Cancel(operation));
+            } else {
+                expected[index] = expected[index] * 31 + salt;
+            }
+        }
+        NEcs::NInternal::AccessFootprint isolated;
+        isolated.Domain = {2, 1, 1};
+        isolated.Requirement = NEcs::NInternal::EAccessRequirement::WRITE;
+        const auto independent = coordinator.Schedule({isolated}, [other] { (*other)[0] = 17; });
+        EXPECT_TRUE(coordinator.GetConflicts(independent).empty());
+        std::promise<void> drained;
+        auto completion = drained.get_future();
+        coordinator.Seal([&] { drained.set_value(); });
+        release.release();
+        ASSERT_EQ(completion.wait_for(std::chrono::seconds{10}), std::future_status::ready);
+        tasks.WaitIdle();
+        EXPECT_EQ(*values, expected);
+        EXPECT_EQ((*other)[0], 17U);
+        EXPECT_GT(conflicts, 64U);
+        RecordProperty("conflict_edges", static_cast<int>(conflicts));
+    }
+}
+
 TEST(EcsAcceptance, FailedAndCancelledScopedRunsDrainThenResolveAndPublishNoFalseSuccess) {
     for (const unsigned workers: WORKERS) {
         for (const bool cancel: {false, true}) {
@@ -212,8 +279,9 @@ TEST(EcsAcceptance, FailedAndCancelledScopedRunsDrainThenResolveAndPublishNoFals
                     NEcs::SystemSchedule{.Id = 1});
             std::promise<NEcs::NInternal::SystemRunOutcome> outcome;
             auto completed = outcome.get_future();
-            auto prepared =
-                    NEcs::NInternal::PrepareSystems(world, tasks, [&](auto value) { outcome.set_value(value); });
+            auto prepared = NEcs::NInternal::PrepareSystems(world, tasks, [&](auto value) {
+                outcome.set_value(std::move(value));
+            });
             run = prepared.GetHandle();
             prepared.Start();
             ASSERT_EQ(completed.wait_for(std::chrono::seconds{10}), std::future_status::ready);

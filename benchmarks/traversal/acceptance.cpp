@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include <benchmark/benchmark.h>
@@ -23,7 +24,7 @@ void BM_EcsAcceptanceTraversal(benchmark::State& state) {
     NCommon::TaskSystem tasks{std::max(workers, std::size_t{1})};
     NEcs::NInternal::AdaptiveBatchPlanner planner{tasks};
     const std::array roots{forest.Entities.front()};
-    // Check against a separately implemented evaluator before timing a workload.
+    // Compute a separate reference outside timing; check the sentinel after each run.
     const auto reference = forest.TraverseReference(false, false, cost);
     for ([[maybe_unused]] auto iteration: state) {
         NEcs::NInternal::TraversalOperation<std::uint64_t> operation;
@@ -34,28 +35,26 @@ void BM_EcsAcceptanceTraversal(benchmark::State& state) {
                                         cost);
         };
         const auto output = operation.Output;
+        std::optional<NEcs::NInternal::TraversalResults<std::uint64_t>> result;
         const auto started = Clock::now();
-        std::uint64_t last = 0;
         if (workers == 0) {
-            const auto actual =
-                    NEcs::NInternal::AdaptiveBatchPlanner::RunSerial(world.AcquireTopologySnapshot(),
-                                                                     roots,
-                                                                     NEcs::NInternal::ETraversalMode::TOP_DOWN,
-                                                                     std::move(operation));
-            last = actual.Get(forest.Entities.back());
+            result.emplace(NEcs::NInternal::AdaptiveBatchPlanner::RunSerial(world.AcquireTopologySnapshot(),
+                                                                            roots,
+                                                                            NEcs::NInternal::ETraversalMode::TOP_DOWN,
+                                                                            std::move(operation)));
         } else {
             const auto group = planner.ScheduleTraversal(world.AcquireTopologySnapshot(),
                                                          roots,
                                                          NEcs::NInternal::ETraversalMode::TOP_DOWN,
                                                          std::move(operation));
             tasks.WaitGroup(group);
-            const auto actual = output->TryAcquire(tasks);
-            if (!actual) {
+            result = output->TryAcquire(tasks);
+            if (!result) {
                 state.SkipWithError("Traversal did not publish a complete result");
                 break;
             }
-            last = actual->Get(forest.Entities.back());
         }
+        std::uint64_t last = result->Get(forest.Entities.back());
         state.SetIterationTime(std::chrono::duration<double>(Clock::now() - started).count());
         benchmark::DoNotOptimize(last);
         if (last != reference.back()) {
