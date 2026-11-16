@@ -564,4 +564,28 @@ TEST(EcsRunFault, NamedSceneCreationIntakeFailureNeverQueuesAnOrphanEntity) {
     EXPECT_GT(rejected, 0);
     EXPECT_GT(succeeded, 0);
 }
+
+TEST(EcsRunFault, EntityRefAddFailureBeforeScopeCreationDoesNotQueueAComponent) {
+    NEcs::World world;
+    auto entity = world.GetEntityRef(world.QueueCreateEntity());
+    world.CommitPending();
+    bool rejected = false;
+    world.RegisterSystem(
+            {NEcs::Read<int>()},
+            [&](NEcs::World&) {
+                AllocationBudget = 0;
+                try {
+                    (void)entity.AddComponent<int>(7);
+                } catch (const std::bad_alloc&) {
+                    rejected = true;
+                }
+                AllocationBudget = -1;
+            },
+            NEcs::SystemSchedule{.Id = 10},
+            10);
+    NCommon::TaskSystem tasks{1};
+    world.RunSystems(tasks);
+    EXPECT_TRUE(rejected);
+    EXPECT_FALSE(entity.HasComponent<int>());
+}
 } // namespace

@@ -19,8 +19,9 @@ public:
     EntityRef AddComponent(TArgs&&... args) {
         static_assert(std::is_same_v<T, std::remove_cvref_t<T>>);
         World& world = GetWorld();
+        EntityRef result = world.GetEntityRef(m_reference);
         world.QueueAddComponent<T>(m_reference, std::forward<TArgs>(args)...);
-        return world.GetEntityRef(m_reference);
+        return result;
     }
 
     template<typename T>

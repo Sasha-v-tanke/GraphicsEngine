@@ -1,5 +1,8 @@
+#include <atomic>
 #include <memory>
+#include <semaphore>
 #include <stdexcept>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -249,5 +252,53 @@ TEST(EntityRef, SystemStructuralIntakeReturnsABoundFacadeWithoutEarlyPublication
     world.RunSystems(tasks);
     EXPECT_TRUE(host.HasComponent<Missing>());
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)chained.HasComponent<Missing>(); });
+}
+
+TEST(EntityRef, PendingComponentReadsSynchronizeWithAnotherProducerReleasingReservations) {
+    NEcs::World world;
+    world.BeginDeferredStructuralPhase({{.Order = 0, .EntityCreateCount = 1, .SystemOrder = 10},
+                                        {.Order = 0, .EntityCreateCount = 256, .SystemOrder = 20}});
+    std::binary_semaphore pendingReady{0};
+    std::binary_semaphore releaseReservations{0};
+    std::atomic_uint probes = 0;
+    std::atomic_bool released = false;
+    std::atomic_bool unexpectedComponent = false;
+    NEcs::EntityReference pending;
+    world.RegisterSystem(
+            {NEcs::Read<Missing>()},
+            [&](NEcs::World& current) {
+                auto producer = current.CreateDeferredStructuralCommandBuffer(0);
+                pending = current.QueueCreateEntity(producer);
+                auto entity = current.GetEntityRef(pending);
+                pendingReady.release();
+                releaseReservations.acquire();
+                while (!released.load()) {
+                    if (entity.HasComponent<Missing>()) {
+                        unexpectedComponent = true;
+                    }
+                    ++probes;
+                }
+                current.SubmitDeferredStructuralCommands(std::move(producer));
+            },
+            NEcs::SystemSchedule{.Id = 10},
+            10);
+    world.RegisterSystem(
+            {},
+            [&](NEcs::World& current) {
+                pendingReady.acquire();
+                auto producer = current.CreateDeferredStructuralCommandBuffer(0);
+                releaseReservations.release();
+                while (probes.load() == 0) {
+                    std::this_thread::yield();
+                }
+                current.SubmitDeferredStructuralCommands(std::move(producer));
+                released = true;
+            },
+            NEcs::SystemSchedule{.Id = 20},
+            20);
+    NCommon::TaskSystem tasks{2};
+    world.RunSystems(tasks);
+    EXPECT_FALSE(unexpectedComponent);
+    EXPECT_EQ(world.GetStructuralState(pending), NEcs::World::EStructuralState::ALIVE);
 }
 } // namespace

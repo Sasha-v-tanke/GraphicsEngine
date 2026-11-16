@@ -1939,7 +1939,10 @@ void World::ValidateEntityRefContext(const EntityRef& entity) const {
 }
 
 bool World::ValidateEntityRefComponentAccess(EntityReference entity, std::type_index type, bool write) const {
-    ValidateUserIdentity(entity);
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        ValidateUserIdentity(entity);
+    }
     const auto* invocation = GetCurrentSystemInvocation();
     if (invocation != nullptr) {
         const auto& system = Systems_[invocation->SystemIndex];
