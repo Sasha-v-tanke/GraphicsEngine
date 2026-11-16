@@ -14,6 +14,7 @@
 #include <ecs/internal/adaptive_traversal.h>
 #include <ecs/internal/scoped_batch.h>
 #include <ecs/internal/system_run.h>
+#include <ecs/internal/transform_resolver.h>
 #include <ecs/internal/world_changes.h>
 #include <ecs/world.h>
 #include <gtest/gtest.h>
@@ -498,6 +499,47 @@ TEST(EcsRunFault, TraversalDynamicSpawnFailureDoesNotPublishResultsOrLeakLease) 
     EXPECT_EQ(tasks.GetGroupStatus(group), NCommon::ETaskGroupStatus::FAILED);
     EXPECT_FALSE(output->TryAcquire(tasks));
     EXPECT_NO_THROW(world.CreateEntity());
+}
+
+TEST(EcsRunFault, ResolveAllocationFailuresReleaseTopologyAndPermitEditedHierarchyRetry) {
+    std::size_t failed = 0;
+    std::size_t succeeded = 0;
+    NCommon::TaskSystem tasks{2};
+    for (std::ptrdiff_t budget = 0; budget < 160; ++budget) {
+        NEcs::World world;
+        std::vector<NEcs::EntityReference> entities;
+        for (std::size_t index = 0; index < 8; ++index) {
+            entities.push_back(world.GetEntityReference(world.CreateEntity()));
+            if (index != 0) {
+                world.DeferReparent(entities.back(), entities[(index - 1) / 2]);
+            }
+        }
+        world.ApplyDeferredStructuralChanges();
+        NEcs::NInternal::TransformResolver resolver;
+        std::optional<NEcs::NInternal::TransformResolve> operation;
+        AllocationBudget = budget;
+        try {
+            operation = resolver.ScheduleResolve(world.AcquireTopologySnapshot(), entities, tasks);
+            AllocationBudget = -1;
+            ++succeeded;
+        } catch (const std::bad_alloc&) {
+            AllocationBudget = -1;
+            ++failed;
+        }
+        if (operation) {
+            tasks.Wait(operation->GetCompletion());
+        }
+        tasks.WaitIdle();
+        auto local = NMath::Mat4::Identity();
+        local(0, 3) = 3;
+        ASSERT_NO_THROW(world.SetLocalTransform(entities.front(), local));
+        const auto retry = resolver.ScheduleResolve(world.AcquireTopologySnapshot(), entities, tasks);
+        tasks.Wait(retry.GetCompletion());
+        ASSERT_EQ(tasks.GetStatus(retry.GetCompletion()), NCommon::ETaskStatus::COMPLETED);
+        EXPECT_FLOAT_EQ(retry.ReadResolved(tasks).Get(entities.back()).Value(0, 3), 3);
+    }
+    EXPECT_GT(failed, 0U);
+    EXPECT_GT(succeeded, 0U);
 }
 
 TEST(EcsRunFault, UserCommitAllocationFailuresNeverPublishFalseSuccess) {
