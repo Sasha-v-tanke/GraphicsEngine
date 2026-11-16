@@ -388,7 +388,7 @@ public:
                                                      VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
                                             .pInheritanceInfo = &inheritance,
                                     };
-                                    const VkCommandBuffer commands = context.AcquireSecondaryCommandBuffer();
+                                    VkCommandBuffer commands = context.AcquireSecondaryCommandBuffer();
                                     Check(vkBeginCommandBuffer(commands, &begin));
                                     RecordDraws(commands,
                                                 {image.Extent.Width, image.Extent.Height},
@@ -523,7 +523,7 @@ public:
                                  : NVulkan::ERenderingContents::INLINE};
             if (parallelPass) {
                 while (chunkIndex < chunks.size() && chunks[chunkIndex].Range.PassIndex == passIndex) {
-                    const VkCommandBuffer secondary = chunks[chunkIndex++].Command;
+                    VkCommandBuffer secondary = chunks[chunkIndex++].Command;
                     vkCmdExecuteCommands(command, 1, &secondary);
                 }
             } else {

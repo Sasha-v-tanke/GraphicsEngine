@@ -138,6 +138,10 @@ private:
             if (secondary) {
                 first = Active->Commands.at(command).front();
                 Active->FinishedChunks.push_back(first);
+                if (first != 0) {
+                    Active->LaterChunk = true;
+                    Active->Progress.notify_all();
+                }
             }
         }
         if (secondary) {
@@ -161,9 +165,6 @@ private:
                 if (!Active->Progress.wait_for(lock, std::chrono::seconds{3}, [] { return Active->LaterChunk; })) {
                     Active->ProbeFailure = true;
                 }
-            } else if (DrawId >= 64) {
-                Active->LaterChunk = true;
-                Active->Progress.notify_all();
             }
         }
         Active->OriginalPush(command, layout, stages, offset, size, values);
@@ -264,6 +265,7 @@ std::vector<std::uint64_t> RunRecording(NWindow::Window& window,
     const std::size_t frames = fail ? 1 : 8;
     for (std::size_t index = 0; index < frames; ++index) {
         const NRenderer::RenderFrameIdentity frame{.ApplicationFrameIndex = index,
+                                                   .SimulationIndex = index,
                                                    .FrameSlotIndex = index % slots,
                                                    .Generation = index / slots + 1};
         bool submitted = false;
