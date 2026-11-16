@@ -71,7 +71,7 @@ Activate/Deactivate/Unload и необходимые изменения World. �
 Допуск следующего кадра закрыт до завершения читателей предыдущего World. Поэтому публикация новой
 активной сцены не пересекается с их чтением, даже если несколько старых GPU-кадров остаются in-flight.
 Перед dispatch адаптер захватывает Scene lease и immutable `ScenePublication` (FrameKey, SceneHandle, имя).
-Update выполняет существующий ECS system run; extraction использует chunked extraction и сохраняет
+Update выполняет существующий ECS system run; extraction использует инкрементальный `SceneExtraction` и сохраняет
 readiness policy SKIP_OBJECT. Ожидания ресурса внутри этих стадий нет.
 
 После extraction адаптер освобождает Scene lease. Draw получает только RenderWorld, RenderPlan и
