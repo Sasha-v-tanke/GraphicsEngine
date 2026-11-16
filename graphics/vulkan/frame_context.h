@@ -30,6 +30,9 @@ enum class EVulkanFrameContextState {
 class VulkanWorkerContext final: public NCommon::NonTransferable {
 public:
     [[nodiscard]] VkCommandPool GetCommandPool() const;
+    // Reuses slot-local secondary buffers after exact GPU completion and whole-pool reset.
+    [[nodiscard]] VkCommandBuffer AcquireSecondaryCommandBuffer();
+
     [[nodiscard]] NCommon::WorkerIndex GetWorkerIndex() const noexcept;
     [[nodiscard]] std::uint64_t GetFrameIndex() const noexcept;
     [[nodiscard]] std::size_t GetFrameSlotIndex() const noexcept;
@@ -37,12 +40,18 @@ public:
 private:
     VulkanWorkerContext(const NCommon::TaskSystem& system,
                         const NCommon::TaskContext& task,
+                        VkDevice device,
                         VkCommandPool pool,
+                        std::vector<VkCommandBuffer>& secondaryBuffers,
+                        std::size_t& nextSecondary,
                         VulkanFrameContextAcquire frame) noexcept;
 
     const NCommon::TaskSystem& m_system;
     const NCommon::TaskContext& m_task;
+    VkDevice m_device;
     VkCommandPool m_pool;
+    std::vector<VkCommandBuffer>& m_secondaryBuffers;
+    std::size_t& m_nextSecondary;
     VulkanFrameContextAcquire m_frame;
 
     friend class VulkanFrameContext;

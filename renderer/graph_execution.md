@@ -58,3 +58,31 @@ GPU-регрессия `TexturedObjCullsFarFaceAndRasterizesCameraFacingSurface`
 Для каждого активного frame slot существует отдельный pool VMA images/views. Индексы allocations приходят из компилятора; одинаковые disjoint transient lifetimes используют одно физическое изображение и сохраняют native state между проходами. При новом кадре содержимое снова логически undefined. `Path` допускает запись в slot только после GPU completion предыдущей отправки; submission use records дополнительно удерживают allocations/views до completion, в том числе при ошибке present. Изменение описания заменяет cached allocation только на безопасной границе. При shutdown `Path` сначала завершает GPU/WSI, затем уничтожаются pools.
 
 Этот color executor не разрешает произвольные Graphics imports с другого устройства и не создаёт material bindings на transient textures. Pass.Reads отклоняются до начала записи: без executable binding нельзя молча принимать SAMPLED_READ как реализованное чтение. Подготовленные неизменяемые material textures продолжают работать через прежний PrepareImage/PrepareMaterial path. Compiler остаётся независимым от данного color subset.
+
+
+## Параллельная запись Vulkan
+
+`GraphPresentation(window, presentationConfig, {EGraphRecordingMode::PARALLEL, &tasks})` использует
+внешний `TaskSystem`, который должен пережить presentation. Исходный конструктор сохраняет serial.
+Новый scheduler, поток WSI или отдельная GPU queue не создаются. Все методы presentation вызываются
+на потоке-владельце вне worker invocation; подготовленные assets неизменяемы во время записи.
+
+Backend объединяет соседние compiled `GraphRecordingRange` в не более `2 × WorkerCount` chunks на
+проход. Число recording tasks ограничено WorkerCount, tasks забирают следующий chunk динамически,
+без закрепления worker index. Проходы до 64 draws остаются inline; крупный проход целиком использует
+secondary contents. Каждый secondary задаёт собственные viewport/scissor, pipeline, descriptors,
+vertex/index buffers и constants. Dynamic-rendering inheritance фиксирует фактический формат
+attachment и sample count; barriers и begin/end rendering остаются на primary.
+
+Primary исполняет secondary buffers в logical pass/chunk order независимо от порядка завершения
+workers. Один кадр по-прежнему даёт один graphics submit. Результаты tasks не владеют пулами:
+вызов `AcquireSecondaryCommandBuffer` разрешён только внутри worker-context borrow. Буферы кэшируются
+в frame-slot × worker owner; whole-pool reset и сброс курсора происходят после точного GPU completion,
+а не через фиксированное число кадров. Сохраняется только достигнутый максимум буферов каждого пула.
+
+Синхронная WSI-граница `Render` присоединяет task group на потоке-владельце до записи primary/submit.
+Workers не ждут задач или GPU. При ошибке admission уже начатые siblings отменяются и присоединяются
+до освобождения graph/результатов. При ошибке native recording group не публикует частичный кадр:
+нет submit/completion, путь требует остановки. GPU resource use owners собираются на coordinator
+до запуска workers и остаются у submission до completion; allocator/cache mutation с workers нет.
+Полное перекрытие frame pipeline относится к IMPROVE-0030 и не включается этим режимом.

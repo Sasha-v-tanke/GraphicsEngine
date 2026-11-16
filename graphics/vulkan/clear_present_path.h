@@ -36,7 +36,18 @@ class VulkanClearPresentPath final: public NCommon::NonTransferable {
 public:
     VulkanClearPresentPath(const VulkanDevice& device, VulkanSwapchain& swapchain, std::size_t maxActiveFrames);
 
+    // The external scheduler outlives this path. All recording must join before Render returns.
+    VulkanClearPresentPath(const VulkanDevice& device,
+                           VulkanSwapchain& swapchain,
+                           std::size_t maxActiveFrames,
+                           const NCommon::TaskSystem& tasks);
+
     ~VulkanClearPresentPath();
+
+    // Valid only during the acquired frame's recording callback; no WSI/submit access from workers.
+    void WithWorkerContext(VulkanFrameContextAcquire frame,
+                           NCommon::TaskContext& task,
+                           const std::function<void(VulkanWorkerContext&)>& record);
 
     void SetFramebufferSize(NWindow::WindowSize framebufferSize) noexcept;
 
@@ -61,6 +72,10 @@ public:
     [[nodiscard]] std::vector<VulkanFrameCompletionEvent> PollCompletedFrames();
 
 private:
+    VulkanClearPresentPath(const VulkanDevice& device,
+                           VulkanSwapchain& swapchain,
+                           std::size_t maxActiveFrames,
+                           const NCommon::TaskSystem* tasks);
     struct FrameResources;
 
     [[nodiscard]] bool TryRecreateSwapchain();

@@ -1,6 +1,7 @@
 TEST_SUITE(Renderer)
 
 SOURCES(
+    recording_plan.cpp
     incremental_extraction.cpp
     resource_readiness.cpp
     execution_validation.cpp

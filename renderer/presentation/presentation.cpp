@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -25,6 +26,7 @@
 #include <math/transform.h>
 #include <renderer/execution_validation.h>
 #include <renderer/presentation/graph_state.h>
+#include <renderer/recording_plan.h>
 
 namespace NRenderer {
 namespace {
@@ -48,6 +50,19 @@ NVulkan::VulkanInstanceConfig InstanceConfig(const NGraphics::PresentationConfig
     return result;
 }
 
+NCommon::TaskSystem* RecordingExecutor(GraphRecordingConfig config) {
+    switch (config.Mode) {
+    case EGraphRecordingMode::SERIAL:
+        return nullptr;
+    case EGraphRecordingMode::PARALLEL:
+        if (config.Executor != nullptr) {
+            return config.Executor;
+        }
+        Invalid("Parallel recording requires an external TaskSystem");
+    }
+    Invalid("Invalid graph recording mode");
+}
+
 NGraphics::EPixelFormat ColorFormat(VkFormat format) {
     constexpr std::array formats{
             std::pair{VK_FORMAT_B8G8R8A8_SRGB, NGraphics::EPixelFormat::BGRA8_SRGB},
@@ -60,6 +75,21 @@ NGraphics::EPixelFormat ColorFormat(VkFormat format) {
             return neutral;
     }
     GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Unsupported presentation format");
+}
+
+VkFormat VulkanColorFormat(NGraphics::EPixelFormat format) {
+    switch (format) {
+    case NGraphics::EPixelFormat::RGBA8_UNORM:
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    case NGraphics::EPixelFormat::BGRA8_UNORM:
+        return VK_FORMAT_B8G8R8A8_UNORM;
+    case NGraphics::EPixelFormat::RGBA8_SRGB:
+        return VK_FORMAT_R8G8B8A8_SRGB;
+    case NGraphics::EPixelFormat::BGRA8_SRGB:
+        return VK_FORMAT_B8G8R8A8_SRGB;
+    default:
+        Invalid("Unsupported secondary color format");
+    }
 }
 
 VkAttachmentLoadOp Load(EAttachmentLoad load) {
@@ -94,8 +124,9 @@ void Check(VkResult result) {
 
 class GraphPresentation::Impl {
 public:
-    Impl(NWindow::Window& window, const NGraphics::PresentationConfig& config)
-        : Instance(InstanceConfig(config))
+    Impl(NWindow::Window& window, const NGraphics::PresentationConfig& config, GraphRecordingConfig recording)
+        : Executor(RecordingExecutor(recording))
+        , Instance(InstanceConfig(config))
         , Surface(Instance, window)
         , Physical(NVulkan::SelectVulkanPhysicalDevice(Instance, Surface.GetHandle()))
         , Device(Physical)
@@ -105,7 +136,8 @@ public:
                   std::make_shared<NVulkan::VulkanDescriptorManager>(Device.GetHandle(), Device.GetDescriptorLimits()))
         , Transients(config.MaxActiveFrames)
         , Swapchain(Device, Physical, Surface.GetHandle(), window.GetFramebufferSize())
-        , Path(Device, Swapchain, config.MaxActiveFrames)
+        , Path(Executor ? NVulkan::VulkanClearPresentPath(Device, Swapchain, config.MaxActiveFrames, *Executor)
+                        : NVulkan::VulkanClearPresentPath(Device, Swapchain, config.MaxActiveFrames))
         , MaxFrames(config.MaxActiveFrames) {
     }
 
@@ -143,6 +175,7 @@ public:
     };
 
     // Path is destroyed first and drains GPU/WSI before prepared resources disappear.
+    NCommon::TaskSystem* Executor;
     NVulkan::VulkanInstance Instance;
     NVulkan::NGlfw::VulkanSurface Surface;
     NVulkan::VulkanPhysicalDeviceSelection Physical;
@@ -175,7 +208,7 @@ public:
     std::uint64_t NextFrame = 0;
     const std::thread::id Thread = std::this_thread::get_id();
     void CheckThread() const {
-        if (Thread != std::this_thread::get_id()) {
+        if (Thread != std::this_thread::get_id() || NCommon::TaskSystem::IsCurrentThreadWorker()) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graph presentation requires its owning thread");
         }
     }
@@ -233,6 +266,158 @@ public:
         return created;
     }
 
+    void RecordDraws(VkCommandBuffer command, VkExtent2D renderExtent, std::span<const DrawCommandData> draws) const {
+        const VkViewport viewport{0,
+                                  0,
+                                  static_cast<float>(renderExtent.width),
+                                  static_cast<float>(renderExtent.height),
+                                  0,
+                                  1};
+        const VkRect2D scissor{.offset = {}, .extent = renderExtent};
+        vkCmdSetViewport(command, 0, 1, &viewport);
+        vkCmdSetScissor(command, 0, 1, &scissor);
+        for (const DrawCommandData& draw: draws) {
+            const auto& mesh = FindMesh(draw);
+            const auto& material = FindMaterial(draw);
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, material.Pipeline->GetHandle());
+            if (material.Descriptors.IsValid()) {
+                VkDescriptorSet set = material.Descriptors.GetSet();
+                vkCmdBindDescriptorSets(command,
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        material.Pipeline->GetLayout(),
+                                        0,
+                                        1,
+                                        &set,
+                                        0,
+                                        nullptr);
+            }
+            VkBuffer vertex = mesh.Vertices.GetBuffer();
+            const VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(command, 0, 1, &vertex, &offset);
+            vkCmdBindIndexBuffer(command, mesh.Indices.GetBuffer(), 0, VK_INDEX_TYPE_UINT32);
+            if (material.Key.GetDescriptor().VertexPushConstantBytes != 0) {
+                auto transform = draw.ViewProjection *
+                                 draw.ResolvedWorldTransform.value_or(NMath::ComposeTransform(draw.WorldTransform));
+                // Engine clip space is Y-up; Vulkan uses a positive-height framebuffer viewport.
+                for (std::size_t column = 0; column < 4; ++column) {
+                    transform(1, column) = -transform(1, column);
+                }
+                vkCmdPushConstants(command,
+                                   material.Pipeline->GetLayout(),
+                                   VK_SHADER_STAGE_VERTEX_BIT,
+                                   0,
+                                   64,
+                                   transform.GetValues().data());
+            }
+            vkCmdDrawIndexed(command, static_cast<std::uint32_t>(mesh.Lease->GetIndices().size()), 1, 0, 0, 0);
+        }
+    }
+
+    struct RecordingChunk {
+        GraphRecordingRange Range;
+        bool Secondary = false;
+        VkCommandBuffer Command = VK_NULL_HANDLE;
+    };
+
+    std::vector<RecordingChunk> RecordSecondaries(const CompiledGraph& graph, RenderFrameIdentity frame) {
+        if (Executor == nullptr) {
+            return {};
+        }
+        std::vector<RecordingChunk> chunks;
+        for (const GraphRecordingRange& range:
+             NInternal::PlanRecordingChunks(graph.GetRecordingRanges(), Executor->GetWorkerCount())) {
+            // One compiler range (up to 64 draws) is cheaper inline. A pass is either entirely
+            // inline or entirely secondary: Vulkan 1.3 does not mix the two rendering contents.
+            chunks.push_back({range, graph.GetPasses()[range.PassIndex].Description.DrawCommands.size() > 64});
+        }
+        const std::size_t workCount = static_cast<std::size_t>(
+                std::ranges::count_if(chunks, [](const RecordingChunk& chunk) { return chunk.Secondary; }));
+        if (workCount == 0) {
+            return chunks;
+        }
+        std::atomic_size_t next{0};
+        const NCommon::TaskGroupHandle group = Executor->CreateTaskGroup();
+        try {
+            for (std::size_t worker = 0; worker < std::min(Executor->GetWorkerCount(), workCount); ++worker) {
+                Executor->SubmitToGroup(group, [this, &graph, frame, &chunks, &next](NCommon::TaskContext& task) {
+                    Path.WithWorkerContext(
+                            {frame.ApplicationFrameIndex, frame.FrameSlotIndex},
+                            task,
+                            [&](NVulkan::VulkanWorkerContext& context) {
+                                for (;;) {
+                                    const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
+                                    if (index >= chunks.size()) {
+                                        return;
+                                    }
+                                    RecordingChunk& chunk = chunks[index];
+                                    if (!chunk.Secondary) {
+                                        continue;
+                                    }
+                                    if (task.IsGroupCancellationRequested()) {
+                                        return;
+                                    }
+                                    const auto& pass = graph.GetPasses()[chunk.Range.PassIndex].Description;
+                                    const auto& image =
+                                            graph.GetResource(pass.ColorAttachments[0].Resource).ImageDescription;
+                                    const VkFormat format = VulkanColorFormat(image.Format);
+                                    const VkCommandBufferInheritanceRenderingInfo rendering{
+                                            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO,
+                                            .pNext = nullptr,
+                                            .flags = 0,
+                                            .viewMask = 0,
+                                            .colorAttachmentCount = 1,
+                                            .pColorAttachmentFormats = &format,
+                                            .depthAttachmentFormat = VK_FORMAT_UNDEFINED,
+                                            .stencilAttachmentFormat = VK_FORMAT_UNDEFINED,
+                                            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+                                    };
+                                    const VkCommandBufferInheritanceInfo inheritance{
+                                            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+                                            .pNext = &rendering,
+                                            .renderPass = VK_NULL_HANDLE,
+                                            .subpass = 0,
+                                            .framebuffer = VK_NULL_HANDLE,
+                                            .occlusionQueryEnable = VK_FALSE,
+                                            .queryFlags = 0,
+                                            .pipelineStatistics = 0,
+                                    };
+                                    const VkCommandBufferBeginInfo begin{
+                                            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                            .pNext = nullptr,
+                                            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                                                     VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+                                            .pInheritanceInfo = &inheritance,
+                                    };
+                                    VkCommandBuffer commands = context.AcquireSecondaryCommandBuffer();
+                                    Check(vkBeginCommandBuffer(commands, &begin));
+                                    RecordDraws(commands,
+                                                {image.Extent.Width, image.Extent.Height},
+                                                std::span{pass.DrawCommands}.subspan(chunk.Range.FirstDraw,
+                                                                                     chunk.Range.DrawCount));
+                                    Check(vkEndCommandBuffer(commands));
+                                    chunk.Command = commands;
+                                }
+                            });
+                });
+            }
+            Executor->SealGroup(group);
+        } catch (...) {
+            // Submission may fail after siblings have started borrowing pools/graph storage.
+            // Cancel + join on the host before stack unwinding releases any recording inputs.
+            Executor->CancelGroup(group);
+            Executor->WaitGroup(group);
+            throw;
+        }
+        Executor->WaitGroup(group);
+        if (Executor->GetGroupStatus(group) != NCommon::ETaskGroupStatus::COMPLETED) {
+            const auto error = Executor->GetGroupError(group);
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Secondary recording failed: {}",
+                                  error ? error->Message : "cancelled");
+        }
+        return chunks;
+    }
+
     void Record(VkCommandBuffer command,
                 VkImage image,
                 VkImageView view,
@@ -261,6 +446,16 @@ public:
                     (void)FindMesh(draw);
                     return FindMaterial(draw).Key.GetDescriptor();
                 });
+        for (const auto& pass: graph.GetPasses()) {
+            for (const DrawCommandData& draw: pass.Description.DrawCommands) {
+                const Mesh& mesh = FindMesh(draw);
+                const Material& material = FindMaterial(draw);
+                uses.push_back(mesh.Vertices.GetRetentionToken());
+                uses.push_back(mesh.Indices.GetRetentionToken());
+                uses.insert(uses.end(), material.ResourceUses.begin(), material.ResourceUses.end());
+            }
+        }
+        const auto chunks = RecordSecondaries(graph, frame);
         std::vector<std::pair<GraphResourceId, std::shared_ptr<TransientImage>>> transients;
         for (const GraphResourceLifetime& lifetime: graph.GetLifetimes()) {
             if (lifetime.Allocation) {
@@ -305,8 +500,7 @@ public:
                 }
             }
         };
-        std::size_t recordingRangeIndex = 0;
-        const auto recordingRanges = graph.GetRecordingRanges();
+        std::size_t chunkIndex = 0;
         for (std::size_t passIndex = 0; passIndex < graph.GetPasses().size(); ++passIndex) {
             const auto& pass = graph.GetPasses()[passIndex];
             applyTransitions(passIndex);
@@ -319,60 +513,23 @@ public:
                                                             Load(color.Load),
                                                             Store(color.Store),
                                                             clear};
-            const NVulkan::VulkanRenderingScope rendering{command,
-                                                          {.offset = {}, .extent = renderExtent},
-                                                          std::span{&attachment, 1}};
-            const VkViewport viewport{0,
-                                      0,
-                                      static_cast<float>(renderExtent.width),
-                                      static_cast<float>(renderExtent.height),
-                                      0,
-                                      1};
-            const VkRect2D scissor{.offset = {}, .extent = renderExtent};
-            vkCmdSetViewport(command, 0, 1, &viewport);
-            vkCmdSetScissor(command, 0, 1, &scissor);
-            while (recordingRangeIndex < recordingRanges.size() &&
-                   recordingRanges[recordingRangeIndex].PassIndex == passIndex) {
-                const GraphRecordingRange& recordingRange = recordingRanges[recordingRangeIndex++];
-                const auto draws = std::span{pass.Description.DrawCommands}.subspan(recordingRange.FirstDraw,
-                                                                                    recordingRange.DrawCount);
-                for (const auto& draw: draws) {
-                    const auto& mesh = FindMesh(draw);
-                    const auto& material = FindMaterial(draw);
-                    uses.push_back(mesh.Vertices.GetRetentionToken());
-                    uses.push_back(mesh.Indices.GetRetentionToken());
-                    uses.insert(uses.end(), material.ResourceUses.begin(), material.ResourceUses.end());
-                    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, material.Pipeline->GetHandle());
-                    if (material.Descriptors.IsValid()) {
-                        VkDescriptorSet set = material.Descriptors.GetSet();
-                        vkCmdBindDescriptorSets(command,
-                                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                material.Pipeline->GetLayout(),
-                                                0,
-                                                1,
-                                                &set,
-                                                0,
-                                                nullptr);
-                    }
-                    VkBuffer vertex = mesh.Vertices.GetBuffer();
-                    const VkDeviceSize offset = 0;
-                    vkCmdBindVertexBuffers(command, 0, 1, &vertex, &offset);
-                    vkCmdBindIndexBuffer(command, mesh.Indices.GetBuffer(), 0, VK_INDEX_TYPE_UINT32);
-                    if (material.Key.GetDescriptor().VertexPushConstantBytes != 0) {
-                        auto transform = draw.ViewProjection * draw.ResolvedWorldTransform.value_or(
-                                                                       NMath::ComposeTransform(draw.WorldTransform));
-                        // Engine clip space is Y-up; Vulkan uses a positive-height framebuffer viewport.
-                        for (std::size_t column = 0; column < 4; ++column) {
-                            transform(1, column) = -transform(1, column);
-                        }
-                        vkCmdPushConstants(command,
-                                           material.Pipeline->GetLayout(),
-                                           VK_SHADER_STAGE_VERTEX_BIT,
-                                           0,
-                                           64,
-                                           transform.GetValues().data());
-                    }
-                    vkCmdDrawIndexed(command, static_cast<std::uint32_t>(mesh.Lease->GetIndices().size()), 1, 0, 0, 0);
+            const bool parallelPass = chunkIndex < chunks.size() && chunks[chunkIndex].Range.PassIndex == passIndex &&
+                                      chunks[chunkIndex].Secondary;
+            const NVulkan::VulkanRenderingScope rendering{
+                    command,
+                    {.offset = {}, .extent = renderExtent},
+                    std::span{&attachment, 1},
+                    parallelPass ? NVulkan::ERenderingContents::SECONDARY_COMMAND_BUFFERS
+                                 : NVulkan::ERenderingContents::INLINE};
+            if (parallelPass) {
+                while (chunkIndex < chunks.size() && chunks[chunkIndex].Range.PassIndex == passIndex) {
+                    VkCommandBuffer secondary = chunks[chunkIndex++].Command;
+                    vkCmdExecuteCommands(command, 1, &secondary);
+                }
+            } else {
+                RecordDraws(command, renderExtent, pass.Description.DrawCommands);
+                while (chunkIndex < chunks.size() && chunks[chunkIndex].Range.PassIndex == passIndex) {
+                    ++chunkIndex;
                 }
             }
         }
@@ -381,8 +538,10 @@ public:
     }
 };
 
-GraphPresentation::GraphPresentation(NWindow::Window& window, const NGraphics::PresentationConfig& config)
-    : m_impl(std::make_unique<Impl>(window, config))
+GraphPresentation::GraphPresentation(NWindow::Window& window,
+                                     const NGraphics::PresentationConfig& config,
+                                     GraphRecordingConfig recording)
+    : m_impl(std::make_unique<Impl>(window, config, recording))
     , m_owner(NGraphics::NBackend::CompletionAccess::NewOwner()) {
 }
 GraphPresentation::~GraphPresentation() = default;

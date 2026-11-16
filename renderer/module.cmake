@@ -10,6 +10,8 @@ API(
 SOURCES(
     execution_validation.h
     execution_validation.cpp
+    recording_plan.h
+    recording_plan.cpp
     render_graph.cpp
     extraction.cpp
     renderer.cpp

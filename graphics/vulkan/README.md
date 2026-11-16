@@ -143,9 +143,11 @@ View непереносим и действует только внутри call
 ACQUIRED frame. Scheduler и device должны переживать кольцо, все CPU callbacks должны закончиться
 до его разрушения. Завершение GPU при shutdown обеспечивает прежний путь кольца.
 
-Worker-пулы являются основой будущей параллельной записи: здесь не включаются PARALLEL capability, деление
-draws на chunks, secondary inheritance или новый порядок submits. Descriptor/scratch arenas
-могут добавляться к тому же worker owner без изменения Renderer-facing contracts.
+`GraphPresentation` поддерживает режим `PARALLEL` на внешнем `TaskSystem`: крупные compiled ranges
+записываются в worker-local secondary buffers и исполняются primary в порядке графа. Пулы и буферы
+переиспользуются только после точного completion слота. Serial остаётся исходным режимом и fallback
+небольших проходов. Подробности: [контракт исполнения](../../renderer/graph_execution.md). Descriptor/scratch
+arenas могут добавляться к тому же worker owner без изменения Renderer-facing contracts.
 
 Каждый контекст владеет состоянием буферов команд Vulkan для графической очереди. Повторное получение контекста допускается только после завершения предыдущего значения временной шкалы. До этого `TryAcquire()` не возвращает контекст и вызывающий код ограничивает допуск, а не сбрасывает ещё используемые пулы. Если WSI не смог получить изображение, уже полученный контекст разрешается освободить до отправки.
 
