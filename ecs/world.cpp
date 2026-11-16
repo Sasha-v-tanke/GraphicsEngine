@@ -7,6 +7,7 @@
 #include <limits>
 #include <numeric>
 
+#include <GraphicsEngine/ecs/entity_ref.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <ecs/internal/scoped_batch.h>
 #include <ecs/internal/system_run.h>
@@ -90,8 +91,18 @@ void World::DeferReparent(DeferredStructuralCommandBuffer& buffer,
     PushDeferredCommand(buffer, std::make_unique<DeferredReparentCommand>(child, parent, mode));
 }
 
+struct NInternal::EntityAccessScope {
+    explicit EntityAccessScope(std::thread::id thread)
+        : Thread(thread) {
+    }
+    const std::thread::id Thread;
+    std::atomic_bool Active = true;
+};
+
 struct World::SystemInvocation {
     World* Owner = nullptr;
+    std::size_t SystemIndex = 0;
+    std::shared_ptr<NInternal::EntityAccessScope> EntityScope;
     std::optional<std::uint32_t> StructuralOrder;
     std::uint64_t Id = 0;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
@@ -1200,6 +1211,7 @@ void World::CollectScopedDirty(std::vector<SystemInvocation>& invocations) noexc
 }
 
 void World::ExecuteSystem(std::size_t index, SystemInvocation& invocation) {
+    invocation.SystemIndex = index;
     auto* previous = CurrentSystemInvocation_;
     CurrentSystemInvocation_ = &invocation;
     try {
@@ -1211,8 +1223,14 @@ void World::ExecuteSystem(std::size_t index, SystemInvocation& invocation) {
         }
     } catch (...) {
         invocation.Error = std::current_exception();
+        if (invocation.EntityScope) {
+            invocation.EntityScope->Active.store(false);
+        }
         CurrentSystemInvocation_ = previous;
         throw;
+    }
+    if (invocation.EntityScope) {
+        invocation.EntityScope->Active.store(false);
     }
     CurrentSystemInvocation_ = previous;
 }
@@ -1657,8 +1675,7 @@ void World::CommitPending() {
     ApplyDeferredStructuralChanges(true);
 }
 
-EntityReference World::QueueCreateEntity() {
-    std::scoped_lock lock{DeferredStructuralMutex_};
+void World::ValidateUserCreateAllowed() const {
     ValidateStructuralWriteAllowed();
     if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Worker creates require a producer capability");
@@ -1666,6 +1683,11 @@ EntityReference World::QueueCreateEntity() {
     if (m_isCommitting) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural publication cannot enqueue commands");
     }
+}
+
+EntityReference World::QueueCreateEntity() {
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    ValidateUserCreateAllowed();
     const Entity identity = ReserveDeferredEntityLocked(DeferredStructuralCommands_);
     DeferredStructuralCommands_.back()->Description.Strict = true;
     return GetEntityReference(identity);
@@ -1884,4 +1906,84 @@ void World::PreflightStructuralCommands(const std::vector<std::unique_ptr<IDefer
     }
 }
 
+EntityRef World::GetEntityRef(EntityReference entity) {
+    EntityRef result{*this, entity};
+    ValidateEntityRefContext(result);
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        ValidateUserIdentity(entity);
+    }
+    if (auto* invocation = GetCurrentSystemInvocation()) {
+        if (!invocation->EntityScope) {
+            invocation->EntityScope = std::make_shared<NInternal::EntityAccessScope>(std::this_thread::get_id());
+        }
+        result.m_scope = invocation->EntityScope;
+        result.m_scopeBound = true;
+    }
+    return result;
+}
+
+void World::ValidateEntityRefContext(const EntityRef& entity) const {
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (ExecutionPoisoned_ || m_isCommitting || (IsRunningSystems_ && invocation == nullptr) ||
+        (NCommon::TaskSystem::IsCurrentThreadWorker() && invocation == nullptr)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "EntityRef requires an owner phase or active invocation");
+    }
+    if (entity.m_scopeBound) {
+        const auto scope = entity.m_scope.lock();
+        if (!scope || !scope->Active.load() || scope->Thread != std::this_thread::get_id() || invocation == nullptr ||
+            invocation->EntityScope != scope) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "EntityRef invocation capability has expired");
+        }
+    }
+}
+
+bool World::ValidateEntityRefComponentAccess(EntityReference entity, std::type_index type, bool write) const {
+    {
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        ValidateUserIdentity(entity);
+    }
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (invocation != nullptr) {
+        const auto& system = Systems_[invocation->SystemIndex];
+        if (!std::ranges::any_of(system.Access, [type, write](const SystemAccess& access) {
+                return access.Component == type && (!write || access.Mode == ESystemAccessMode::WRITE);
+            })) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Undeclared EntityRef component access");
+        }
+        if (system.Scoped) {
+            const bool allowed = std::ranges::any_of(system.Scoped->Access, [&](const auto& declaration) {
+                if (declaration.Access.Component != type ||
+                    (write && declaration.Access.Mode != ESystemAccessMode::WRITE)) {
+                    return false;
+                }
+                const auto& scope = declaration.Scope;
+                switch (scope.Kind) {
+                case NInternal::EAccessScope::ENTITY:
+                case NInternal::EAccessScope::ENTITY_SET:
+                    return std::ranges::find(scope.Entities, entity) != scope.Entities.end();
+                case NInternal::EAccessScope::CHUNK:
+                    return entity.Identity.Index >= scope.Begin && entity.Identity.Index - scope.Begin < scope.Count;
+                case NInternal::EAccessScope::WHOLE_STORAGE:
+                case NInternal::EAccessScope::UNKNOWN:
+                    return true;
+                case NInternal::EAccessScope::RESOURCE:
+                    return false;
+                }
+                return false;
+            });
+            if (!allowed) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "EntityRef is outside the declared scope");
+            }
+        }
+    }
+    return IsAlive(entity.Identity);
+}
+
+void World::TrackEntityRefWrite(std::type_index type) {
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (invocation == nullptr || invocation->Batch == nullptr) {
+        TrackComponentAccess(type);
+    }
+}
 } // namespace NEcs

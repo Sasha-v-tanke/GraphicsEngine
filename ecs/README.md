@@ -73,3 +73,5 @@ Legacy immediate `CreateEntity/AddComponent` и `Defer*` сохраняют пр
 replace/partial apply в чисто legacy пакете. При смешивании с Queue-командами весь commit проходит preflight.
 Enabled metadata публикуется здесь; изменение фильтрации Query и новый EntityRef относятся к FEATURE-0083/0084.
 Имена и fluent Scene-фасад добавляются в FEATURE-0082, runtime Scene capability integration — в FEATURE-0087.
+
+Пользовательский фасад `EntityRef` и его scope/lifetime описаны в [docs/about/entity_ref.md](../docs/about/entity_ref.md); пример — [создание сущности](../docs/how_to/create_entity.md).

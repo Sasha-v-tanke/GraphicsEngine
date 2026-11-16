@@ -2,12 +2,15 @@ MODULE(Ecs)
 
 API(
     entity.h
+    entity_ref.h
+    name_component.h
     hierarchy.h
     system_access.h
     world.h
 )
 
 SOURCES(
+    entity_ref.cpp
     internal/transform_resolver.h
     internal/transform_resolver.cpp
     internal/adaptive_traversal.h

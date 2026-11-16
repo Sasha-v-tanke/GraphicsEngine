@@ -8,6 +8,8 @@
 
 #include <GraphicsEngine/application/application.h>
 #include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/ecs/entity_ref.h>
+#include <GraphicsEngine/ecs/name_component.h>
 #include <GraphicsEngine/ecs/world.h>
 #include <GraphicsEngine/graphics/buffer.h>
 #include <GraphicsEngine/graphics/graphics_capabilities.h>
@@ -74,6 +76,24 @@ private:
 };
 
 int main() {
+    {
+        NScene::Scene userScene;
+        auto entity = userScene.CreateEntity("installed EntityRef")
+                              .AddComponent<std::unique_ptr<int>>(std::make_unique<int>(82));
+        if (!entity.IsPending() || entity.IsAlive() || entity.TryGetComponent<std::unique_ptr<int>>() != nullptr) {
+            return 82;
+        }
+        userScene.CommitPending();
+        if (*std::as_const(entity).GetComponent<std::unique_ptr<int>>() != 82 ||
+            entity.GetComponent<NEcs::NameComponent>().Value != "installed EntityRef") {
+            return 83;
+        }
+        entity.Destroy();
+        userScene.CommitPending();
+        if (entity.IsAlive()) {
+            return 84;
+        }
+    }
     {
         NEcs::World userWorld;
         const NEcs::EntityReference pending = userWorld.QueueCreateEntity();

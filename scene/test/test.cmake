@@ -1,6 +1,7 @@
 TEST_SUITE(Scene)
 
 SOURCES(
+    entity_ref.cpp
     scene_test.cpp
 )
 
