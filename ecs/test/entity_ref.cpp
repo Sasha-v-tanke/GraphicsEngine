@@ -230,4 +230,24 @@ TEST(EntityRef, DetachedWorkerDoesNotInheritOwnerAccess) {
     tasks.Wait(task);
     EXPECT_EQ(host.GetComponent<Position>().Value, 9);
 }
+
+TEST(EntityRef, SystemStructuralIntakeReturnsABoundFacadeWithoutEarlyPublication) {
+    NEcs::World world;
+    auto host = world.GetEntityRef(world.QueueCreateEntity()).AddComponent<Position>(1);
+    world.CommitPending();
+    NEcs::EntityRef chained;
+    world.RegisterSystem(
+            {NEcs::Read<Missing>()},
+            [&](NEcs::World&) {
+                chained = host.AddComponent<Missing>();
+                EXPECT_EQ(chained.GetReference(), host.GetReference());
+                EXPECT_FALSE(chained.HasComponent<Missing>());
+            },
+            NEcs::SystemSchedule{.Id = 10},
+            10);
+    NCommon::TaskSystem tasks{1};
+    world.RunSystems(tasks);
+    EXPECT_TRUE(host.HasComponent<Missing>());
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)chained.HasComponent<Missing>(); });
+}
 } // namespace

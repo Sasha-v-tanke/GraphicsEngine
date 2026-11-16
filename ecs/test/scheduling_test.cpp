@@ -297,11 +297,13 @@ TEST(EcsScheduling, FailureJoinsIndependentWorkCancelsDependentsAndRollsBackPhas
     world.RegisterSystem(
             {},
             [&](NEcs::World& current) {
-                independentEntered.release();
-                releaseIndependent.acquire();
                 auto producer = current.CreateDeferredStructuralCommandBuffer(0);
                 created = current.DeferCreateEntity(producer);
                 NEcs::World::DeferDestroyEntity(producer, existing);
+                // Admit before the other callback fails: failure closes new producer admission,
+                // but this already-running producer must still retire and discard its commands.
+                independentEntered.release();
+                releaseIndependent.acquire();
                 current.SubmitDeferredStructuralCommands(std::move(producer));
                 independentFinished = true;
             },
