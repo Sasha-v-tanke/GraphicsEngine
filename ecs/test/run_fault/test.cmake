@@ -1,7 +1,7 @@
 TEST_SUITE(EcsRunFault)
 
 SOURCES(allocation.cpp)
-PRIVATE_DEPENDS(Ecs Thread Common)
+PRIVATE_DEPENDS(Ecs Scene Thread Common)
 TEST_LABELS(small cpp ecs)
 set_tests_properties(${GRAPHICS_ENGINE_CURRENT_TARGET} PROPERTIES TIMEOUT 45)
 if (GRAPHICS_ENGINE_ENABLE_ASAN)

@@ -21,6 +21,13 @@ TEST(Error, CreatesErrorCode) {
     EXPECT_TRUE(code);
 }
 
+TEST(Error, NotReadyHasItsOwnCodeAndMessage) {
+    const std::error_code code = NCommon::make_error_code(NCommon::EError::NOT_READY);
+    EXPECT_EQ(code.message(), "Not ready");
+    EXPECT_NE(code, NCommon::make_error_code(NCommon::EError::NOT_FOUND));
+    EXPECT_NE(code, NCommon::make_error_code(NCommon::EError::INVALID_STATE));
+}
+
 TEST(Error, ComparesErrorCodes) {
     const std::error_code first = NCommon::make_error_code(NCommon::EError::INVALID_STATE);
 

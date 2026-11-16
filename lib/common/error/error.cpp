@@ -33,6 +33,8 @@ public:
             return "Unsupported operation";
         case EError::CANCELLED:
             return "Operation cancelled";
+        case EError::NOT_READY:
+            return "Not ready";
         case EError::NOT_IMPLEMENTED:
             return "Not implemented";
         }

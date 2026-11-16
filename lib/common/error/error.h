@@ -18,6 +18,7 @@ enum class EError {
     UNSUPPORTED,
     NOT_IMPLEMENTED,
     CANCELLED,
+    NOT_READY,
 };
 
 std::error_code make_error_code(EError error) noexcept;

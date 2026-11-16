@@ -26,6 +26,10 @@
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
 
+namespace NScene {
+class Scene;
+}
+
 namespace NCommon {
 class TaskSystem;
 }
@@ -36,9 +40,12 @@ class ScopedWorldAccess;
 class WorldChangeAccess;
 struct ScopedSystem;
 struct ResolvedBatch;
+struct EntityAccessScope;
 } // namespace NEcs::NInternal
 
 namespace NEcs {
+
+class EntityRef;
 
 class World {
 public:
@@ -123,6 +130,8 @@ public:
 
     // References qualify generational Entity handles with this World's stable lifetime identity.
     [[nodiscard]] EntityReference GetEntityReference(Entity entity) const noexcept;
+    // Binds to the current invocation when called from a system. Later use of that binding is rejected.
+    [[nodiscard]] EntityRef GetEntityRef(EntityReference entity);
     [[nodiscard]] TopologySnapshot AcquireTopologySnapshot() const;
     void SetLocalTransform(EntityReference entity, const NMath::Mat4& local);
     void DeferReparent(EntityReference child, EntityReference parent, EReparentMode mode = EReparentMode::KEEP_LOCAL);
@@ -443,6 +452,11 @@ private:
             this->Description = {.Kind = ECommandKind::ADD, .Identity = entity, .Component = typeid(T)};
         }
 
+        void BindEntity(Entity entity) noexcept {
+            Entity_ = entity;
+            this->Description.Identity = entity;
+        }
+
         void Apply(World& world) override {
             if (!world.IsAlive(Entity_)) {
                 return;
@@ -553,6 +567,41 @@ private:
         }
 
         return *static_cast<ComponentStorage<T>*>(iterator->second.get());
+    }
+
+    friend class EntityRef;
+    friend class NScene::Scene;
+    void ValidateEntityRefContext(const EntityRef& entity) const;
+    [[nodiscard]] bool ValidateEntityRefComponentAccess(EntityReference entity, std::type_index type, bool write) const;
+    void TrackEntityRefWrite(std::type_index type);
+    template<typename T>
+    [[nodiscard]] T* ResolveEntityRefComponent(EntityReference entity, bool write) {
+        if (!ValidateEntityRefComponentAccess(entity, typeid(T), write)) {
+            return nullptr;
+        }
+        auto* storage = FindStorage<T>();
+        if (storage == nullptr || !storage->Contains(entity.Identity.Index)) {
+            return nullptr;
+        }
+        if (write) {
+            TrackEntityRefWrite(typeid(T));
+        }
+        return &storage->Get(entity.Identity.Index);
+    }
+    void ValidateUserCreateAllowed() const;
+    template<typename T>
+    [[nodiscard]] EntityReference QueueCreateEntityWithComponent(T component) {
+        // Prepare the payload and capacity before reserving an identity: no orphan create on intake failure.
+        auto command = std::make_unique<DeferredAddComponentCommand<T, T>>(Entity{}, std::move(component));
+        command->Description.Strict = true;
+        std::scoped_lock lock{DeferredStructuralMutex_};
+        ValidateUserCreateAllowed();
+        DeferredStructuralCommands_.reserve(DeferredStructuralCommands_.size() + 2);
+        const Entity identity = ReserveDeferredEntityLocked(DeferredStructuralCommands_);
+        DeferredStructuralCommands_.back()->Description.Strict = true;
+        command->BindEntity(identity);
+        DeferredStructuralCommands_.push_back(std::move(command));
+        return GetEntityReference(identity);
     }
 
     void ApplyDeferredStructuralChanges(bool requireAllBuffers);

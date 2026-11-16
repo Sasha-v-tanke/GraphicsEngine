@@ -8,6 +8,7 @@
 #include <memory>
 #include <new>
 #include <semaphore>
+#include <string>
 #include <utility>
 
 #include <ecs/internal/adaptive_traversal.h>
@@ -17,6 +18,7 @@
 #include <ecs/world.h>
 #include <gtest/gtest.h>
 #include <lib/thread/task/task_system.h>
+#include <scene/scene.h>
 
 namespace {
 
@@ -532,6 +534,34 @@ TEST(EcsRunFault, UserCommitAllocationFailuresNeverPublishFalseSuccess) {
     }
     EXPECT_GT(rejected, 0);
     EXPECT_GT(poisoned, 0);
+    EXPECT_GT(succeeded, 0);
+}
+
+TEST(EcsRunFault, NamedSceneCreationIntakeFailureNeverQueuesAnOrphanEntity) {
+    int rejected = 0;
+    int succeeded = 0;
+    const std::string name(200, 'n');
+    for (std::ptrdiff_t budget = 0; budget < 60; ++budget) {
+        NScene::Scene scene;
+        NEcs::EntityRef entity;
+        AllocationBudget = budget;
+        try {
+            entity = scene.CreateEntity(name);
+            AllocationBudget = -1;
+            ++succeeded;
+        } catch (const std::bad_alloc&) {
+            AllocationBudget = -1;
+            ++rejected;
+        }
+        scene.CommitPending();
+        if (entity.IsAlive()) {
+            EXPECT_EQ(scene.GetWorld().GetAliveEntityCount(), 1U);
+            EXPECT_EQ(entity.GetComponent<NEcs::NameComponent>().Value, name);
+        } else {
+            EXPECT_EQ(scene.GetWorld().GetAliveEntityCount(), 0U);
+        }
+    }
+    EXPECT_GT(rejected, 0);
     EXPECT_GT(succeeded, 0);
 }
 } // namespace
