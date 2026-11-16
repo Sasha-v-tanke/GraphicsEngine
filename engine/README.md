@@ -35,7 +35,7 @@ CREATED -> RUNNING -> STOPPING -> STOPPED
 
 Перед вызовом `OnUpdate()` приложение вызывает `TryBeginFrame()`: метод резервирует физический слот и закрывает допуск. `CanAcceptUpdate()` остаётся лишь подсказкой о готовности и не может заменять резервирование. Пока резервирование не завершено, задачи обновления `Engine` не публикуются. `CompleteUserUpdate(FrameKey)` публикует такую задачу ровно один раз после завершения пользовательского обработчика; от неё зависит обычная контрольная точка рисования. Повторные конкурентные сигналы, значения по умолчанию, чужие владельцы, отменённые кадры и сигналы от старого запуска возвращают `false`. Непрозрачный ключ содержит владельца `Engine`, `RunGeneration`, монотонный `FrameSequence`, слот и его поколение; индекс слота по модулю сам по себе не является идентификатором. Ключ не владеет `Engine` и не предоставляет доступ к памяти кадра.
 
-`AbortFrame(key)` освобождает незавершённое резервирование и пропускает контрольную точку рисования. Нельзя прервать кадр после того, как пользовательское завершение опубликовало вычислительную работу. Вызывающий код обязан закончить пользовательские действия до отмены или сообщения о завершении. `Stop()` закрывает допуск, завершает опубликованных потребителей процессора и графического устройства, затем отменяет оставшиеся резервирования без сигнала; он не ждёт внешний сигнал, который уже не поступит. Запоздавшие ключи не влияют на последующий `Run()`. `ScheduleUserUpdate(key, callback)` публикует единственный worker callback и только после его возврата начинает моделирование. `IsUpdateComplete(key)` разрешает публикацию rendering intent; worker `OnPostUpdate` запускается после семантического завершения ECS, включая producers и structural commit; возврат задачи-оркестратора не открывает эту границу. См. [асинхронное обновление](async_update.md).
+`AbortFrame(key)` освобождает незавершённое резервирование и пропускает контрольную точку рисования. Нельзя прервать кадр после того, как пользовательское завершение опубликовало вычислительную работу. Вызывающий код обязан закончить пользовательские действия до отмены или сообщения о завершении. `Stop()` закрывает допуск, завершает опубликованных потребителей процессора и графического устройства, затем отменяет оставшиеся резервирования без сигнала; он не ждёт внешний сигнал, который уже не поступит. Запоздавшие ключи не влияют на последующий `Run()`. `ScheduleUserUpdate(key, callback)` публикует единственный worker callback и только после его возврата начинает моделирование. `IsUpdateComplete(key)` разрешает публикацию rendering intent; worker `OnPostUpdate` запускается после семантического завершения ECS, включая producers и structural commit; возврат задачи-оркестратора не открывает эту границу. См. [асинхронное обновление](#семантическое-завершение-update).
 
 Прежний `Update()` остаётся удобной атомарной операцией резервирования и завершения для прямых клиентов `Engine` с сохранением порядка обновления и рисования. Допуск следующего кадра всё равно ждёт извлечения данных, а повторное использование физической памяти — окончания работы процессора и устройства.
 
@@ -168,4 +168,69 @@ DeltaTime(N) = start(Simulation N) - start(Simulation N-1)
 
 `runtime/engine_state_manager.*` управляет состояниями жизненного цикла `Engine` и координирует одновременные вызовы `Stop()` в пределах поколения запуска. `Engine::Impl` сохраняет владение и ответственность за освобождение `TaskSystem` и `FrameScheduler`. Общий мьютекс метаданных защищает жизненный цикл и допуск кадров и пользовательских задач; снимок поколения считывается атомарно до захвата мьютекса. Публичный интерфейс `Engine` не изменён.
 
-Подробный контракт опционального PostUpdate и границ допуска: [gates кадра](phase_gates.md).
+Подробный контракт опционального PostUpdate и границ допуска: [gates кадра](#внутренние-gates-кадра).
+
+
+## Семантическое завершение Update
+
+`IFrameRuntime::ScheduleUpdate(frame, tasks, completion)` может вернуть до завершения систем. Default implementation вызывает legacy `Update` и передаёт успех/исключение в completion. ECS runtime вызывает `ScheduleWorldUpdate` с настоящим `shared_ptr<World>`. Для Scene используется aliasing shared_ptr, удерживающий SceneManager::Acquire/AcquireActive; слабый lifetime token не является владением.
+
+Adapter выполняет PrepareSystems → GetHandle → BindCancellation → Start. Запись completion существует до первой публикации и допускает inline Finish. При поздней привязке после Stop cancellation вызывается сразу вне runtime locks. Finish разрешён после всех systems, producer tickets, структурного commit и уничтожения временных payloads; повторный сигнал игнорируется. Конкретный FrameKey захвачен владельцем completion: сигнал не может завершить другую генерацию слота.
+
+Engine отдельно хранит orchestration TaskHandle и semantic completion. Worker OnPostUpdate ждёт semantic success; ранний legacy Draw регистрирует намерение, которое превращается в задачу лишь после успешного completion. Задача рисования также зависит от возврата оркестратора. Ошибка/отмена закрывает admission и не запускает Extract. Слот не освобождается в catch при живых CPU consumers.
+
+Stop закрывает admission, запрашивает cancellation всех completion records вне metadata lock и ждёт их quiescence до WaitIdle. Это существенно для producer tickets, которые могут пережить idle TaskSystem. Пул жив до окончания принятых wrappers, callback tails и Drain. Повторный запуск получает новые FrameKey. Completion callbacks пробуждают main через платформенный wakeup вне runtime metadata locks; bounded maintenance ожидание сохраняется для GPU.
+
+Runtime обязан вызвать Finish либо передать completion адаптеру, гарантированно завершающему его после quiescence. Нельзя захватывать TaskContext& или frame arena pointers в незарегистрированную долгоживущую работу. Синхронный RunSystems(TaskSystem&) остаётся host-only.
+
+### Контрольные точки Update/Draw
+
+`Engine::Update()` допускает следующий кадр через существующие World/slot gates. Принятый `Draw()` уже завершает application checkpoint текущего кадра и увеличивает `m_nextDrawFrameIndex`; `DrawRequested=true` может предшествовать `HasDrawTask=true`. В этом промежутке повторный `Update()` возвращает false через `TryBeginFrameLocked`, не бросает out-of-order и не запускает callback повторно. Draw/Extract по-прежнему требуют semantic Update success. После Extract открывается World gate, но физический слот ждёт всех CPU/GPU consumers. Два Update без принятого Draw, Draw до Update и повтор Draw остаются INVALID_STATE.
+
+Воспроизведение на `a06282d` (исходный failing main) с временной трассой старого guard:
+
+```txt
+Update(0) -> Draw intent(0) -> Update retry
+next=1 reservation=1 updateTask=1 drawRequested=1 drawTask=0 updateSucceeded=0 admissionOpen=0
+Application update checkpoint is out of order: Invalid state
+```
+
+CPU regression удерживает semantic completion без блокировки worker. Матрица workers=1/2/8 × slots=1/2/3 выполняет по 12 кадров, проверяет отсутствие раннего Extract/Draw, прогресс независимой job, bounded GPU backpressure и retirement frame storage. Отдельно проверяются неверные checkpoints, failure/cancel, Stop и stale completion после restart. До исправления два новых теста падают; production guard отличается только проверкой `!DrawRequested`.
+
+Команды проверки после сборки:
+
+```sh
+GraphicsEngineEngineTests --gtest_filter='EngineLegacyCheckpoint.*'
+VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
+  GraphicsEngineVulkanBackendTests --gtest_filter=VulkanFrameContext.RecyclesEngineSlotsAfterTimelineEvents
+```
+
+GPU smoke сохраняет Required validation, 12 кадров, WorkerCount=1 и slots=1/3. Retry использует существующий progress wait вместо spin. Fixture публикует счётчик Completed перед promise: это устраняет отдельную гонку наблюдения счётчика после Stop, не меняя критерий GPU completion или assertions.
+
+## Внутренние gates кадра
+
+Engine владеет порядком `Reserve → UserUpdate → semantic EngineUpdate → PostUpdate → structural publish → Extract → immutable snapshot`. TaskSystem исполняет только READY-задачи; ни одна из этих фаз не ждёт дочернюю задачу на worker. Application обслуживает Window/MainExecutor во время backpressure. Application привязывает OnPostUpdate к зарезервированному FrameKey до публикации Update. Его target живёт до Stop/drain. Подготовленная ссылка на callback ещё не является допуском: CAS состояния WAITING → RUNNING непосредственно перед пользовательским вызовом конкурирует с WAITING → CANCELLED. Stop отменяет ожидающие callbacks до публикации STOPPING; выигравший старт callback считается выполняющимся и дренируется. Пользовательский код не исполняется под mutex Engine. После semantic success и runtime post-update join worker вызывает пользовательский callback ровно один раз перед FinalizePostUpdate; queued вызов после Stop пропускается. Callback исключение отменяет commit/Extract.
+
+Опциональный IFrameRuntime::HasPostUpdate фиксируется на весь Run. При false путь не создаёт дополнительной задачи. При true worker вызывает SchedulePostUpdate только после semantic success Update и принятого Draw intent. Возврат Engine::Update или окончание orchestration task недостаточны для допуска PostUpdate. SchedulePostUpdate возвращает настоящий join всех своих writers и capture retirement; invalid handle означает синхронное завершение. Порожденная работа зависит от переданного TaskContext::GetTask, включая failure-safe join. Нельзя отменять join, пока ещё живы зарегистрированные readers/writers.
+
+После успешного join и возврата Application::OnPostUpdate Engine вызывает FinalizePostUpdate для controlled structural commit/publication и лишь затем ScheduleExtract. Runtime не дублирует commit уже завершённого ECS Update: hook применяет только изменения post-update фазы. Отсутствующий hook не добавляет фиктивных blocking jobs. Runtime не должен оставлять незарегистрированные writes после выхода из фазы.
+
+Join ScheduleExtract охватывает всех World readers. Только после него открывается m_updateAdmissionOpen; RenderPrepare/Draw/Submit могут ещё исполняться по immutable snapshot. Физический слот по-прежнему удерживается до всех CPU и зарегистрированных GPU consumers. FrameKey и arena lifetime не меняются.
+
+Post-update descendants получают FrameContext::IsStopRequested: queued callback проверяет его непосредственно перед пользовательским кодом; running callback завершает работу кооперативно. Это generation-owned shared flag, старый контекст не видит сброшенный флаг нового Run. Engine закрывает фазовый admission при Stop/error; после drain post-update join пропущенные фазы abort-ятся, не открывая commit/extraction или новый кадр. Failure join отменяет downstream continuation; reaping сохраняет исходную ошибку и останавливает admission. Frame storage освобождается лишь после quiescence.
+
+Проверки: матрица W=1/2/8 × N=1/2/3; управляемый semantic completion после возврата оркестратора; два extraction readers с удерживаемым последним; overlap следующего admitted Update с удерживаемым immutable Draw; post-update exception, Stop/drain и restart. Новый hook внутренний и не является публичным generic DAG.
+
+## Карта переноса и пользовательские сведения
+
+| Прежний файл | Раздел-наследник |
+| --- | --- |
+| `async_update.md` | [async_update](#семантическое-завершение-update) |
+| `phase_gates.md` | [phase_gates](#внутренние-gates-кадра) |
+
+Рабочий перечень пользовательских сведений для IMPROVE-0073 (содержание пока сохранено в разделах выше):
+
+- `TryBeginFrame`/`CompleteUserUpdate`/`AbortFrame` и порядок `Run`/`Stop` → `docs/about/engine.md`.
+- Пользовательский путь обновления, PostUpdate и Draw → `docs/about/engine.md` и сценарий первого приложения в `docs/how_to/`.
+
+Внутренние состояния, потоки, владение и ошибки остаются контрактом этого README. Целевые пользовательские страницы пока не опубликованы; [индекс документации](../docs/README.md) ведёт только к существующим страницам.
