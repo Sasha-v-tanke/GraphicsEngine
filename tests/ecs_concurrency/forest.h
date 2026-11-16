@@ -118,6 +118,9 @@ public:
     void Reparent(std::size_t child, std::size_t parent) {
         Owner.DeferReparent(Entities[child], Entities[parent]);
         Owner.ApplyDeferredStructuralChanges();
+        if (Parents[child] == parent) {
+            return;
+        }
         if (Parents[child] != NO_PARENT) {
             std::erase(Children[Parents[child]], child);
         }

@@ -143,6 +143,18 @@ TEST(EcsAcceptance, RandomScopedReplayVersionsReparentAndLazyMatricesMatchIndepe
                 const auto after = NEcs::NInternal::WorldChangeAccess::CaptureSnapshot(world);
                 const auto dirty = after.CaptureChanges(before.GetCursor(), domain);
                 EXPECT_TRUE(dirty.HasChanges());
+                for (const auto mutation: mutations) {
+                    const auto identity = forest.Entities[mutation.Entity].Identity;
+                    EXPECT_TRUE(dirty.FullDirty || std::ranges::any_of(dirty.Ranges,
+                                                                       [&](const auto& range) {
+                                                                           return identity.Index >= range.Begin &&
+                                                                                  identity.Index - range.Begin <
+                                                                                          range.Count;
+                                                                       }))
+                            << "missing dirty coverage for entity " << identity.Index;
+                }
+                const auto unchanged = NEcs::NInternal::WorldChangeAccess::CaptureSnapshot(world);
+                EXPECT_FALSE(unchanged.CaptureChanges(after.GetCursor(), domain).HasChanges());
                 for (std::size_t index = 0; index < expected.size(); ++index) {
                     EXPECT_EQ(std::as_const(world).GetComponent<Value>(forest.Entities[index].Identity).Data,
                               expected[index]);
@@ -253,6 +265,63 @@ TEST(EcsAcceptance, ConflictDiagnosticsCancellationAndOwnerIsolationMatchReplay)
         EXPECT_EQ((*other)[0], 17U);
         EXPECT_GT(conflicts, 64U);
         RecordProperty("conflict_edges", static_cast<int>(conflicts));
+    }
+}
+
+TEST(EcsAcceptance, ShutdownMidTraversalDrainsCallbacksAndReleasesTopologyBeforeRestart) {
+    for (const unsigned workers: {1U, 4U, 16U}) {
+        for (std::size_t restart = 0; restart < 3; ++restart) {
+            NEcs::World world;
+            Forest forest{world, 128, EShape::BALANCED};
+            auto tasks = std::make_unique<NCommon::TaskSystem>(workers);
+            std::binary_semaphore entered{0};
+            std::binary_semaphore release{0};
+            auto token = std::make_shared<int>(0);
+            std::weak_ptr<int> retired = token;
+            auto operation = Operation(0);
+            operation.Visit = [token, &entered, &release, root = forest.Entities.front()](auto input) {
+                if (input.Entity == root) {
+                    entered.release();
+                    if (!release.try_acquire_for(std::chrono::seconds{10})) {
+                        throw std::runtime_error{"acceptance shutdown barrier timed out"};
+                    }
+                }
+                return static_cast<std::uint64_t>(input.Entity.Identity.Index) + static_cast<std::uint64_t>(*token);
+            };
+            const auto output = operation.Output;
+            NCommon::TaskGroupHandle group;
+            {
+                AdaptiveBatchPlanner planner{*tasks};
+                const std::array roots{forest.Entities.front()};
+                group = planner.ScheduleTraversal(world.AcquireTopologySnapshot(),
+                                                  roots,
+                                                  ETraversalMode::TOP_DOWN,
+                                                  std::move(operation));
+            }
+            token.reset();
+            const bool running = entered.try_acquire_for(std::chrono::seconds{10});
+            EXPECT_TRUE(running);
+            tasks->CancelGroup(group);
+            EXPECT_FALSE(output->TryAcquire(*tasks));
+            std::promise<void> stopping;
+            auto began = stopping.get_future();
+            auto stopped = std::async(std::launch::async, [owner = std::move(tasks), &stopping]() mutable {
+                stopping.set_value();
+                owner.reset();
+            });
+            began.wait();
+            release.release();
+            ASSERT_EQ(stopped.wait_for(std::chrono::seconds{10}), std::future_status::ready);
+            stopped.get();
+            EXPECT_TRUE(retired.expired());
+            EXPECT_NO_THROW(world.SetLocalTransform(forest.Entities.front(), NMath::Mat4::Identity()));
+            NCommon::TaskSystem replacement{workers};
+            NEcs::NInternal::TransformResolver resolver;
+            const auto resolve =
+                    resolver.ScheduleResolve(world.AcquireTopologySnapshot(), forest.Entities, replacement);
+            replacement.Wait(resolve.GetCompletion());
+            EXPECT_EQ(resolve.ReadResolved(replacement).GetResolvedCount(), forest.Entities.size());
+        }
     }
 }
 
