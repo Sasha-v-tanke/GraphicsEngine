@@ -86,14 +86,35 @@ struct VulkanClearPresentPath::FrameResources {
 VulkanClearPresentPath::VulkanClearPresentPath(const VulkanDevice& device,
                                                VulkanSwapchain& swapchain,
                                                std::size_t maxActiveFrames)
+    : VulkanClearPresentPath(device, swapchain, maxActiveFrames, nullptr) {
+}
+
+VulkanClearPresentPath::VulkanClearPresentPath(const VulkanDevice& device,
+                                               VulkanSwapchain& swapchain,
+                                               std::size_t maxActiveFrames,
+                                               const NCommon::TaskSystem& tasks)
+    : VulkanClearPresentPath(device, swapchain, maxActiveFrames, &tasks) {
+}
+
+VulkanClearPresentPath::VulkanClearPresentPath(const VulkanDevice& device,
+                                               VulkanSwapchain& swapchain,
+                                               std::size_t maxActiveFrames,
+                                               const NCommon::TaskSystem* tasks)
     : m_device(device)
     , m_swapchain(swapchain)
     , m_submissions(device)
-    , m_frames(device, maxActiveFrames)
+    , m_frames(tasks ? VulkanFrameContextRing(device, maxActiveFrames, *tasks)
+                     : VulkanFrameContextRing(device, maxActiveFrames))
     , m_frameResources(maxActiveFrames)
     , m_presentResources(swapchain.GetImages().size())
     , m_framebufferSize{.Width = static_cast<int>(swapchain.GetPlan().Extent.width),
                         .Height = static_cast<int>(swapchain.GetPlan().Extent.height)} {
+}
+
+void VulkanClearPresentPath::WithWorkerContext(VulkanFrameContextAcquire frame,
+                                               NCommon::TaskContext& task,
+                                               const std::function<void(VulkanWorkerContext&)>& record) {
+    m_frames.WithWorkerContext(frame, task, record);
 }
 
 VulkanClearPresentPath::~VulkanClearPresentPath() {

@@ -69,15 +69,23 @@ struct VulkanFrameContext::WorkerState: NCommon::NonTransferable {
     VkDevice Device;
     VkCommandPool Pool;
     bool Active = false;
+    std::vector<VkCommandBuffer> SecondaryBuffers;
+    std::size_t NextSecondary = 0;
 };
 
 VulkanWorkerContext::VulkanWorkerContext(const NCommon::TaskSystem& system,
                                          const NCommon::TaskContext& task,
+                                         VkDevice device,
                                          VkCommandPool pool,
+                                         std::vector<VkCommandBuffer>& secondaryBuffers,
+                                         std::size_t& nextSecondary,
                                          VulkanFrameContextAcquire frame) noexcept
     : m_system(system)
     , m_task(task)
+    , m_device(device)
     , m_pool(pool)
+    , m_secondaryBuffers(secondaryBuffers)
+    , m_nextSecondary(nextSecondary)
     , m_frame(frame) {
 }
 
@@ -86,6 +94,29 @@ VkCommandPool VulkanWorkerContext::GetCommandPool() const {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Vulkan worker context is outside its task invocation");
     }
     return m_pool;
+}
+
+VkCommandBuffer VulkanWorkerContext::AcquireSecondaryCommandBuffer() {
+    static_cast<void>(GetCommandPool());
+    if (m_nextSecondary == m_secondaryBuffers.size()) {
+        // Reserve host storage first: failure cannot lose a successfully allocated native buffer.
+        m_secondaryBuffers.push_back(VK_NULL_HANDLE);
+        const VkCommandBufferAllocateInfo info{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .commandPool = m_pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+                .commandBufferCount = 1,
+        };
+        const VkResult result = vkAllocateCommandBuffers(m_device, &info, &m_secondaryBuffers.back());
+        if (result != VK_SUCCESS) {
+            m_secondaryBuffers.pop_back();
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
+                                  "Failed to allocate secondary command buffer: {}",
+                                  GetVkResultName(result));
+        }
+    }
+    return m_secondaryBuffers[m_nextSecondary++];
 }
 
 NCommon::WorkerIndex VulkanWorkerContext::GetWorkerIndex() const noexcept {
@@ -166,6 +197,7 @@ void VulkanFrameContext::Acquire(std::uint64_t frameIndex) {
     ResetCommandPool(m_device, m_commandPool);
     for (const auto& worker: m_workers) {
         ResetCommandPool(m_device, worker->Pool);
+        worker->NextSecondary = 0;
     }
     m_frameIndex = frameIndex;
     m_state = EVulkanFrameContextState::ACQUIRED;
@@ -235,7 +267,14 @@ void VulkanFrameContext::WithWorkerContext(std::uint64_t frameIndex,
             --Count;
         }
     } release{m_mutex, m_workers[index]->Active, m_activeWorkers};
-    VulkanWorkerContext context{*m_tasks, task, m_workers[index]->Pool, {frameIndex, m_frameSlotIndex}};
+    WorkerState& worker = *m_workers[index];
+    VulkanWorkerContext context{*m_tasks,
+                                task,
+                                m_device,
+                                worker.Pool,
+                                worker.SecondaryBuffers,
+                                worker.NextSecondary,
+                                {frameIndex, m_frameSlotIndex}};
     record(context);
 }
 

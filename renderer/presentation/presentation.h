@@ -12,14 +12,31 @@
 #include <GraphicsEngine/resources/mesh_data.h>
 #include <GraphicsEngine/resources/resource_manager.h>
 
+namespace NCommon {
+class TaskSystem;
+}
+
 namespace NRenderer {
 
-// Main-thread serial graph executor. Window outlives this object. Prepare immutable
-// asset versions before frames; their CPU/GPU representations stay pinned until shutdown.
-// Available with Vulkan+GLFW. No native handles cross this boundary.
+enum class EGraphRecordingMode {
+    SERIAL,
+    PARALLEL,
+};
+
+struct GraphRecordingConfig {
+    EGraphRecordingMode Mode = EGraphRecordingMode::SERIAL;
+    // Required for PARALLEL; the existing scheduler must outlive GraphPresentation.
+    NCommon::TaskSystem* Executor = nullptr;
+};
+
+// Main-thread graph coordinator with optional worker secondary recording. Window outlives this object. Prepare
+// immutable asset versions before frames; their CPU/GPU representations stay pinned until shutdown. Available with
+// Vulkan+GLFW. No native handles cross this boundary.
 class GraphPresentation final {
 public:
-    GraphPresentation(NWindow::Window& window, const NGraphics::PresentationConfig& config);
+    GraphPresentation(NWindow::Window& window,
+                      const NGraphics::PresentationConfig& config,
+                      GraphRecordingConfig recording = {});
     ~GraphPresentation();
     GraphPresentation(const GraphPresentation&) = delete;
     GraphPresentation& operator=(const GraphPresentation&) = delete;
@@ -45,6 +62,8 @@ public:
     // Called only after successful acquire, with a fresh target for that acquired image.
     // The producer must return a graph for exactly frame and this target. It is invoked
     // once on submission, never on NOT_READY/SUSPENDED retries. It must not mutate assets.
+    // CPU recording joins only on the owner thread; workers never wait for tasks or GPU.
+    // Small passes retain inline recording in PARALLEL mode. No extra GPU submissions are added.
     // Graph declarations are consumed synchronously; prepared assets survive GPU completion.
     using BuildGraph = std::function<CompiledGraph(const std::shared_ptr<const SwapchainGraphTarget>&)>;
     [[nodiscard]] NGraphics::FrameSubmissionResult Render(RenderFrameIdentity frame, const BuildGraph& build);

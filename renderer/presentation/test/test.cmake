@@ -1,5 +1,5 @@
 TEST_SUITE(GraphPresentation)
-SOURCES(presentation.cpp model_visibility.h scene_switching.cpp)
+SOURCES(parallel_recording.cpp presentation.cpp model_visibility.h scene_switching.cpp)
 PRIVATE_DEPENDS(Application GraphPresentation Engine Ecs VulkanBackend)
 TEST_LABELS(heavy cpp renderer vulkan)
 set_tests_properties(GraphicsEngineGraphPresentationTests PROPERTIES TIMEOUT 80
