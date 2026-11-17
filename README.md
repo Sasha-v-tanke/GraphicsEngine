@@ -100,7 +100,7 @@ cmake --build --preset ci-vulkan-glfw
 ./cmake-build-ci-vulkan-glfw/GraphicsEngineSampleTriangle
 ```
 
-`GraphicsEngineSampleTriangle` готовит сетку и материал, формирует план `Renderer`, исполняет цветовой граф, проверяет изменение размера и приостановку окна, после чего выводит счётчики кадров. Для запуска требуется доступное устройство Vulkan и оконная среда. [Контракт исполнения](renderer/graph_execution.md) описывает ограничения поддерживаемого набора и синхронизацию.
+`GraphicsEngineSampleTriangle` готовит сетку и материал, формирует план `Renderer`, исполняет цветовой граф, проверяет изменение размера и приостановку окна, после чего выводит счётчики кадров. Для запуска требуется доступное устройство Vulkan и оконная среда. [Контракт исполнения](renderer/README.md#исполнение-графа-на-vulkan) описывает ограничения поддерживаемого набора и синхронизацию.
 
 ## Использование установленной библиотеки
 
@@ -136,8 +136,8 @@ find_package(GraphicsEngine REQUIRED CONFIG COMPONENTS Vulkan GLFW)
 | [`ecs/`](ecs/README.md) | Мир, сущности, компоненты, системы и [иерархия сущностей](ecs/hierarchy.md) |
 | [`scene/`](scene/README.md) | Управление сценами |
 | [`resources/`](resources/README.md) | Логические ресурсы |
-| [`renderer/`](renderer/README.md) | Подготовка рендеринга, [граф рендеринга](renderer/render_graph.md) и [исполнение графа Vulkan](renderer/graph_execution.md) |
-| [`graphics/`](graphics/README.md) | Графический интерфейс и [реализация Vulkan](graphics/vulkan/README.md) |
+| [`renderer/`](renderer/README.md) | Подготовка рендеринга, [граф рендеринга](renderer/README.md#граф-рендеринга) и [исполнение графа Vulkan](renderer/README.md#исполнение-графа-на-vulkan) |
+| [`graphics/`](graphics/README.md) | Графический интерфейс и [реализация Vulkan](graphics/README.md#реализация-vulkan) |
 | [`math/`](math/README.md) | Математические типы |
 | [`cmake/`](cmake/README.md) | Устройство системы сборки |
 | [`tests/`](tests/README.md) | Организация проверок |
