@@ -12,6 +12,11 @@ public:
     virtual ~IEngineFactory() = default;
 
     [[nodiscard]] virtual std::unique_ptr<NEngine::Engine> Create(NEngine::EngineConfig config) = 0;
+
+    // Owner-thread admission hook. Game composition publishes Scene only after successful reservation.
+    [[nodiscard]] virtual std::optional<NEngine::FrameKey> TryBeginFrame(NEngine::Engine& engine) {
+        return engine.TryBeginFrame();
+    }
 };
 
 class DefaultEngineFactory final: public IEngineFactory {

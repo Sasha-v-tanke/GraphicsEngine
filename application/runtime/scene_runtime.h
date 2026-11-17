@@ -43,6 +43,10 @@ public:
     void ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
                         NCommon::TaskSystem& tasks,
                         std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) override;
+    [[nodiscard]] bool HasPostUpdate() const noexcept override {
+        return true;
+    }
+    void FinalizePostUpdate(const NEngine::NRuntime::FrameContext& frame) override;
     [[nodiscard]] NCommon::TaskHandle ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,
                                                       NCommon::TaskContext& task) override;
     void Draw(const NEngine::NRuntime::FrameContext& frame) override;

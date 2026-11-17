@@ -9,6 +9,7 @@ SOURCES(
     runtime_mvp_test.cpp
     presentation_runtime.cpp
     scene_runtime.cpp
+    game_frame_bridge.cpp
     post_update.cpp
     service_manager.cpp
 )

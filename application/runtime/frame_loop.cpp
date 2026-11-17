@@ -117,7 +117,7 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
         return progressed;
     }
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
-        m_reservedFrame = m_engine->TryBeginFrame();
+        m_reservedFrame = m_engineFactory ? m_engineFactory->TryBeginFrame(*m_engine) : m_engine->TryBeginFrame();
         if (!m_reservedFrame) {
             return progressed;
         }

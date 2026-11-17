@@ -84,6 +84,10 @@ void SceneRuntime::Update(const NEngine::NRuntime::FrameContext&) {
 void SceneRuntime::ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
                                   NCommon::TaskSystem& tasks,
                                   std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) {
+    if (completion->IsStopRequested()) {
+        completion->Finish({.Status = NEngine::NRuntime::EUpdateStatus::CANCELLED});
+        return;
+    }
     const auto binding = GetBinding(frame);
     binding->Tasks = &tasks;
     if (!binding->Source) {
@@ -92,6 +96,13 @@ void SceneRuntime::ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
     }
     auto world = std::shared_ptr<NEcs::World>{binding->Source, &binding->Source->GetWorld()};
     NEngine::NRuntime::ScheduleWorldUpdate(std::move(world), tasks, completion);
+}
+
+void SceneRuntime::FinalizePostUpdate(const NEngine::NRuntime::FrameContext& frame) {
+    const auto binding = GetBinding(frame);
+    if (binding->Source) {
+        binding->Source->GetWorld().ApplyDeferredStructuralChanges();
+    }
 }
 
 NCommon::TaskHandle SceneRuntime::ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,
