@@ -98,7 +98,7 @@ public:
         EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
         ++Posts;
     }
-    bool IsShutdownRequested() const override {
+    [[nodiscard]] bool IsShutdownRequested() const override {
         return Shutdown || Posts.load() >= Target;
     }
     const std::thread::id Owner = std::this_thread::get_id();
@@ -414,7 +414,7 @@ public:
                         std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) override {
         Inner.ScheduleUpdate(frame, tasks, std::move(completion));
     }
-    bool HasPostUpdate() const noexcept override {
+    [[nodiscard]] bool HasPostUpdate() const noexcept override {
         return true;
     }
     void FinalizePostUpdate(const NEngine::NRuntime::FrameContext& frame) override {
