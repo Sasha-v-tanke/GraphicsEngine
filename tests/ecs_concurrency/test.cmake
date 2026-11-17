@@ -1,0 +1,6 @@
+TEST_SUITE(EcsConcurrency)
+SOURCES(replay.cpp forest.h frames.cpp)
+PRIVATE_DEPENDS(Renderer Scene Ecs Engine Resources Thread)
+TEST_LABELS(small cpp ecs acceptance)
+set_tests_properties(GraphicsEngineEcsConcurrencyTests PROPERTIES TIMEOUT 120)
+RECURSE(scale)

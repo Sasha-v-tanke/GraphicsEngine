@@ -1,0 +1,2959 @@
+{
+  "schema": 1,
+  "task": "IMPROVE-0045",
+  "date": "2026-11-16",
+  "code_commit": "a239e45a2270ede18df66467f36ae10fae2b60a3",
+  "machine": {
+    "cpu": "Apple M3 Pro",
+    "logical_cpus": 12,
+    "ram_bytes": 19327352832,
+    "os": "macOS 27.2.1 (26B131)",
+    "compiler": "Apple clang 21.0.0 (clang-2100.4.1.1)",
+    "build": "Release (-O3), Google Benchmark 1.9.5 release"
+  },
+  "sampling": {
+    "repetitions": 3,
+    "aggregation": "median",
+    "unit": "ns",
+    "affinity": "uncontrolled desktop host",
+    "max_rss_scale_test_bytes": 611205120
+  },
+  "shapes": [
+    "balanced",
+    "star",
+    "bamboo",
+    "random",
+    "skewed"
+  ],
+  "traversal_parameters": [
+    "shape",
+    "nodes",
+    "workers (0=RunSerial)",
+    "work_iterations_per_node"
+  ],
+  "transform_parameters": [
+    "nodes",
+    "workers",
+    "profile (0=cold,1=hot,2=leaf edit,3=root edit)"
+  ],
+  "traversal": {
+    "started_at": "2026-11-16T19:52:19+03:00",
+    "host_load_avg": [
+      5.00488,
+      4.23877,
+      3.42383
+    ],
+    "rows": [
+      {
+        "args": [
+          0,
+          1024,
+          0,
+          0
+        ],
+        "time_ns": 23941,
+        "cv_percent": 0.6
+      },
+      {
+        "args": [
+          1,
+          1024,
+          0,
+          0
+        ],
+        "time_ns": 22338,
+        "cv_percent": 0.3
+      },
+      {
+        "args": [
+          2,
+          1024,
+          0,
+          0
+        ],
+        "time_ns": 21169,
+        "cv_percent": 0.08
+      },
+      {
+        "args": [
+          3,
+          1024,
+          0,
+          0
+        ],
+        "time_ns": 30399,
+        "cv_percent": 1.45
+      },
+      {
+        "args": [
+          4,
+          1024,
+          0,
+          0
+        ],
+        "time_ns": 23885,
+        "cv_percent": 2.46
+      },
+      {
+        "args": [
+          0,
+          16384,
+          0,
+          0
+        ],
+        "time_ns": 364750,
+        "cv_percent": 0.32
+      },
+      {
+        "args": [
+          1,
+          16384,
+          0,
+          0
+        ],
+        "time_ns": 347555,
+        "cv_percent": 0.34
+      },
+      {
+        "args": [
+          2,
+          16384,
+          0,
+          0
+        ],
+        "time_ns": 338600,
+        "cv_percent": 0.77
+      },
+      {
+        "args": [
+          3,
+          16384,
+          0,
+          0
+        ],
+        "time_ns": 702498,
+        "cv_percent": 0.35
+      },
+      {
+        "args": [
+          4,
+          16384,
+          0,
+          0
+        ],
+        "time_ns": 370970,
+        "cv_percent": 0.27
+      },
+      {
+        "args": [
+          0,
+          1024,
+          1,
+          0
+        ],
+        "time_ns": 38283,
+        "cv_percent": 0.1,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 791,
+        "work_ns": 16542
+      },
+      {
+        "args": [
+          1,
+          1024,
+          1,
+          0
+        ],
+        "time_ns": 35957,
+        "cv_percent": 0.44,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 875,
+        "work_ns": 15084
+      },
+      {
+        "args": [
+          2,
+          1024,
+          1,
+          0
+        ],
+        "time_ns": 32859,
+        "cv_percent": 0.43,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 791,
+        "work_ns": 14875
+      },
+      {
+        "args": [
+          3,
+          1024,
+          1,
+          0
+        ],
+        "time_ns": 49781,
+        "cv_percent": 0.05,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1000,
+        "work_ns": 24792
+      },
+      {
+        "args": [
+          4,
+          1024,
+          1,
+          0
+        ],
+        "time_ns": 39367,
+        "cv_percent": 0.32,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 917,
+        "work_ns": 17500
+      },
+      {
+        "args": [
+          0,
+          16384,
+          1,
+          0
+        ],
+        "time_ns": 434809,
+        "cv_percent": 0.43,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 833,
+        "work_ns": 220584
+      },
+      {
+        "args": [
+          1,
+          16384,
+          1,
+          0
+        ],
+        "time_ns": 422719,
+        "cv_percent": 1.36,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1042,
+        "work_ns": 193291
+      },
+      {
+        "args": [
+          2,
+          16384,
+          1,
+          0
+        ],
+        "time_ns": 399934,
+        "cv_percent": 0.41,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1000,
+        "work_ns": 206791
+      },
+      {
+        "args": [
+          3,
+          16384,
+          1,
+          0
+        ],
+        "time_ns": 789875,
+        "cv_percent": 1.07,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1417,
+        "work_ns": 417541
+      },
+      {
+        "args": [
+          4,
+          16384,
+          1,
+          0
+        ],
+        "time_ns": 462336,
+        "cv_percent": 0.23,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1583,
+        "work_ns": 226250
+      },
+      {
+        "args": [
+          0,
+          1024,
+          2,
+          0
+        ],
+        "time_ns": 41673,
+        "cv_percent": 0.43,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1292,
+        "work_ns": 18875
+      },
+      {
+        "args": [
+          1,
+          1024,
+          2,
+          0
+        ],
+        "time_ns": 39392,
+        "cv_percent": 0.28,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1166,
+        "work_ns": 16875
+      },
+      {
+        "args": [
+          2,
+          1024,
+          2,
+          0
+        ],
+        "time_ns": 38668,
+        "cv_percent": 0.21,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 959,
+        "work_ns": 18000
+      },
+      {
+        "args": [
+          3,
+          1024,
+          2,
+          0
+        ],
+        "time_ns": 52845,
+        "cv_percent": 0.46,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1208,
+        "work_ns": 25125
+      },
+      {
+        "args": [
+          4,
+          1024,
+          2,
+          0
+        ],
+        "time_ns": 42538,
+        "cv_percent": 0.64,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1125,
+        "work_ns": 18667
+      },
+      {
+        "args": [
+          0,
+          16384,
+          2,
+          0
+        ],
+        "time_ns": 616333,
+        "cv_percent": 2.22,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1250,
+        "work_ns": 238458
+      },
+      {
+        "args": [
+          1,
+          16384,
+          2,
+          0
+        ],
+        "time_ns": 605114,
+        "cv_percent": 1.68,
+        "packets": 3,
+        "peak_packets": 3,
+        "schedule_ns": 4125,
+        "work_ns": 972375
+      },
+      {
+        "args": [
+          2,
+          16384,
+          2,
+          0
+        ],
+        "time_ns": 430010,
+        "cv_percent": 0.24,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1084,
+        "work_ns": 235166
+      },
+      {
+        "args": [
+          3,
+          16384,
+          2,
+          0
+        ],
+        "time_ns": 914546,
+        "cv_percent": 1.79,
+        "packets": 3,
+        "peak_packets": 3,
+        "schedule_ns": 1750,
+        "work_ns": 1122583
+      },
+      {
+        "args": [
+          4,
+          16384,
+          2,
+          0
+        ],
+        "time_ns": 667756,
+        "cv_percent": 4.33,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1791,
+        "work_ns": 261500
+      },
+      {
+        "args": [
+          0,
+          1024,
+          4,
+          0
+        ],
+        "time_ns": 46026,
+        "cv_percent": 0.43,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1875,
+        "work_ns": 19083
+      },
+      {
+        "args": [
+          1,
+          1024,
+          4,
+          0
+        ],
+        "time_ns": 44862,
+        "cv_percent": 0.31,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1750,
+        "work_ns": 17125
+      },
+      {
+        "args": [
+          2,
+          1024,
+          4,
+          0
+        ],
+        "time_ns": 43225,
+        "cv_percent": 0.2,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1916,
+        "work_ns": 18041
+      },
+      {
+        "args": [
+          3,
+          1024,
+          4,
+          0
+        ],
+        "time_ns": 60138,
+        "cv_percent": 0.93,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1583,
+        "work_ns": 30250
+      },
+      {
+        "args": [
+          4,
+          1024,
+          4,
+          0
+        ],
+        "time_ns": 48905,
+        "cv_percent": 2.06,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 1667,
+        "work_ns": 20541
+      },
+      {
+        "args": [
+          0,
+          16384,
+          4,
+          0
+        ],
+        "time_ns": 822578,
+        "cv_percent": 1.11,
+        "packets": 5,
+        "peak_packets": 5,
+        "schedule_ns": 8582,
+        "work_ns": 3707542
+      },
+      {
+        "args": [
+          1,
+          16384,
+          4,
+          0
+        ],
+        "time_ns": 740382,
+        "cv_percent": 3.44,
+        "packets": 3,
+        "peak_packets": 3,
+        "schedule_ns": 9833,
+        "work_ns": 847417
+      },
+      {
+        "args": [
+          2,
+          16384,
+          4,
+          0
+        ],
+        "time_ns": 456827,
+        "cv_percent": 2.21,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 3000,
+        "work_ns": 241459
+      },
+      {
+        "args": [
+          3,
+          16384,
+          4,
+          0
+        ],
+        "time_ns": 1255621,
+        "cv_percent": 4.62,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 4041,
+        "work_ns": 453417
+      },
+      {
+        "args": [
+          4,
+          16384,
+          4,
+          0
+        ],
+        "time_ns": 781773,
+        "cv_percent": 8.8,
+        "packets": 5,
+        "peak_packets": 5,
+        "schedule_ns": 12876,
+        "work_ns": 3531541
+      },
+      {
+        "args": [
+          0,
+          1024,
+          8,
+          0
+        ],
+        "time_ns": 52873,
+        "cv_percent": 4.73,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 6042,
+        "work_ns": 15958
+      },
+      {
+        "args": [
+          1,
+          1024,
+          8,
+          0
+        ],
+        "time_ns": 90405,
+        "cv_percent": 36.86,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 10208,
+        "work_ns": 41334
+      },
+      {
+        "args": [
+          2,
+          1024,
+          8,
+          0
+        ],
+        "time_ns": 116507,
+        "cv_percent": 6.25,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 14208,
+        "work_ns": 44083
+      },
+      {
+        "args": [
+          3,
+          1024,
+          8,
+          0
+        ],
+        "time_ns": 158286,
+        "cv_percent": 2.98,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 19417,
+        "work_ns": 53958
+      },
+      {
+        "args": [
+          4,
+          1024,
+          8,
+          0
+        ],
+        "time_ns": 130292,
+        "cv_percent": 7.64,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 11125,
+        "work_ns": 45083
+      },
+      {
+        "args": [
+          0,
+          16384,
+          8,
+          0
+        ],
+        "time_ns": 2717634,
+        "cv_percent": 16.26,
+        "packets": 3,
+        "peak_packets": 3,
+        "schedule_ns": 35251,
+        "work_ns": 3799667
+      },
+      {
+        "args": [
+          1,
+          16384,
+          8,
+          0
+        ],
+        "time_ns": 2251624,
+        "cv_percent": 2.68,
+        "packets": 6,
+        "peak_packets": 6,
+        "schedule_ns": 51499,
+        "work_ns": 8748916
+      },
+      {
+        "args": [
+          2,
+          16384,
+          8,
+          0
+        ],
+        "time_ns": 2245498,
+        "cv_percent": 17.65,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 44167,
+        "work_ns": 1495083
+      },
+      {
+        "args": [
+          3,
+          16384,
+          8,
+          0
+        ],
+        "time_ns": 4610573,
+        "cv_percent": 17.41,
+        "packets": 4,
+        "peak_packets": 3,
+        "schedule_ns": 31041,
+        "work_ns": 6058041
+      },
+      {
+        "args": [
+          4,
+          16384,
+          8,
+          0
+        ],
+        "time_ns": 3414903,
+        "cv_percent": 14.55,
+        "packets": 6,
+        "peak_packets": 6,
+        "schedule_ns": 13376,
+        "work_ns": 363251
+      },
+      {
+        "args": [
+          0,
+          1024,
+          16,
+          0
+        ],
+        "time_ns": 146174,
+        "cv_percent": 2.92,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 23583,
+        "work_ns": 47250
+      },
+      {
+        "args": [
+          1,
+          1024,
+          16,
+          0
+        ],
+        "time_ns": 161000,
+        "cv_percent": 5.67,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 33458,
+        "work_ns": 42959
+      },
+      {
+        "args": [
+          2,
+          1024,
+          16,
+          0
+        ],
+        "time_ns": 160019,
+        "cv_percent": 3.42,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 33000,
+        "work_ns": 44083
+      },
+      {
+        "args": [
+          3,
+          1024,
+          16,
+          0
+        ],
+        "time_ns": 194095,
+        "cv_percent": 2.09,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 32458,
+        "work_ns": 58542
+      },
+      {
+        "args": [
+          4,
+          1024,
+          16,
+          0
+        ],
+        "time_ns": 164517,
+        "cv_percent": 8.59,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 32458,
+        "work_ns": 46459
+      },
+      {
+        "args": [
+          0,
+          16384,
+          16,
+          0
+        ],
+        "time_ns": 2670044,
+        "cv_percent": 5.75,
+        "packets": 3,
+        "peak_packets": 3,
+        "schedule_ns": 35292,
+        "work_ns": 2205334
+      },
+      {
+        "args": [
+          1,
+          16384,
+          16,
+          0
+        ],
+        "time_ns": 2429232,
+        "cv_percent": 8.0,
+        "packets": 3,
+        "peak_packets": 3,
+        "schedule_ns": 58500,
+        "work_ns": 2954084
+      },
+      {
+        "args": [
+          2,
+          16384,
+          16,
+          0
+        ],
+        "time_ns": 2428827,
+        "cv_percent": 30.95,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 58083,
+        "work_ns": 1609667
+      },
+      {
+        "args": [
+          3,
+          16384,
+          16,
+          0
+        ],
+        "time_ns": 6306300,
+        "cv_percent": 18.33,
+        "packets": 3,
+        "peak_packets": 3,
+        "schedule_ns": 64541,
+        "work_ns": 5049917
+      },
+      {
+        "args": [
+          4,
+          16384,
+          16,
+          0
+        ],
+        "time_ns": 3639711,
+        "cv_percent": 12.71,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 70792,
+        "work_ns": 2137209
+      },
+      {
+        "args": [
+          0,
+          1024,
+          0,
+          1024
+        ],
+        "time_ns": 3553460,
+        "cv_percent": 11.84
+      },
+      {
+        "args": [
+          1,
+          1024,
+          0,
+          1024
+        ],
+        "time_ns": 4237794,
+        "cv_percent": 18.63
+      },
+      {
+        "args": [
+          2,
+          1024,
+          0,
+          1024
+        ],
+        "time_ns": 3201080,
+        "cv_percent": 3.98
+      },
+      {
+        "args": [
+          3,
+          1024,
+          0,
+          1024
+        ],
+        "time_ns": 3451232,
+        "cv_percent": 6.57
+      },
+      {
+        "args": [
+          4,
+          1024,
+          0,
+          1024
+        ],
+        "time_ns": 3361827,
+        "cv_percent": 4.93
+      },
+      {
+        "args": [
+          0,
+          16384,
+          0,
+          1024
+        ],
+        "time_ns": 59482334,
+        "cv_percent": 16.64
+      },
+      {
+        "args": [
+          1,
+          16384,
+          0,
+          1024
+        ],
+        "time_ns": 50146750,
+        "cv_percent": 7.08
+      },
+      {
+        "args": [
+          2,
+          16384,
+          0,
+          1024
+        ],
+        "time_ns": 47010583,
+        "cv_percent": 11.31
+      },
+      {
+        "args": [
+          3,
+          16384,
+          0,
+          1024
+        ],
+        "time_ns": 52744291,
+        "cv_percent": 3.64
+      },
+      {
+        "args": [
+          4,
+          16384,
+          0,
+          1024
+        ],
+        "time_ns": 52179416,
+        "cv_percent": 5.65
+      },
+      {
+        "args": [
+          0,
+          1024,
+          1,
+          1024
+        ],
+        "time_ns": 3430129,
+        "cv_percent": 4.57,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 6208,
+        "work_ns": 3700459
+      },
+      {
+        "args": [
+          1,
+          1024,
+          1,
+          1024
+        ],
+        "time_ns": 3297131,
+        "cv_percent": 11.2,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 10708,
+        "work_ns": 3673208
+      },
+      {
+        "args": [
+          2,
+          1024,
+          1,
+          1024
+        ],
+        "time_ns": 3205716,
+        "cv_percent": 11.11,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 7166,
+        "work_ns": 3351125
+      },
+      {
+        "args": [
+          3,
+          1024,
+          1,
+          1024
+        ],
+        "time_ns": 3150602,
+        "cv_percent": 11.41,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 2833,
+        "work_ns": 2655209
+      },
+      {
+        "args": [
+          4,
+          1024,
+          1,
+          1024
+        ],
+        "time_ns": 3028781,
+        "cv_percent": 3.83,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 3542,
+        "work_ns": 3537375
+      },
+      {
+        "args": [
+          0,
+          16384,
+          1,
+          1024
+        ],
+        "time_ns": 47307687,
+        "cv_percent": 0.52,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 5000,
+        "work_ns": 47539084
+      },
+      {
+        "args": [
+          1,
+          16384,
+          1,
+          1024
+        ],
+        "time_ns": 49130229,
+        "cv_percent": 3.41,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 5000,
+        "work_ns": 47603208
+      },
+      {
+        "args": [
+          2,
+          16384,
+          1,
+          1024
+        ],
+        "time_ns": 49068208,
+        "cv_percent": 2.95,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 6958,
+        "work_ns": 47776875
+      },
+      {
+        "args": [
+          3,
+          16384,
+          1,
+          1024
+        ],
+        "time_ns": 55238062,
+        "cv_percent": 4.09,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 9416,
+        "work_ns": 47680125
+      },
+      {
+        "args": [
+          4,
+          16384,
+          1,
+          1024
+        ],
+        "time_ns": 42563459,
+        "cv_percent": 0.16,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 4167,
+        "work_ns": 42022083
+      },
+      {
+        "args": [
+          0,
+          1024,
+          2,
+          1024
+        ],
+        "time_ns": 1337232,
+        "cv_percent": 0.22,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 3000,
+        "work_ns": 2610584
+      },
+      {
+        "args": [
+          1,
+          1024,
+          2,
+          1024
+        ],
+        "time_ns": 1297878,
+        "cv_percent": 5.67,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 2666,
+        "work_ns": 2516749
+      },
+      {
+        "args": [
+          2,
+          1024,
+          2,
+          1024
+        ],
+        "time_ns": 2461417,
+        "cv_percent": 1.95,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 958,
+        "work_ns": 2459208
+      },
+      {
+        "args": [
+          3,
+          1024,
+          2,
+          1024
+        ],
+        "time_ns": 1700363,
+        "cv_percent": 2.11,
+        "packets": 4,
+        "peak_packets": 3,
+        "schedule_ns": 3000,
+        "work_ns": 2412542
+      },
+      {
+        "args": [
+          4,
+          1024,
+          2,
+          1024
+        ],
+        "time_ns": 1345446,
+        "cv_percent": 2.35,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 3083,
+        "work_ns": 2560873
+      },
+      {
+        "args": [
+          0,
+          16384,
+          2,
+          1024
+        ],
+        "time_ns": 20003597,
+        "cv_percent": 2.05,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 5249,
+        "work_ns": 38744708
+      },
+      {
+        "args": [
+          1,
+          16384,
+          2,
+          1024
+        ],
+        "time_ns": 20334458,
+        "cv_percent": 3.21,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 5793,
+        "work_ns": 40313209
+      },
+      {
+        "args": [
+          2,
+          16384,
+          2,
+          1024
+        ],
+        "time_ns": 39616666,
+        "cv_percent": 3.56,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 3834,
+        "work_ns": 40302375
+      },
+      {
+        "args": [
+          3,
+          16384,
+          2,
+          1024
+        ],
+        "time_ns": 25793292,
+        "cv_percent": 4.68,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 7876,
+        "work_ns": 41023708
+      },
+      {
+        "args": [
+          4,
+          16384,
+          2,
+          1024
+        ],
+        "time_ns": 21967181,
+        "cv_percent": 0.75,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 7750,
+        "work_ns": 42305457
+      },
+      {
+        "args": [
+          0,
+          1024,
+          4,
+          1024
+        ],
+        "time_ns": 720214,
+        "cv_percent": 0.91,
+        "packets": 10,
+        "peak_packets": 8,
+        "schedule_ns": 12374,
+        "work_ns": 2641626
+      },
+      {
+        "args": [
+          1,
+          1024,
+          4,
+          1024
+        ],
+        "time_ns": 727624,
+        "cv_percent": 0.73,
+        "packets": 13,
+        "peak_packets": 8,
+        "schedule_ns": 11125,
+        "work_ns": 2640750
+      },
+      {
+        "args": [
+          2,
+          1024,
+          4,
+          1024
+        ],
+        "time_ns": 2495370,
+        "cv_percent": 2.9,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 2750,
+        "work_ns": 2450458
+      },
+      {
+        "args": [
+          3,
+          1024,
+          4,
+          1024
+        ],
+        "time_ns": 979906,
+        "cv_percent": 0.32,
+        "packets": 9,
+        "peak_packets": 7,
+        "schedule_ns": 11710,
+        "work_ns": 2648333
+      },
+      {
+        "args": [
+          4,
+          1024,
+          4,
+          1024
+        ],
+        "time_ns": 793233,
+        "cv_percent": 0.91,
+        "packets": 12,
+        "peak_packets": 8,
+        "schedule_ns": 12834,
+        "work_ns": 2828374
+      },
+      {
+        "args": [
+          0,
+          16384,
+          4,
+          1024
+        ],
+        "time_ns": 10688660,
+        "cv_percent": 1.47,
+        "packets": 10,
+        "peak_packets": 8,
+        "schedule_ns": 10542,
+        "work_ns": 42389042
+      },
+      {
+        "args": [
+          1,
+          16384,
+          4,
+          1024
+        ],
+        "time_ns": 10620014,
+        "cv_percent": 0.33,
+        "packets": 14,
+        "peak_packets": 8,
+        "schedule_ns": 11707,
+        "work_ns": 41232083
+      },
+      {
+        "args": [
+          2,
+          16384,
+          4,
+          1024
+        ],
+        "time_ns": 38246021,
+        "cv_percent": 1.73,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 3834,
+        "work_ns": 37980208
+      },
+      {
+        "args": [
+          3,
+          16384,
+          4,
+          1024
+        ],
+        "time_ns": 16163625,
+        "cv_percent": 1.4,
+        "packets": 8,
+        "peak_packets": 7,
+        "schedule_ns": 13624,
+        "work_ns": 41632417
+      },
+      {
+        "args": [
+          4,
+          16384,
+          4,
+          1024
+        ],
+        "time_ns": 10821424,
+        "cv_percent": 0.13,
+        "packets": 13,
+        "peak_packets": 8,
+        "schedule_ns": 12040,
+        "work_ns": 41972874
+      },
+      {
+        "args": [
+          0,
+          1024,
+          8,
+          1024
+        ],
+        "time_ns": 583089,
+        "cv_percent": 0.5,
+        "packets": 21,
+        "peak_packets": 16,
+        "schedule_ns": 56004,
+        "work_ns": 3468542
+      },
+      {
+        "args": [
+          1,
+          1024,
+          8,
+          1024
+        ],
+        "time_ns": 563686,
+        "cv_percent": 1.88,
+        "packets": 27,
+        "peak_packets": 16,
+        "schedule_ns": 37539,
+        "work_ns": 3630666
+      },
+      {
+        "args": [
+          2,
+          1024,
+          8,
+          1024
+        ],
+        "time_ns": 2454621,
+        "cv_percent": 1.37,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 4667,
+        "work_ns": 2394500
+      },
+      {
+        "args": [
+          3,
+          1024,
+          8,
+          1024
+        ],
+        "time_ns": 687980,
+        "cv_percent": 0.3,
+        "packets": 16,
+        "peak_packets": 14,
+        "schedule_ns": 47251,
+        "work_ns": 3338501
+      },
+      {
+        "args": [
+          4,
+          1024,
+          8,
+          1024
+        ],
+        "time_ns": 558252,
+        "cv_percent": 0.55,
+        "packets": 24,
+        "peak_packets": 16,
+        "schedule_ns": 40833,
+        "work_ns": 3443209
+      },
+      {
+        "args": [
+          0,
+          16384,
+          8,
+          1024
+        ],
+        "time_ns": 7273283,
+        "cv_percent": 1.91,
+        "packets": 21,
+        "peak_packets": 16,
+        "schedule_ns": 75250,
+        "work_ns": 47932791
+      },
+      {
+        "args": [
+          1,
+          16384,
+          8,
+          1024
+        ],
+        "time_ns": 7024750,
+        "cv_percent": 1.5,
+        "packets": 29,
+        "peak_packets": 16,
+        "schedule_ns": 93583,
+        "work_ns": 48546917
+      },
+      {
+        "args": [
+          2,
+          16384,
+          8,
+          1024
+        ],
+        "time_ns": 40285438,
+        "cv_percent": 3.61,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 7417,
+        "work_ns": 40061500
+      },
+      {
+        "args": [
+          3,
+          16384,
+          8,
+          1024
+        ],
+        "time_ns": 8841724,
+        "cv_percent": 1.72,
+        "packets": 18,
+        "peak_packets": 16,
+        "schedule_ns": 65125,
+        "work_ns": 48555539
+      },
+      {
+        "args": [
+          4,
+          16384,
+          8,
+          1024
+        ],
+        "time_ns": 6984933,
+        "cv_percent": 1.41,
+        "packets": 29,
+        "peak_packets": 16,
+        "schedule_ns": 63295,
+        "work_ns": 48642834
+      },
+      {
+        "args": [
+          0,
+          1024,
+          16,
+          1024
+        ],
+        "time_ns": 591437,
+        "cv_percent": 0.66,
+        "packets": 20,
+        "peak_packets": 20,
+        "schedule_ns": 304498,
+        "work_ns": 5490457
+      },
+      {
+        "args": [
+          1,
+          1024,
+          16,
+          1024
+        ],
+        "time_ns": 619355,
+        "cv_percent": 1.23,
+        "packets": 32,
+        "peak_packets": 32,
+        "schedule_ns": 108542,
+        "work_ns": 5282415
+      },
+      {
+        "args": [
+          2,
+          1024,
+          16,
+          1024
+        ],
+        "time_ns": 2491710,
+        "cv_percent": 0.2,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 38708,
+        "work_ns": 2359750
+      },
+      {
+        "args": [
+          3,
+          1024,
+          16,
+          1024
+        ],
+        "time_ns": 772009,
+        "cv_percent": 2.15,
+        "packets": 10,
+        "peak_packets": 7,
+        "schedule_ns": 183833,
+        "work_ns": 3539542
+      },
+      {
+        "args": [
+          4,
+          1024,
+          16,
+          1024
+        ],
+        "time_ns": 604053,
+        "cv_percent": 0.55,
+        "packets": 27,
+        "peak_packets": 26,
+        "schedule_ns": 132540,
+        "work_ns": 5309086
+      },
+      {
+        "args": [
+          0,
+          16384,
+          16,
+          1024
+        ],
+        "time_ns": 5766906,
+        "cv_percent": 1.84,
+        "packets": 45,
+        "peak_packets": 32,
+        "schedule_ns": 361211,
+        "work_ns": 75165001
+      },
+      {
+        "args": [
+          1,
+          16384,
+          16,
+          1024
+        ],
+        "time_ns": 5705118,
+        "cv_percent": 0.4,
+        "packets": 61,
+        "peak_packets": 32,
+        "schedule_ns": 399295,
+        "work_ns": 78156083
+      },
+      {
+        "args": [
+          2,
+          16384,
+          16,
+          1024
+        ],
+        "time_ns": 39202188,
+        "cv_percent": 1.49,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 39125,
+        "work_ns": 39899541
+      },
+      {
+        "args": [
+          3,
+          16384,
+          16,
+          1024
+        ],
+        "time_ns": 6324966,
+        "cv_percent": 0.9,
+        "packets": 41,
+        "peak_packets": 29,
+        "schedule_ns": 335087,
+        "work_ns": 75048335
+      },
+      {
+        "args": [
+          4,
+          16384,
+          16,
+          1024
+        ],
+        "time_ns": 5686066,
+        "cv_percent": 0.24,
+        "packets": 61,
+        "peak_packets": 32,
+        "schedule_ns": 258250,
+        "work_ns": 77228083
+      }
+    ]
+  },
+  "transforms": {
+    "started_at": "2026-11-16T19:52:54+03:00",
+    "host_load_avg": [
+      5.86621,
+      4.50342,
+      3.55078
+    ],
+    "rows": [
+      {
+        "args": [
+          1024,
+          1,
+          0
+        ],
+        "time_ns": 211312,
+        "cv_percent": 0.9,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          1,
+          0
+        ],
+        "time_ns": 4344662,
+        "cv_percent": 0.25,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          2,
+          0
+        ],
+        "time_ns": 219305,
+        "cv_percent": 1.32,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          2,
+          0
+        ],
+        "time_ns": 4269776,
+        "cv_percent": 0.3,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          4,
+          0
+        ],
+        "time_ns": 223925,
+        "cv_percent": 0.18,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          4,
+          0
+        ],
+        "time_ns": 5484051,
+        "cv_percent": 0.27,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          8,
+          0
+        ],
+        "time_ns": 241339,
+        "cv_percent": 0.57,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          8,
+          0
+        ],
+        "time_ns": 6041024,
+        "cv_percent": 1.51,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          16,
+          0
+        ],
+        "time_ns": 269681,
+        "cv_percent": 3.2,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          16,
+          0
+        ],
+        "time_ns": 6340531,
+        "cv_percent": 1.36,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          1,
+          1
+        ],
+        "time_ns": 161521,
+        "cv_percent": 1.62,
+        "resolved": 1024,
+        "recomputed": 0,
+        "cache_hits": 1024
+      },
+      {
+        "args": [
+          16384,
+          1,
+          1
+        ],
+        "time_ns": 3629050,
+        "cv_percent": 0.23,
+        "resolved": 16384,
+        "recomputed": 0,
+        "cache_hits": 16384
+      },
+      {
+        "args": [
+          1024,
+          2,
+          1
+        ],
+        "time_ns": 164672,
+        "cv_percent": 1.92,
+        "resolved": 1024,
+        "recomputed": 0,
+        "cache_hits": 1024
+      },
+      {
+        "args": [
+          16384,
+          2,
+          1
+        ],
+        "time_ns": 3576697,
+        "cv_percent": 2.58,
+        "resolved": 16384,
+        "recomputed": 0,
+        "cache_hits": 16384
+      },
+      {
+        "args": [
+          1024,
+          4,
+          1
+        ],
+        "time_ns": 168006,
+        "cv_percent": 1.27,
+        "resolved": 1024,
+        "recomputed": 0,
+        "cache_hits": 1024
+      },
+      {
+        "args": [
+          16384,
+          4,
+          1
+        ],
+        "time_ns": 4773703,
+        "cv_percent": 0.6,
+        "resolved": 16384,
+        "recomputed": 0,
+        "cache_hits": 16384
+      },
+      {
+        "args": [
+          1024,
+          8,
+          1
+        ],
+        "time_ns": 183454,
+        "cv_percent": 0.33,
+        "resolved": 1024,
+        "recomputed": 0,
+        "cache_hits": 1024
+      },
+      {
+        "args": [
+          16384,
+          8,
+          1
+        ],
+        "time_ns": 5602167,
+        "cv_percent": 1.7,
+        "resolved": 16384,
+        "recomputed": 0,
+        "cache_hits": 16384
+      },
+      {
+        "args": [
+          1024,
+          16,
+          1
+        ],
+        "time_ns": 201025,
+        "cv_percent": 1.99,
+        "resolved": 1024,
+        "recomputed": 0,
+        "cache_hits": 1024
+      },
+      {
+        "args": [
+          16384,
+          16,
+          1
+        ],
+        "time_ns": 5280743,
+        "cv_percent": 0.43,
+        "resolved": 16384,
+        "recomputed": 0,
+        "cache_hits": 16384
+      },
+      {
+        "args": [
+          1024,
+          1,
+          2
+        ],
+        "time_ns": 160918,
+        "cv_percent": 0.94,
+        "resolved": 1024,
+        "recomputed": 1,
+        "cache_hits": 1023
+      },
+      {
+        "args": [
+          16384,
+          1,
+          2
+        ],
+        "time_ns": 3647925,
+        "cv_percent": 1.57,
+        "resolved": 16384,
+        "recomputed": 1,
+        "cache_hits": 16383
+      },
+      {
+        "args": [
+          1024,
+          2,
+          2
+        ],
+        "time_ns": 162685,
+        "cv_percent": 1.08,
+        "resolved": 1024,
+        "recomputed": 1,
+        "cache_hits": 1023
+      },
+      {
+        "args": [
+          16384,
+          2,
+          2
+        ],
+        "time_ns": 3620221,
+        "cv_percent": 0.46,
+        "resolved": 16384,
+        "recomputed": 1,
+        "cache_hits": 16383
+      },
+      {
+        "args": [
+          1024,
+          4,
+          2
+        ],
+        "time_ns": 168382,
+        "cv_percent": 0.71,
+        "resolved": 1024,
+        "recomputed": 1,
+        "cache_hits": 1023
+      },
+      {
+        "args": [
+          16384,
+          4,
+          2
+        ],
+        "time_ns": 4819292,
+        "cv_percent": 0.35,
+        "resolved": 16384,
+        "recomputed": 1,
+        "cache_hits": 16383
+      },
+      {
+        "args": [
+          1024,
+          8,
+          2
+        ],
+        "time_ns": 183421,
+        "cv_percent": 1.32,
+        "resolved": 1024,
+        "recomputed": 1,
+        "cache_hits": 1023
+      },
+      {
+        "args": [
+          16384,
+          8,
+          2
+        ],
+        "time_ns": 5458958,
+        "cv_percent": 2.16,
+        "resolved": 16384,
+        "recomputed": 1,
+        "cache_hits": 16383
+      },
+      {
+        "args": [
+          1024,
+          16,
+          2
+        ],
+        "time_ns": 207383,
+        "cv_percent": 3.74,
+        "resolved": 1024,
+        "recomputed": 1,
+        "cache_hits": 1023
+      },
+      {
+        "args": [
+          16384,
+          16,
+          2
+        ],
+        "time_ns": 5358655,
+        "cv_percent": 1.43,
+        "resolved": 16384,
+        "recomputed": 1,
+        "cache_hits": 16383
+      },
+      {
+        "args": [
+          1024,
+          1,
+          3
+        ],
+        "time_ns": 222375,
+        "cv_percent": 1.93,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          1,
+          3
+        ],
+        "time_ns": 5234096,
+        "cv_percent": 0.6,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          2,
+          3
+        ],
+        "time_ns": 231999,
+        "cv_percent": 0.89,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          2,
+          3
+        ],
+        "time_ns": 5117714,
+        "cv_percent": 0.41,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          4,
+          3
+        ],
+        "time_ns": 237218,
+        "cv_percent": 1.07,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          4,
+          3
+        ],
+        "time_ns": 6350072,
+        "cv_percent": 1.34,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          8,
+          3
+        ],
+        "time_ns": 252033,
+        "cv_percent": 0.84,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          8,
+          3
+        ],
+        "time_ns": 6809129,
+        "cv_percent": 0.97,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          1024,
+          16,
+          3
+        ],
+        "time_ns": 263775,
+        "cv_percent": 2.46,
+        "resolved": 1024,
+        "recomputed": 1024,
+        "cache_hits": 0
+      },
+      {
+        "args": [
+          16384,
+          16,
+          3
+        ],
+        "time_ns": 7100939,
+        "cv_percent": 2.17,
+        "resolved": 16384,
+        "recomputed": 16384,
+        "cache_hits": 0
+      }
+    ]
+  },
+  "million": {
+    "started_at": "2026-11-16T19:53:06+03:00",
+    "host_load_avg": [
+      5.71289,
+      4.51807,
+      3.56738
+    ],
+    "rows": [
+      {
+        "args": [
+          0,
+          1000000,
+          0,
+          0
+        ],
+        "time_ns": 30231500,
+        "cv_percent": 16.84
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          0,
+          0
+        ],
+        "time_ns": 22660166,
+        "cv_percent": 3.49
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          0,
+          0
+        ],
+        "time_ns": 22665458,
+        "cv_percent": 15.43
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          0,
+          0
+        ],
+        "time_ns": 230116208,
+        "cv_percent": 0.2
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          0,
+          0
+        ],
+        "time_ns": 38806833,
+        "cv_percent": 0.8
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          1,
+          0
+        ],
+        "time_ns": 26427500,
+        "cv_percent": 1.22,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 6917,
+        "work_ns": 13086292
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          1,
+          0
+        ],
+        "time_ns": 25501750,
+        "cv_percent": 3.09,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 6250,
+        "work_ns": 11399042
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          1,
+          0
+        ],
+        "time_ns": 24785209,
+        "cv_percent": 1.7,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 7333,
+        "work_ns": 11964042
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          1,
+          0
+        ],
+        "time_ns": 240900834,
+        "cv_percent": 0.85,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 6166,
+        "work_ns": 102785042
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          1,
+          0
+        ],
+        "time_ns": 43219500,
+        "cv_percent": 0.23,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 5292,
+        "work_ns": 14636333
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          2,
+          0
+        ],
+        "time_ns": 54932458,
+        "cv_percent": 1.21,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 12458,
+        "work_ns": 82633541
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          2,
+          0
+        ],
+        "time_ns": 42384291,
+        "cv_percent": 1.27,
+        "packets": 6,
+        "peak_packets": 4,
+        "schedule_ns": 20417,
+        "work_ns": 55951126
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          2,
+          0
+        ],
+        "time_ns": 27013959,
+        "cv_percent": 6.72,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 11583,
+        "work_ns": 14015791
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          2,
+          0
+        ],
+        "time_ns": 213465792,
+        "cv_percent": 0.2,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 20250,
+        "work_ns": 124570666
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          2,
+          0
+        ],
+        "time_ns": 58714916,
+        "cv_percent": 3.32,
+        "packets": 7,
+        "peak_packets": 3,
+        "schedule_ns": 22334,
+        "work_ns": 57710292
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          4,
+          0
+        ],
+        "time_ns": 81628083,
+        "cv_percent": 6.49,
+        "packets": 8,
+        "peak_packets": 8,
+        "schedule_ns": 15959,
+        "work_ns": 255137416
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          4,
+          0
+        ],
+        "time_ns": 75884500,
+        "cv_percent": 2.46,
+        "packets": 11,
+        "peak_packets": 8,
+        "schedule_ns": 36625,
+        "work_ns": 236953040
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          4,
+          0
+        ],
+        "time_ns": 26565750,
+        "cv_percent": 0.7,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 8375,
+        "work_ns": 14013542
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          4,
+          0
+        ],
+        "time_ns": 277355416,
+        "cv_percent": 1.05,
+        "packets": 8,
+        "peak_packets": 7,
+        "schedule_ns": 37663,
+        "work_ns": 457195291
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          4,
+          0
+        ],
+        "time_ns": 103869458,
+        "cv_percent": 5.74,
+        "packets": 12,
+        "peak_packets": 8,
+        "schedule_ns": 53084,
+        "work_ns": 277507333
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          8,
+          0
+        ],
+        "time_ns": 107146250,
+        "cv_percent": 1.78,
+        "packets": 19,
+        "peak_packets": 16,
+        "schedule_ns": 61126,
+        "work_ns": 643752709
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          8,
+          0
+        ],
+        "time_ns": 90522041,
+        "cv_percent": 2.37,
+        "packets": 27,
+        "peak_packets": 16,
+        "schedule_ns": 164667,
+        "work_ns": 584938586
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          8,
+          0
+        ],
+        "time_ns": 27452625,
+        "cv_percent": 1.35,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 11708,
+        "work_ns": 14296000
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          8,
+          0
+        ],
+        "time_ns": 309044042,
+        "cv_percent": 3.91,
+        "packets": 10,
+        "peak_packets": 9,
+        "schedule_ns": 35874,
+        "work_ns": 1005565250
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          8,
+          0
+        ],
+        "time_ns": 146709334,
+        "cv_percent": 0.37,
+        "packets": 29,
+        "peak_packets": 16,
+        "schedule_ns": 206500,
+        "work_ns": 888642211
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          16,
+          0
+        ],
+        "time_ns": 121003709,
+        "cv_percent": 7.02,
+        "packets": 35,
+        "peak_packets": 23,
+        "schedule_ns": 836505,
+        "work_ns": 1628069164
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          16,
+          0
+        ],
+        "time_ns": 98696292,
+        "cv_percent": 8.56,
+        "packets": 56,
+        "peak_packets": 32,
+        "schedule_ns": 1036288,
+        "work_ns": 1280647417
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          16,
+          0
+        ],
+        "time_ns": 27272125,
+        "cv_percent": 2.33,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 47667,
+        "work_ns": 14303166
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          16,
+          0
+        ],
+        "time_ns": 308475625,
+        "cv_percent": 1.06,
+        "packets": 14,
+        "peak_packets": 14,
+        "schedule_ns": 341791,
+        "work_ns": 1281347373
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          16,
+          0
+        ],
+        "time_ns": 176377459,
+        "cv_percent": 3.52,
+        "packets": 56,
+        "peak_packets": 32,
+        "schedule_ns": 742166,
+        "work_ns": 2113932044
+      }
+    ]
+  },
+  "million_heavy": {
+    "started_at": "2026-11-16T19:57:09+03:00",
+    "host_load_avg": [
+      5.625,
+      4.38867,
+      3.68408
+    ],
+    "rows": [
+      {
+        "args": [
+          0,
+          1000000,
+          0,
+          1024
+        ],
+        "time_ns": 2507162584,
+        "cv_percent": 0.05
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          0,
+          1024
+        ],
+        "time_ns": 2303089375,
+        "cv_percent": 0.01
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          0,
+          1024
+        ],
+        "time_ns": 2327068083,
+        "cv_percent": 0.0
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          0,
+          1024
+        ],
+        "time_ns": 2600425292,
+        "cv_percent": 0.0
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          0,
+          1024
+        ],
+        "time_ns": 2395498417,
+        "cv_percent": 0.01
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          1,
+          1024
+        ],
+        "time_ns": 2323775583,
+        "cv_percent": 0.01,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 10584,
+        "work_ns": 2304609291
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          1,
+          1024
+        ],
+        "time_ns": 2313069833,
+        "cv_percent": 0.01,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 8708,
+        "work_ns": 2297515666
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          1,
+          1024
+        ],
+        "time_ns": 2344546584,
+        "cv_percent": 0.01,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 8208,
+        "work_ns": 2331651875
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          1,
+          1024
+        ],
+        "time_ns": 2619667042,
+        "cv_percent": 0.01,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 6041,
+        "work_ns": 2468478250
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          1,
+          1024
+        ],
+        "time_ns": 2364581583,
+        "cv_percent": 0.0,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 5958,
+        "work_ns": 2334949959
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          2,
+          1024
+        ],
+        "time_ns": 1246436917,
+        "cv_percent": 0.01,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 14959,
+        "work_ns": 2352326625
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          2,
+          1024
+        ],
+        "time_ns": 1181365542,
+        "cv_percent": 0.01,
+        "packets": 6,
+        "peak_packets": 4,
+        "schedule_ns": 20500,
+        "work_ns": 2332256875
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          2,
+          1024
+        ],
+        "time_ns": 2468954500,
+        "cv_percent": 0.04,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 14000,
+        "work_ns": 2454741625
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          2,
+          1024
+        ],
+        "time_ns": 1666163833,
+        "cv_percent": 0.0,
+        "packets": 5,
+        "peak_packets": 4,
+        "schedule_ns": 18582,
+        "work_ns": 2503772958
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          2,
+          1024
+        ],
+        "time_ns": 1231235250,
+        "cv_percent": 0.01,
+        "packets": 6,
+        "peak_packets": 4,
+        "schedule_ns": 21749,
+        "work_ns": 2395319916
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          4,
+          1024
+        ],
+        "time_ns": 679522083,
+        "cv_percent": 0.0,
+        "packets": 9,
+        "peak_packets": 8,
+        "schedule_ns": 32417,
+        "work_ns": 2538961790
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          4,
+          1024
+        ],
+        "time_ns": 646697500,
+        "cv_percent": 0.0,
+        "packets": 14,
+        "peak_packets": 8,
+        "schedule_ns": 36749,
+        "work_ns": 2521796375
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          4,
+          1024
+        ],
+        "time_ns": 2335168417,
+        "cv_percent": 0.0,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 8833,
+        "work_ns": 2317851208
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          4,
+          1024
+        ],
+        "time_ns": 1156842208,
+        "cv_percent": 0.02,
+        "packets": 8,
+        "peak_packets": 7,
+        "schedule_ns": 50458,
+        "work_ns": 2718411917
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          4,
+          1024
+        ],
+        "time_ns": 710200959,
+        "cv_percent": 0.01,
+        "packets": 14,
+        "peak_packets": 8,
+        "schedule_ns": 61543,
+        "work_ns": 2678815249
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          8,
+          1024
+        ],
+        "time_ns": 406105292,
+        "cv_percent": 0.02,
+        "packets": 21,
+        "peak_packets": 16,
+        "schedule_ns": 62749,
+        "work_ns": 2946252250
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          8,
+          1024
+        ],
+        "time_ns": 384835167,
+        "cv_percent": 0.03,
+        "packets": 29,
+        "peak_packets": 16,
+        "schedule_ns": 145750,
+        "work_ns": 2918091790
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          8,
+          1024
+        ],
+        "time_ns": 2328638833,
+        "cv_percent": 0.0,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 16833,
+        "work_ns": 2311511917
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          8,
+          1024
+        ],
+        "time_ns": 662132250,
+        "cv_percent": 0.33,
+        "packets": 18,
+        "peak_packets": 16,
+        "schedule_ns": 99539,
+        "work_ns": 3104797790
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          8,
+          1024
+        ],
+        "time_ns": 422859208,
+        "cv_percent": 0.03,
+        "packets": 30,
+        "peak_packets": 16,
+        "schedule_ns": 234206,
+        "work_ns": 3020152504
+      },
+      {
+        "args": [
+          0,
+          1000000,
+          16,
+          1024
+        ],
+        "time_ns": 345411959,
+        "cv_percent": 0.06,
+        "packets": 41,
+        "peak_packets": 32,
+        "schedule_ns": 536087,
+        "work_ns": 4706216628
+      },
+      {
+        "args": [
+          1,
+          1000000,
+          16,
+          1024
+        ],
+        "time_ns": 330535583,
+        "cv_percent": 0.05,
+        "packets": 61,
+        "peak_packets": 32,
+        "schedule_ns": 553708,
+        "work_ns": 4859424915
+      },
+      {
+        "args": [
+          2,
+          1000000,
+          16,
+          1024
+        ],
+        "time_ns": 2332506083,
+        "cv_percent": 0.07,
+        "packets": 1,
+        "peak_packets": 1,
+        "schedule_ns": 42666,
+        "work_ns": 2319670334
+      },
+      {
+        "args": [
+          3,
+          1000000,
+          16,
+          1024
+        ],
+        "time_ns": 474760041,
+        "cv_percent": 0.01,
+        "packets": 42,
+        "peak_packets": 31,
+        "schedule_ns": 405294,
+        "work_ns": 4510574045
+      },
+      {
+        "args": [
+          4,
+          1000000,
+          16,
+          1024
+        ],
+        "time_ns": 323469542,
+        "cv_percent": 0.01,
+        "packets": 62,
+        "peak_packets": 32,
+        "schedule_ns": 519374,
+        "work_ns": 4588103914
+      }
+    ]
+  }
+}

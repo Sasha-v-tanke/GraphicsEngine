@@ -31,4 +31,5 @@ include(
 
 RECURSE(
     medium/cpp
+    ecs_concurrency
 )

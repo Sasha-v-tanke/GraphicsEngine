@@ -42,7 +42,8 @@ void BM_TransformResolve(benchmark::State& state) {
             break;
         }
         const auto resolved = operation.ReadResolved(tasks);
-        benchmark::DoNotOptimize(resolved.Get(entities.back()).Value);
+        auto value = resolved.Get(entities.back()).Value;
+        benchmark::DoNotOptimize(value);
         state.SetIterationTime(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
         state.counters["resolved"] = static_cast<double>(resolved.GetResolvedCount());
         state.counters["recomputed"] = static_cast<double>(resolved.GetRecomputedCount());

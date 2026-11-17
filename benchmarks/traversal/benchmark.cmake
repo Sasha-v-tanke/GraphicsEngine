@@ -1,6 +1,7 @@
 BENCHMARK(Traversal)
 
 SOURCES(
+    acceptance.cpp
     adaptive.cpp
     transforms.cpp
 )
