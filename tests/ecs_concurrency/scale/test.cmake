@@ -1,0 +1,5 @@
+TEST_SUITE(EcsConcurrencyScale)
+SOURCES(scale.cpp)
+PRIVATE_DEPENDS(Ecs Thread)
+TEST_LABELS(heavy cpp ecs acceptance)
+set_tests_properties(GraphicsEngineEcsConcurrencyScaleTests PROPERTIES TIMEOUT 180)

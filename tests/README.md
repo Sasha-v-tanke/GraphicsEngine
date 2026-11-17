@@ -112,3 +112,10 @@ ctest --test-dir build/cmake -R 'Window(FocusTests|FrontmostProcess)' --output-o
 | Ручной запуск | — | — | — | ✓ |
 
 В Linux-проверках используется Clang 23. На macOS собирается текущая конфигурация Vulkan и GLFW.
+
+## ECS concurrency acceptance
+
+[Отдельный CPU-набор](ecs_concurrency/README.md) проверяет scoped scheduling, деревья,
+версии и immutable extraction при 1/2/4/8/16 workers и 1/2/3 frame slots. Обычные replay
+имеют метку `small`, scale до миллиона узлов — `heavy`; новые workflows не добавлены.
+Измерения и сохранённые ограничения приведены в [baseline обхода](../benchmarks/traversal/README.md).
