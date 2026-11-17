@@ -1,7 +1,10 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <semaphore>
@@ -16,6 +19,75 @@
 #include <gtest/gtest.h>
 
 namespace {
+struct WorkProbe {
+    using Clock = std::chrono::steady_clock;
+
+    WorkProbe()
+        : Finished(FinishedSignal.get_future()) {
+    }
+
+    static std::uint64_t RunWork(std::atomic<std::uint64_t>& progress) {
+        const auto deadline = Clock::now() + std::chrono::milliseconds{40};
+        std::uint64_t checksum = 1;
+        do {
+            for (std::size_t index = 0; index < 1024; ++index) {
+                checksum = checksum * 1664525U + static_cast<std::uint64_t>(index);
+            }
+            progress.fetch_add(1024, std::memory_order_relaxed);
+        } while (Clock::now() < deadline);
+        return checksum;
+    }
+
+    void Release() noexcept {
+        if (!Released.exchange(true)) {
+            Go.release();
+        }
+    }
+
+    void RunUpdate() {
+        Ready.store(true, std::memory_order_release);
+        Go.acquire();
+        UpdateStart = Clock::now();
+        Started.store(true, std::memory_order_release);
+        UpdateChecksum = RunWork(UpdateProgress);
+        UpdateEnd = Clock::now();
+        FinishedSignal.set_value();
+    }
+
+    void RunBackend() {
+        const auto timeout = Clock::now() + std::chrono::seconds{2};
+        while (!Ready.load(std::memory_order_acquire) && Clock::now() < timeout) {
+            std::this_thread::yield();
+        }
+        Release();
+        while (!Started.load(std::memory_order_acquire) && Clock::now() < timeout) {
+            std::this_thread::yield();
+        }
+        BackendStart = Clock::now();
+        UpdateProgressAtBackendStart = UpdateProgress.load(std::memory_order_relaxed);
+        BackendChecksum = RunWork(BackendProgress);
+        UpdateProgressAtBackendEnd = UpdateProgress.load(std::memory_order_relaxed);
+        BackendEnd = Clock::now();
+    }
+
+    std::binary_semaphore Go{0};
+    std::atomic_bool Released{false};
+    std::atomic_bool Ready{false};
+    std::atomic_bool Started{false};
+    std::atomic<std::uint64_t> UpdateProgress{0};
+    std::atomic<std::uint64_t> BackendProgress{0};
+    std::promise<void> FinishedSignal;
+    std::future<void> Finished;
+    Clock::time_point UpdateStart;
+    Clock::time_point UpdateEnd;
+    Clock::time_point BackendStart;
+    Clock::time_point BackendEnd;
+    std::uint64_t UpdateProgressAtBackendStart = 0;
+    std::uint64_t UpdateProgressAtBackendEnd = 0;
+    std::uint64_t UpdateChecksum = 0;
+    std::uint64_t BackendChecksum = 0;
+};
+
 class ScriptedBackend final: public NGraphics::NBackend::IGraphicsBackend {
 public:
     NGraphics::GraphicsCapabilities Capabilities{.Presentation = true,
@@ -30,15 +102,7 @@ public:
     bool FailAfterSubmit = false;
     bool DeviceLost = false;
     bool Suspended = false;
-    bool BlockFrameOne = false;
-    std::atomic_bool BackendReleased{false};
-    std::promise<void> BackendEnteredSignal;
-    std::binary_semaphore BackendRelease{0};
-    void ReleaseBackend() noexcept {
-        if (!BackendReleased.exchange(true)) {
-            BackendRelease.release();
-        }
-    }
+    WorkProbe* ActiveWork = nullptr;
     [[nodiscard]] const NGraphics::GraphicsCapabilities& GetCapabilities() const noexcept override {
         return Capabilities;
     }
@@ -50,9 +114,8 @@ public:
     }
     NGraphics::NBackend::BackendFrameResult TrySubmitFrame(NGraphics::FrameSubmission submission) override {
         Attempts.push_back(submission);
-        if (BlockFrameOne && submission.FrameIndex == 1) {
-            BackendEnteredSignal.set_value();
-            BackendRelease.acquire();
+        if (ActiveWork != nullptr) {
+            ActiveWork->RunBackend();
         }
         if (FailBeforeSubmit) {
             return {.Status = NGraphics::EFrameSubmissionStatus::FAILED,
@@ -246,8 +309,6 @@ TEST(PresentationRuntime, RecordFailureDoesNotProduceSubmissionAndShutdownCancel
 TEST(PresentationRuntime, BackendSubmitOverlapsNextUpdateAndPreviousGpu) {
     auto backend = std::make_unique<ScriptedBackend>();
     auto* native = backend.get();
-    native->BlockFrameOne = true;
-    auto entered = native->BackendEnteredSignal.get_future();
     std::unique_ptr<NGraphics::Graphics> graphics{
             new NGraphics::Graphics{NGraphics::NBackend::CreateGraphicsForBackend(std::move(backend))}};
     auto runtime = std::make_unique<NApplication::NRuntime::PresentationRuntime>(std::move(graphics));
@@ -255,72 +316,83 @@ TEST(PresentationRuntime, BackendSubmitOverlapsNextUpdateAndPreviousGpu) {
     presentation->Start();
     auto engine =
             NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 3, .WorkerCount = 2}, std::move(runtime));
-    std::binary_semaphore updateRelease{0};
-    std::atomic_bool updateReleased{false};
-    std::atomic_bool updateActive{false};
     struct ReleaseGuard {
         ScriptedBackend& Backend;
-        std::binary_semaphore& Update;
-        std::atomic_bool& UpdateReleased;
-        void ReleaseUpdate() noexcept {
-            if (!UpdateReleased.exchange(true)) {
-                Update.release();
-            }
-        }
+        std::vector<std::shared_ptr<WorkProbe>> Probes;
         ~ReleaseGuard() {
-            Backend.ReleaseBackend();
-            ReleaseUpdate();
+            Backend.ActiveWork = nullptr;
+            for (const auto& probe: Probes) {
+                probe->Release();
+            }
             Backend.CompletedValue = Backend.NextValue;
         }
-    } release{*native, updateRelease, updateReleased};
+    } release{.Backend = *native, .Probes = {}};
     engine->Start();
 
     ASSERT_TRUE(engine->Update());
     ASSERT_TRUE(engine->Draw());
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    while (presentation->GetDiagnostics().Submitted == 0 && std::chrono::steady_clock::now() < deadline) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (presentation->GetDiagnostics().Submitted < 1 && std::chrono::steady_clock::now() < deadline) {
         presentation->Pump(64, 64);
         std::this_thread::yield();
     }
     ASSERT_EQ(presentation->GetDiagnostics().Submitted, 1);
     ASSERT_EQ(presentation->GetDiagnostics().Completed, 0);
 
-    ASSERT_TRUE(engine->Update());
+    std::optional<NEngine::FrameKey> first;
+    while (!first && std::chrono::steady_clock::now() < deadline) {
+        first = engine->TryBeginFrame();
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(engine->CompleteUserUpdate(*first));
     ASSERT_TRUE(engine->Draw());
-    std::optional<NEngine::FrameKey> next;
-    while (!next && std::chrono::steady_clock::now() < deadline) {
-        next = engine->TryBeginFrame();
-        std::this_thread::yield();
-    }
-    ASSERT_TRUE(next);
-    std::promise<void> updateEnteredSignal;
-    auto updateEntered = updateEnteredSignal.get_future();
-    ASSERT_TRUE(engine->ScheduleUserUpdate(*next, [&] {
-        updateActive.store(true, std::memory_order_release);
-        updateEnteredSignal.set_value();
-        updateRelease.acquire();
-        updateActive.store(false, std::memory_order_release);
-    }));
-    ASSERT_EQ(updateEntered.wait_for(std::chrono::seconds{2}), std::future_status::ready);
-    auto observer = std::async(std::launch::async, [&] {
-        const bool reached = entered.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
-        const bool overlapped = reached && updateActive.load(std::memory_order_acquire) && native->CompletedValue == 0;
-        native->ReleaseBackend();
-        return overlapped;
-    });
-    while (presentation->GetDiagnostics().Submitted == 1 && std::chrono::steady_clock::now() < deadline) {
-        presentation->Pump(64, 64);
-        std::this_thread::yield();
-    }
-    EXPECT_TRUE(observer.get());
-    EXPECT_EQ(presentation->GetDiagnostics().Submitted, 2);
-    EXPECT_EQ(presentation->GetDiagnostics().Completed, 0);
-    EXPECT_FALSE(engine->TryBeginFrame());
+    constexpr std::uint64_t CYCLES = 8;
+    std::vector<std::chrono::microseconds> overlaps;
+    for (std::uint64_t frame = 1; frame <= CYCLES; ++frame) {
+        deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        std::optional<NEngine::FrameKey> next;
+        while (!next && std::chrono::steady_clock::now() < deadline) {
+            next = engine->TryBeginFrame();
+            std::this_thread::yield();
+        }
+        ASSERT_TRUE(next) << "Frame " << frame + 1;
+        ASSERT_EQ(next->GetFrameSequence(), frame + 1);
+        auto probe = std::make_shared<WorkProbe>();
+        release.Probes.push_back(probe);
+        ASSERT_TRUE(engine->ScheduleUserUpdate(*next, [probe] { probe->RunUpdate(); }));
+        native->ActiveWork = probe.get();
+        while (presentation->GetDiagnostics().Submitted < frame + 1 && std::chrono::steady_clock::now() < deadline) {
+            presentation->Pump(64, 64);
+            std::this_thread::yield();
+        }
+        native->ActiveWork = nullptr;
+        ASSERT_EQ(presentation->GetDiagnostics().Submitted, frame + 1);
+        ASSERT_EQ(probe->Finished.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+        EXPECT_GT(probe->UpdateProgress.load(), 0);
+        EXPECT_GT(probe->BackendProgress.load(), 0);
+        EXPECT_NE(probe->UpdateChecksum, 0);
+        EXPECT_NE(probe->BackendChecksum, 0);
+        EXPECT_GT(probe->UpdateProgressAtBackendEnd, probe->UpdateProgressAtBackendStart);
+        const auto intersection =
+                std::min(probe->UpdateEnd, probe->BackendEnd) - std::max(probe->UpdateStart, probe->BackendStart);
+        EXPECT_GT(intersection, WorkProbe::Clock::duration::zero());
+        overlaps.push_back(std::chrono::duration_cast<std::chrono::microseconds>(intersection));
+        EXPECT_EQ(presentation->GetDiagnostics().Completed, frame - 1);
+        EXPECT_EQ(native->CompletedValue, frame - 1);
 
-    release.ReleaseUpdate();
-    ASSERT_TRUE(engine->Draw());
-    native->CompletedValue = 3;
-    presentation->Pump(64, 64);
+        ASSERT_TRUE(engine->Draw());
+        EXPECT_FALSE(engine->TryBeginFrame());
+        native->CompletedValue = frame;
+        presentation->Pump(0, 0);
+        EXPECT_EQ(presentation->GetDiagnostics().Completed, frame);
+    }
+    std::cout << "Frame pipeline overlap (us), GPU N-1 pending:";
+    for (std::size_t index = 0; index < overlaps.size(); ++index) {
+        std::cout << ' ' << index + 1 << ':' << overlaps[index].count();
+    }
+    std::cout << '\n';
+    native->CompletedValue = native->NextValue;
     engine->Stop();
     EXPECT_FALSE(engine->GetLastError());
 }
