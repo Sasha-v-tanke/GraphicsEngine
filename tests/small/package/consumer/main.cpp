@@ -9,6 +9,7 @@
 #include <GraphicsEngine/application/application.h>
 #include <GraphicsEngine/application/application_config.h>
 #include <GraphicsEngine/application/service_manager.h>
+#include <GraphicsEngine/application/view_registry.h>
 #include <GraphicsEngine/ecs/entity_ref.h>
 #include <GraphicsEngine/ecs/name_component.h>
 #include <GraphicsEngine/ecs/world.h>
@@ -27,6 +28,7 @@ static_assert(NCommon::FrameOrigin{3, 99}.FrameSequence == 99);
 #include <GraphicsEngine/lib/thread/user_task.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/renderer/render_graph.h>
+#include <GraphicsEngine/renderer/view_selection.h>
 #if __has_include(<GraphicsEngine/renderer/presentation/presentation.h>)
     #include <GraphicsEngine/renderer/presentation/presentation.h>
 static_assert(!std::is_copy_constructible_v<NRenderer::GraphPresentation>);
@@ -77,6 +79,18 @@ private:
 };
 
 int main() {
+    {
+        NApplication::ViewRegistry views;
+        const auto mainView = views.GetMainView();
+        views.SetFramebufferSize(mainView, 640, 480);
+        if (!views.IsRegistered(mainView)) {
+            return 92;
+        }
+        const NRenderer::ViewSelection selection{{}, 640, 480, std::nullopt};
+        if (selection.GetCamera() || selection.GetWidth() != 640 || selection.GetHeight() != 480) {
+            return 93;
+        }
+    }
     {
         NApplication::ServiceReference<int> service;
         {
