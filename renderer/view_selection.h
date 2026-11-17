@@ -15,7 +15,7 @@ public:
     ViewSelection(RenderFrameIdentity frame,
                   std::uint32_t width,
                   std::uint32_t height,
-                  std::optional<RenderView> camera)
+                  const std::optional<RenderView>& camera)
         : m_frame(frame)
         , m_width(width)
         , m_height(height)
