@@ -400,4 +400,77 @@ TEST(GameFrameBridge, RejectsUnboundAndForeignEnginesAndDuplicateComposition) {
     EXPECT_FALSE(engine->GetLastError());
 }
 
+// Delay only the extraction join; all SceneRuntime production phases and snapshots remain real.
+class HeldSceneRuntime final: public NEngine::NRuntime::IFrameRuntime {
+public:
+    explicit HeldSceneRuntime(NResources::ResourceManager& resources)
+        : Inner(resources, [this](const auto&, const auto&, const auto&, const auto&) { ++Consumers; }) {
+    }
+    void Update(const NEngine::NRuntime::FrameContext&) override {
+        ADD_FAILURE() << "Scheduled update was bypassed";
+    }
+    void ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
+                        NCommon::TaskSystem& tasks,
+                        std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) override {
+        Inner.ScheduleUpdate(frame, tasks, std::move(completion));
+    }
+    bool HasPostUpdate() const noexcept override {
+        return true;
+    }
+    void FinalizePostUpdate(const NEngine::NRuntime::FrameContext& frame) override {
+        Inner.FinalizePostUpdate(frame);
+    }
+    NCommon::TaskHandle ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,
+                                        NCommon::TaskContext& task) override {
+        const auto extraction = Inner.ScheduleExtract(frame, task);
+        const NCommon::TaskHandle dependencies[] = {extraction};
+        return task.Spawn(
+                [this](NCommon::TaskContext&) {
+                    Entered.set_value();
+                    EXPECT_TRUE(Release.try_acquire_for(std::chrono::seconds{5}));
+                },
+                dependencies);
+    }
+    void Draw(const NEngine::NRuntime::FrameContext& frame) override {
+        ObservedStop = frame.IsStopRequested();
+        Inner.Draw(frame);
+    }
+    void Drain() noexcept override {
+        Inner.Drain();
+    }
+    NApplication::NRuntime::SceneRuntime Inner;
+    std::atomic_int Consumers = 0;
+    bool ObservedStop = false;
+    std::promise<void> Entered;
+    std::binary_semaphore Release{0};
+};
+
+TEST(GameFrameBridge, StopDuringExtractionJoinSuppressesConsumerAfterCpuQuiescence) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        for (const std::size_t slots: {1U, 2U, 3U}) {
+            NResources::ResourceManager resources;
+            NScene::SceneManager scenes;
+            auto runtime = std::make_unique<HeldSceneRuntime>(resources);
+            auto& observed = *runtime;
+            auto entered = observed.Entered.get_future();
+            auto engine = NEngine::NRuntime::EngineFactory::Create({slots, workers}, std::move(runtime));
+            engine->Start();
+            const auto frame = observed.Inner.TryBeginFrame(*engine, scenes);
+            ASSERT_TRUE(frame);
+            ASSERT_TRUE(engine->CompleteUserUpdate(*frame));
+            ASSERT_TRUE(engine->Draw());
+            ASSERT_EQ(entered.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            auto stopped = std::async(std::launch::async, [&] { engine->Stop(); });
+            EXPECT_TRUE(Eventually([&] { return engine->GetState() == NEngine::EEngineState::STOPPING; }));
+            EXPECT_EQ(stopped.wait_for(std::chrono::milliseconds{5}), std::future_status::timeout);
+            observed.Release.release();
+            ASSERT_EQ(stopped.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+            stopped.get();
+            EXPECT_FALSE(engine->GetLastError());
+            EXPECT_TRUE(observed.ObservedStop);
+            EXPECT_EQ(observed.Consumers.load(), 0);
+        }
+    }
+}
+
 } // namespace

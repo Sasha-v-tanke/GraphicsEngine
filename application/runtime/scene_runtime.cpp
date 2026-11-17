@@ -124,6 +124,9 @@ NCommon::TaskHandle SceneRuntime::ScheduleExtract(const NEngine::NRuntime::Frame
 }
 
 void SceneRuntime::Draw(const NEngine::NRuntime::FrameContext& frame) {
+    if (frame.IsStopRequested()) {
+        return;
+    }
     const auto binding = GetBinding(frame);
     if (binding->Snapshot == nullptr) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Scene snapshot was not extracted");

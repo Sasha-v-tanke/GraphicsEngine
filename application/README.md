@@ -111,6 +111,7 @@ Engine вызывает worker `OnPostUpdate`, а `SceneRuntime::FinalizePostUpd
 Extraction удерживает Scene/World до quiescence, затем освобождает Scene lease. `Renderer::Prepare` и consumer читают
 только immutable `RenderWorld` и `RenderPlan` текущего слота. Consumer регистрирует GPU completion в `FrameContext`
 **до** публикации presentation intent. Только owner-thread pump/drain может выполнять platform/Graphics operations.
+Stop, пришедший во время extraction join, передаётся в Draw через тот же phase stop token и запрещает новый consumer.
 Данные frame arena и resource leases живут до окончания всех CPU/GPU consumers; повторный допуск физического слота
 заменяет старую Scene binding только после exact completion. Ошибка ECS отменяет последующие phases; Stop закрывает
 admission, отменяет update, присоединяет CPU work, вызывает owner-thread drain и затем освобождает frame storage.
