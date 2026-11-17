@@ -288,6 +288,8 @@ TEST_P(Incremental, SnapshotOutlivesSourceAndMatchesFlatReference) {
     const auto& snapshot = Extract();
     const auto& reference =
             NRenderer::NInternal::ExtractRenderWorld(World, Resources, Frames->GetFrameStorage(Active.back()));
+    EXPECT_EQ(snapshot.GetDelta().WorldId, World.GetEntityReference({}).WorldId);
+    EXPECT_EQ(reference.GetDelta().WorldId, snapshot.GetDelta().WorldId);
     ASSERT_EQ(snapshot.GetObjects().size(), reference.GetObjects().size());
     for (std::size_t index = 0; index < snapshot.GetObjects().size(); ++index) {
         EXPECT_EQ(snapshot.GetObjects()[index].Id, reference.GetObjects()[index].Id);

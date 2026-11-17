@@ -5,6 +5,7 @@ API(
     renderer.h
     render_components.h
     render_world.h
+    view_selection.h
 )
 
 SOURCES(
