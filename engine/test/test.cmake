@@ -12,6 +12,7 @@ SOURCES(
     user_tasks.cpp
     job_await.cpp
     frame_scheduler_test.cpp
+    frame_overlap.cpp
 )
 
 PRIVATE_DEPENDS(

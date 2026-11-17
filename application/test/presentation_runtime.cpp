@@ -1,7 +1,10 @@
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <optional>
+#include <semaphore>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -27,6 +30,15 @@ public:
     bool FailAfterSubmit = false;
     bool DeviceLost = false;
     bool Suspended = false;
+    bool BlockFrameOne = false;
+    std::atomic_bool BackendReleased{false};
+    std::promise<void> BackendEnteredSignal;
+    std::binary_semaphore BackendRelease{0};
+    void ReleaseBackend() noexcept {
+        if (!BackendReleased.exchange(true)) {
+            BackendRelease.release();
+        }
+    }
     [[nodiscard]] const NGraphics::GraphicsCapabilities& GetCapabilities() const noexcept override {
         return Capabilities;
     }
@@ -38,6 +50,10 @@ public:
     }
     NGraphics::NBackend::BackendFrameResult TrySubmitFrame(NGraphics::FrameSubmission submission) override {
         Attempts.push_back(submission);
+        if (BlockFrameOne && submission.FrameIndex == 1) {
+            BackendEnteredSignal.set_value();
+            BackendRelease.acquire();
+        }
         if (FailBeforeSubmit) {
             return {.Status = NGraphics::EFrameSubmissionStatus::FAILED,
                     .Failure = std::make_exception_ptr(std::runtime_error{"record/submit failed"})};
@@ -225,5 +241,87 @@ TEST(PresentationRuntime, RecordFailureDoesNotProduceSubmissionAndShutdownCancel
     EXPECT_EQ(fixture.Runtime->GetDiagnostics().Submitted, 0);
     EXPECT_EQ(fixture.Runtime->GetDiagnostics().Abandoned, 1);
     EXPECT_NO_THROW(fixture.Scheduler.GetGpuCompletion(frame).get());
+}
+
+TEST(PresentationRuntime, BackendSubmitOverlapsNextUpdateAndPreviousGpu) {
+    auto backend = std::make_unique<ScriptedBackend>();
+    auto* native = backend.get();
+    native->BlockFrameOne = true;
+    auto entered = native->BackendEnteredSignal.get_future();
+    std::unique_ptr<NGraphics::Graphics> graphics{
+            new NGraphics::Graphics{NGraphics::NBackend::CreateGraphicsForBackend(std::move(backend))}};
+    auto runtime = std::make_unique<NApplication::NRuntime::PresentationRuntime>(std::move(graphics));
+    auto* presentation = runtime.get();
+    presentation->Start();
+    auto engine =
+            NEngine::NRuntime::EngineFactory::Create({.MaxActiveFrames = 3, .WorkerCount = 2}, std::move(runtime));
+    std::binary_semaphore updateRelease{0};
+    std::atomic_bool updateReleased{false};
+    std::atomic_bool updateActive{false};
+    struct ReleaseGuard {
+        ScriptedBackend& Backend;
+        std::binary_semaphore& Update;
+        std::atomic_bool& UpdateReleased;
+        void ReleaseUpdate() noexcept {
+            if (!UpdateReleased.exchange(true)) {
+                Update.release();
+            }
+        }
+        ~ReleaseGuard() {
+            Backend.ReleaseBackend();
+            ReleaseUpdate();
+            Backend.CompletedValue = Backend.NextValue;
+        }
+    } release{*native, updateRelease, updateReleased};
+    engine->Start();
+
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (presentation->GetDiagnostics().Submitted == 0 && std::chrono::steady_clock::now() < deadline) {
+        presentation->Pump(64, 64);
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(presentation->GetDiagnostics().Submitted, 1);
+    ASSERT_EQ(presentation->GetDiagnostics().Completed, 0);
+
+    ASSERT_TRUE(engine->Update());
+    ASSERT_TRUE(engine->Draw());
+    std::optional<NEngine::FrameKey> next;
+    while (!next && std::chrono::steady_clock::now() < deadline) {
+        next = engine->TryBeginFrame();
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(next);
+    std::promise<void> updateEnteredSignal;
+    auto updateEntered = updateEnteredSignal.get_future();
+    ASSERT_TRUE(engine->ScheduleUserUpdate(*next, [&] {
+        updateActive.store(true, std::memory_order_release);
+        updateEnteredSignal.set_value();
+        updateRelease.acquire();
+        updateActive.store(false, std::memory_order_release);
+    }));
+    ASSERT_EQ(updateEntered.wait_for(std::chrono::seconds{2}), std::future_status::ready);
+    auto observer = std::async(std::launch::async, [&] {
+        const bool reached = entered.wait_for(std::chrono::seconds{2}) == std::future_status::ready;
+        const bool overlapped = reached && updateActive.load(std::memory_order_acquire) && native->CompletedValue == 0;
+        native->ReleaseBackend();
+        return overlapped;
+    });
+    while (presentation->GetDiagnostics().Submitted == 1 && std::chrono::steady_clock::now() < deadline) {
+        presentation->Pump(64, 64);
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(observer.get());
+    EXPECT_EQ(presentation->GetDiagnostics().Submitted, 2);
+    EXPECT_EQ(presentation->GetDiagnostics().Completed, 0);
+    EXPECT_FALSE(engine->TryBeginFrame());
+
+    release.ReleaseUpdate();
+    ASSERT_TRUE(engine->Draw());
+    native->CompletedValue = 3;
+    presentation->Pump(64, 64);
+    engine->Stop();
+    EXPECT_FALSE(engine->GetLastError());
 }
 } // namespace
