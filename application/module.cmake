@@ -4,10 +4,12 @@ API(
     application.h
     application_config.h
     frame_diagnostics.h
+    service_manager.h
 )
 
 SOURCES(
     application.cpp
+    service_manager.cpp
 )
 
 PUBLIC_DEPENDS(
