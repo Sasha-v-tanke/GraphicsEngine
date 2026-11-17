@@ -32,6 +32,12 @@ namespace {
     };
 }
 
+[[nodiscard]] RenderWorldDelta MakeFullDelta(std::uint64_t worldId) noexcept {
+    RenderWorldDelta delta;
+    delta.WorldId = worldId;
+    return delta;
+}
+
 struct CapturedResources {
     NResources::ResourceHandle<NResources::MeshData> MeshHandle;
     NResources::ResourceHandle<NGraphics::Material> MaterialHandle;
@@ -195,7 +201,7 @@ const RenderWorld& ExtractRenderWorld(const NEcs::World& world,
                                      objects,
                                      resourceUseRecords,
                                      diagnostics,
-                                     {.WorldId = world.GetEntityReference({}).WorldId});
+                                     MakeFullDelta(world.GetEntityReference({}).WorldId));
 }
 
 NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
@@ -321,7 +327,7 @@ NCommon::TaskHandle ScheduleRenderWorldExtraction(const NEcs::World& world,
                                                      objects,
                                                      records,
                                                      diagnostics,
-                                                     {.WorldId = worldId}));
+                                                     MakeFullDelta(worldId)));
             },
             dependencies);
 }

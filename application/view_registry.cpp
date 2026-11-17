@@ -60,7 +60,9 @@ ViewHandle ViewRegistry::CreateView() {
     for (std::size_t i = 1; i < m_entries.size(); ++i) {
         auto& entry = m_entries[i];
         if (!entry.Live && entry.Generation != std::numeric_limits<std::uint64_t>::max()) {
-            entry = Entry{.Generation = entry.Generation + 1};
+            const auto generation = entry.Generation + 1;
+            entry = Entry{};
+            entry.Generation = generation;
             return {m_owner, i, entry.Generation};
         }
     }
