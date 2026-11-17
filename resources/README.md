@@ -4,23 +4,31 @@
 
 `Resources` владеет логическими идентификаторами ресурсов и их жизненным циклом независимо от графического интерфейса. `AsyncResourceLoader` связывает выделенный ResourceIo, TaskSystem и адаптер загрузки backend. Конкретные GPU-объекты и политика размещения принадлежат Graphics.
 
+## Граница модуля
+
+[Resources](module.cmake) публично зависит от `Common` и `Thread`; прямой зависимости от `Graphics` или Vulkan нет. Декодеры используют закрытые зависимости stb_image/tinyobjloader, а backend внедряет uploader через callbacks. Пользовательская навигация находится в [docs](../docs/README.md); здесь собраны внутренние state/lifetime/IO контракты.
+
 ## Контракт
 
 `ResourceManager::Observe()` атомарно фиксирует статус, identity, ошибку и lease готовой версии без ожидания I/O или GPU. Renderer использует это наблюдение для [явной skip policy](../renderer/README.md#готовность-ресурсов); последующий retry не изменяет ранее извлечённую диагностику или lease.
 
 - `ResourceHandle<T>` — типизированный идентификатор без владения. Он не владеет данными процессора и не является объектом графического устройства.
-- `ResourceLease<T>` удерживает конкретную версию представления данных процессора, полученную только из состояния `READY`. Логическая выгрузка запрещает новые получения, но существующие удержания сохраняют опубликованную версию до освобождения владельцем.
+- `ResourceLease<T>` удерживает конкретную immutable версию CPU payload и необязательного backend representation, полученную только из состояния `READY`. Логическая выгрузка запрещает новые получения, но существующие удержания сохраняют опубликованную версию до освобождения владельцем.
 - `ResourceManager::TryAcquire()` не блокирует поток: для неготового ресурса он не возвращает удержание и никогда не переключает уже полученную версию на более позднюю.
 - `ResourceUseRecord` — совместимый псевдоним записи с удалённым типом для передачи между снимками кадров и графическими отправками; запись удерживает конкретную версию на границах времени жизни процессора и графического устройства.
 - `ResourceIdentity` — детерминированный ключ кэша для запроса логического ресурса.
 - `ResourceIdentity::FromPath` выполняет лексическую нормализацию пути и сохраняет унифицированные разделители без обращения к файловой системе.
 - Повторные запросы с одинаковыми каноническими идентификаторами и типами, включая одновременные, возвращают один и тот же дескриптор.
-- Автомат состояний: `UNLOADED -> LOADING -> READY -> UNLOADING -> UNLOADED`; при ошибке `LOADING -> FAILED` и при повторе `FAILED -> LOADING`.
+- Для синхронных загрузчиков автомат состояний: `UNLOADED -> LOADING -> READY -> UNLOADING -> UNLOADED`; при ошибке `LOADING -> FAILED` и при повторе `FAILED -> LOADING`.
 - У операций загрузки собственное поколение. Повтор или выгрузка делает публикацию устаревшего результата недействительной.
 - Выгрузка в состоянии `LOADING` регистрирует запрос совместной отмены. Загрузка может вызывать `IsCancellationRequested` в безопасных точках до публикации.
 - `ResourceManager` сериализует изменения состояния, разрешая одновременное наблюдение состояний, идентификаторов и данных через публичный интерфейс. Вызывающий код не изменяет внутренние атомарные переменные и состояние напрямую.
-- Данные процессора отделены от будущего представления на графическом устройстве и видимы только после `READY`.
+- CPU payload отделён от backend representation. `TryAcquire` выдаёт версию только после `READY`; async `GetCpuResource` отдельно допускает наблюдение `CPU_READY`/`UPLOADING`.
 - `Forget` допускается исключительно из `UNLOADED` и делает прежние логические дескрипторы недействительными через поколение.
+
+### Транзакционная регистрация
+
+`Request` публикует identity index до занятой записи: потенциально бросающая вставка не должна оставлять недостижимый occupied slot. При allocation failure сохраняются прежние identity, slot/generation и возможность повторного запроса. Конкурентные первые запросы одной identity/type после отказа по-прежнему объединяются. Регрессии находятся в [registration/allocation.cpp](test/registration/allocation.cpp).
 
 ### Освобождение CPU-версий
 
@@ -49,7 +57,7 @@ Logical unload прекращает новые acquisitions, но ранее в�
 
 Загрузчик не создаёт изображения, представления, сэмплеры графического устройства или объекты рендеринга. Ошибки приводят к `FAILED` с идентификатором ресурса и путём файла в `ErrorInfo`.
 
-Физические изображения принадлежат `Graphics`. `NGraphics::ImageDescriptor`, `ImageViewDescriptor` и `SamplerDescriptor` определяют независимый от реализации контракт: формат, использование, доступ, время жизни, диапазоны подресурсов и режимы выборки выражены явно; физические дескрипторы остаются внутренними. `ImageData` может позднее передаваться механизму загрузки данных на устройство без изменения идентичности ресурса и автомата состояний.
+Физические изображения принадлежат `Graphics`. `NGraphics::ImageDescriptor`, `ImageViewDescriptor` и `SamplerDescriptor` определяют независимый от реализации контракт: формат, использование, доступ, время жизни, диапазоны подресурсов и режимы выборки выражены явно; физические дескрипторы остаются внутренними. `ImageData` передаётся внедрённому uploader асинхронного pipeline без изменения логической идентичности ресурса; стадии CPU и upload описаны ниже.
 
 ## Сетки
 
@@ -65,7 +73,7 @@ Logical unload прекращает новые acquisitions, но ранее в�
 
 ## Материалы
 
-Материалы — типизированные ресурсы процессора на основе `NGraphics::Material`. `Resources` владеет идентичностью, состоянием загрузки, версиями и удержанием данных кадрами. Объект материала содержит независимый от реализации идентификатор конвейера и неизменяемые описания привязок буферов, изображений и сэмплеров, выраженные через логические идентификаторы. Новые потребители не получают выгруженные версии, а опубликованные снимки кадров могут удерживать свою версию до освобождения записей использования ресурсов.
+Потребитель может регистрировать `NGraphics::Material` как типизированный CPU payload универсального `ResourceManager`. Сам `Resources` не включает этот тип и не зависит от `Graphics`. Менеджер владеет идентичностью, состоянием загрузки и версиями, а кадры удерживают конкретную версию через lease. Объект материала содержит независимый от реализации идентификатор конвейера и неизменяемые описания привязок буферов, изображений и сэмплеров, выраженные через логические идентификаторы. Новые потребители не получают выгруженные версии, а опубликованные снимки кадров могут удерживать свою версию до освобождения записей использования ресурсов.
 
 Выделение физических дескрипторов и проверка выравнивания и ограничений реализации не относятся к `Resources`. Реализация `Graphics` преобразует привязки материалов в собственные дескрипторы при отправке работы и удерживает разрешённые физические зависимости до завершения работы устройства.
 
@@ -81,10 +89,46 @@ Logical unload прекращает новые acquisitions, но ранее в�
 
 `Shutdown()` запрещает новые запросы, запрашивает отмену, дожидается всех принятых операций и обработчиков и присоединяет потоки. Повторный вызов безопасен, в том числе со стороны нескольких управляющих потоков. Деструктор делает то же самое. Останавливайте службу из потока владельца, а не из вычислительного потока, обработчика ввода-вывода или отмены: остановка ожидает активные системные вызовы и обработчики. Присоединение потока к самому себе отклоняется; уничтожение службы из её обработчика запрещено. Порядок жизненного цикла: остановить производителей запросов → `ResourceIo::Shutdown()` → дождаться разбора данных → `TaskSystem::Stop()`. Чтение, наблюдение и отмена потокобезопасны при жизни службы; уничтожение требует внешней координации времени жизни.
 
-Тесты с управляемыми медленными источниками проверяют продвижение вычислительных задач, передачу в `TaskSystem`, отмену, ограничения очереди и параллелизма, изоляцию ошибок, удержание результатов и остановку с незавершёнными запросами. Полный pipeline описан в [контракте async-загрузчика](async_resources.md).
+Тесты с управляемыми медленными источниками проверяют продвижение вычислительных задач, передачу в `TaskSystem`, отмену, ограничения очереди и параллелизма, изоляцию ошибок, удержание результатов и остановку с незавершёнными запросами. Полный pipeline описан в [контракте async-загрузчика](#асинхронная-загрузка).
 
 ## Асинхронная загрузка
 
 `AsyncResourceLoader::LoadImage`, `LoadMesh`, `LoadShaderArtifact` и типизированный `Load<T>` возвращают handle без ожидания. Pipeline: `QUEUED -> LOADING -> CPU_READY -> UPLOADING -> READY`; CPU-only загрузка пропускает UPLOADING. Изображения, OBJ и SPIR-V декодируются из памяти в TaskSystem, без файловых операций на compute workers. Старые синхронные функции сохранены.
 
-`PumpUploads()` вызывается владельцем backend: отправляет CPU_READY uploads и проверяет exact completion. До READY `TryAcquire` возвращает пустой результат; `GetCpuResource` позволяет наблюдать CPU_READY/UPLOADING. Lease и его use record удерживают CPU и GPU версии после логической выгрузки. Подробности cancellation, lifetime, shutdown и пример Vulkan-адаптера: [async_resources.md](async_resources.md).
+`PumpUploads()` вызывается владельцем backend: отправляет CPU_READY uploads и проверяет exact completion. До READY `TryAcquire` возвращает пустой результат; `GetCpuResource` позволяет наблюдать CPU_READY/UPLOADING. Lease и его use record удерживают CPU и GPU версии после логической выгрузки. Подробности cancellation, lifetime, shutdown и пример Vulkan-адаптера: [контракт загрузчика](#владение-и-использование).
+
+### Владение и использование
+
+Создайте `AsyncResourceLoader` на host/backend owner thread после ResourceManager и TaskSystem. Передайте ResourceIdentity, путь, memory-only decoder и необязательный uploader. Встроенные LoadImage/LoadMesh/LoadShaderArtifact используют тот же CPU-разбор, что синхронные загрузчики. Decoder получает bytes и stop_token, выполняется в TaskSystem; он обязан завершаться и проверять отмену в безопасных точках. Вызов готовых сторонних парсеров может завершиться только после возврата парсера. ResourceIo выполняет только чтение и handoff.
+
+Параллельные запросы одной identity/type атомарно объединяются до запуска I/O, даже между несколькими загрузчиками с общим manager. Первый принятый запрос определяет путь/decoder/uploader. Повтор READY возвращает текущий handle; FAILED допускает новую operation generation. В identity должны входить import options (включая shader stage). Ошибки I/O, decode, submit и completion — FAILED с GetFailure; frame workers не должны ждать состояния.
+
+Владелец backend регулярно вызывает PumpUploads. CPU-only работа публикуется из CPU_READY; uploader вызывается только здесь, получает immutable CPU payload и возвращает ResourceUpload: owning representation, неблокирующий IsComplete и точный Wait для shutdown. READY публикуется только после IsComplete()==true. Никакого device/queue idle или ожидания upload на compute/frame workers нет. CPU_READY наблюдаемо отдельно; Renderer skip/fallback не входит в этот слой.
+
+MaxPendingReads ограничивает также число записей pipeline, включая decode и незавершённые uploads. Полная/остановленная служба переводит новый запрос в recoverable FAILED. Завершённые записи освобождаются PumpUploads, поэтому tick нужен и для CPU-only загрузок. Реализация не обещает zero-lock admission; короткие mutex защищают метаданные, файловые операции/декодирование/ожидания под ними не выполняются.
+
+### Отмена и версии
+
+Cancel(handle) атомарно отменяет текущее поколение в ResourceManager, включая QUEUED до регистрации работы в pipeline. Регистрация повторно проверяет актуальность под admission lock, а сигнал stop принадлежит поколению в ResourceManager и достигает владельца работы через callback, даже если Cancel вызван другим coalesced loader. Callback регистрируется до I/O; привязка I/O request сериализуется с отменой. Поздняя регистрация отменённой операции не запускает I/O и не затрагивает retry или новый handle после Forget. Load допускает новое поколение сразу после отмены. При исчерпанном лимите нужно дождаться cooperative retirement старой работы и вызвать PumpUploads; backpressure до этого остаётся recoverable FAILED. RequestUnload/CompleteUnload остаются поддержанными напрямую: все последующие стадии проверяют operation generation; эти вызовы также запрашивают cooperative stop. Уже начатый системный вызов или сторонний decoder может завершиться только в следующей безопасной точке. Forget/reuse slot также запрещает stale-публикацию.
+
+Отменённый upload остаётся удержанным до exact completion, даже при retry. Завершение старой операции не изменяет новую. Cancel после READY не выгружает готовую версию; используйте RequestUnload/CompleteUnload. CPU payload и representation объединяются в immutable owning version; lease.GetGpuRepresentation() возвращает backend token, а GetUseRecord сохраняет обе части для существующего механизма completion/lifetime.
+
+Concrete native representation принадлежит backend. Его destruction должен быть безопасен на потоке последнего владельца lease либо backend обязан удержать allocation в своей owner-thread retirement queue. Device/allocator/state tracker должны пережить все native representations и потребителей. Этот контракт не заменяет GPU-use tracking последующих draw submissions.
+
+### Адаптер Vulkan
+
+В uploader создайте backend representation, затем вызовите существующий VulkanUploadManager::UploadBuffer/UploadImage/UploadBatch. Верните token с callbacks, замкнутыми на конкретный VulkanQueueCompletion: IsComplete вызывает VulkanSubmissionManager::IsCompleted(token), Wait — Wait(token, timeout). Backend удерживает allocation на owner thread и освобождает через свою retirement policy. UploadManager удерживает staging/destination до timeline completion; Resources удерживает опубликованную версию до освобождения leases. Vulkan heavy test `VulkanAsyncResources.DecodesAndUploadsMeshBeforeReady` проверяет полный OBJ -> ResourceIo -> TaskSystem -> batched staging -> timeline -> READY -> readback и logical unload под validation.
+
+Uploader обязан возвращать валидный representation и оба callbacks либо бросать исключение, сохраняя безопасность уже отправленных команд на стороне backend. Poll может бросить: ресурс станет FAILED, но ticket сохраняется для точного drain при shutdown. Wait обязан завершить владение отправкой, в том числе при отмене; при device loss backend обязан обеспечить безопасный terminal cleanup перед исключением.
+
+### Завершение
+
+Остановите производителей запросов, затем вызовите Shutdown на constructor thread, до остановки TaskSystem и уничтожения backend. Shutdown запрещает admission, отменяет I/O/decode, присоединяет ResourceIo callbacks, ждёт только собственные задачи (включая retirement execution captures), затем drains уже отправленные uploads. Незавершённые CPU стадии становятся UNLOADED; опубликованные READY сохраняются. Shutdown может ждать внешнего системного вызова, cooperative decoder или GPU. PumpUploads/Shutdown не вызываются из decoder/uploader/completion callbacks и не перекрываются. Деструктор выполняет Shutdown; lifetime уничтожения с конкурентными публичными вызовами требует внешней координации.
+
+Явный Shutdown сообщает исключение terminal GPU drain после обработки всех tickets. При device loss backend должен завершить безопасный cleanup до исключения; деструктор подавляет такое исключение, сохраняя noexcept. Для наблюдения ошибки используйте явный Shutdown.
+
+## Проверка и сохранение контрактов
+
+[resource_manager_test.cpp](test/resource_manager_test.cpp), [resource_observation.cpp](test/resource_observation.cpp), [retirement.cpp](test/retirement/retirement.cpp) и [allocation.cpp](test/registration/allocation.cpp) проверяют состояния, coalescing, поколения, версии, наблюдение, reentrant destruction и отказ регистрации. [resource_io.cpp](test/resource_io.cpp), [async_resource_loader.cpp](test/async_resource_loader.cpp) и [mesh_loader.cpp](test/mesh_loader.cpp) покрывают I/O, backpressure, cancellation/retry, upload drain и CPU import. Vulkan integration проверяется отдельно в heavy suite; модуль Resources не получает зависимость от Vulkan.
+
+Прежний `async_resources.md` сохранён в подразделах [владения](#владение-и-использование), [отмены и версий](#отмена-и-версии), [Vulkan-адаптера](#адаптер-vulkan) и [завершения](#завершение). Эти сведения фиксируют контракт адаптера; пользовательские quick start/полные сценарии загрузки относятся к отдельному этапу IMPROVE-0074 в `docs/about` и `docs/how_to`.

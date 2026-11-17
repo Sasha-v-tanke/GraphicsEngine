@@ -133,7 +133,7 @@ find_package(GraphicsEngine REQUIRED CONFIG COMPONENTS Vulkan GLFW)
 | [`window/`](window/README.md) | Окно, события и оконная реализация |
 | [`engine/`](engine/README.md) | Система кадров и координация выполнения |
 | [`lib/thread/`](lib/thread/README.md) | Планировщик задач и зависимости |
-| [`ecs/`](ecs/README.md) | Мир, сущности, компоненты, системы и [иерархия сущностей](ecs/hierarchy.md) |
+| [`ecs/`](ecs/README.md) | Мир, сущности, компоненты, системы и [иерархия сущностей](ecs/README.md#иерархия-сущностей-и-topologyepoch) |
 | [`scene/`](scene/README.md) | Управление сценами |
 | [`resources/`](resources/README.md) | Логические ресурсы |
 | [`renderer/`](renderer/README.md) | Подготовка рендеринга, [граф рендеринга](renderer/README.md#граф-рендеринга) и [исполнение графа Vulkan](renderer/README.md#исполнение-графа-на-vulkan) |
