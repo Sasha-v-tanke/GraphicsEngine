@@ -8,6 +8,7 @@
 
 #include <GraphicsEngine/application/application.h>
 #include <GraphicsEngine/application/application_config.h>
+#include <GraphicsEngine/application/service_manager.h>
 #include <GraphicsEngine/ecs/entity_ref.h>
 #include <GraphicsEngine/ecs/name_component.h>
 #include <GraphicsEngine/ecs/world.h>
@@ -76,6 +77,21 @@ private:
 };
 
 int main() {
+    {
+        NApplication::ServiceReference<int> service;
+        {
+            NApplication::ServiceManager services;
+            services.Register<int>(90);
+            service = services.Observe<int>();
+            if (services.Start() != 1 || service.Get() != 90 || !services.Stop() || services.Start() != 2 ||
+                std::as_const(services).Get<int>() != 90) {
+                return 90;
+            }
+        }
+        if (service.TryGet() != nullptr) {
+            return 91;
+        }
+    }
     {
         NScene::Scene userScene;
         auto entity = userScene.CreateEntity("installed EntityRef")

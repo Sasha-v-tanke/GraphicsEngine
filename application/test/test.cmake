@@ -9,6 +9,7 @@ SOURCES(
     presentation_runtime.cpp
     scene_runtime.cpp
     post_update.cpp
+    service_manager.cpp
 )
 
 PRIVATE_DEPENDS(

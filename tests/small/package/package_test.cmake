@@ -201,6 +201,7 @@ set(
     "GraphicsEngine/application/application.h"
     "GraphicsEngine/application/application_config.h"
     "GraphicsEngine/application/frame_diagnostics.h"
+    "GraphicsEngine/application/service_manager.h"
     "GraphicsEngine/ecs/entity.h"
     "GraphicsEngine/ecs/entity_ref.h"
     "GraphicsEngine/ecs/name_component.h"

@@ -1,5 +1,72 @@
 # Приложение и отображение кадров
 
+## Типизированные сервисы
+
+`ServiceManager` — самостоятельный application-scoped registry из публичного
+`<GraphicsEngine/application/service_manager.h>`. Подключение к `Application` выполняется отдельно;
+этот API не меняет существующий `Run()` и не создаёт Engine, TaskSystem или Graphics.
+
+```cpp
+struct Settings {};
+struct Gameplay {
+    void Start(const NApplication::ServiceContext& context) {
+        const auto& settings = context.Services.Get<Settings>();
+        (void)settings;
+        // context.Generation identifies this runtime attempt.
+    }
+    void Stop() {
+        // Cancel/drain all consumers before returning, including work using dependencies.
+    }
+};
+
+NApplication::ServiceManager services;
+services.Register<Gameplay, Settings>(); // Required typed dependencies may be registered later.
+services.Register<Settings>();
+services.Start();
+const auto gameplay = services.Observe<Gameplay>();
+const bool stopped = services.Stop();
+```
+
+`Register<T, Dependencies...>(constructorArgs...)` создаёт единственный owned экземпляр `T`.
+Базовый класс не требуется. Необязательные hooks имеют точные формы `void Start(const ServiceContext&)`
+и `void Stop()`; объекты без hooks также допустимы. Ошибки сообщаются исключениями, включая
+`NCommon::Exception`; status-returning hooks не поддерживаются. `Get<T>()` возвращает заимствованную
+ссылку или `NOT_FOUND`, `TryGet<T>()` — указатель или `nullptr`. Const manager возвращает const access.
+Внешние Engine/TaskSystem/Graphics не передаются менеджеру во владение: сервис получает только
+необходимые ему ограниченные зависимости через конструктор.
+
+Перед вызовом hooks проверяется весь DAG: отсутствующая зависимость даёт `NOT_FOUND`, цикл —
+`INVALID_ARGUMENT`. Ошибка валидации не запускает ни одного сервиса и позволяет дополнить конфигурацию.
+Порядок детерминирован: на каждом шаге выбирается самый рано зарегистрированный готовый сервис.
+Первый успешный preflight навсегда закрывает регистрацию; после остановки добавлять типы нельзя.
+Повторный `Start()` после штатного `Stop()` сохраняет экземпляры и выдаёт новое ненулевое поколение.
+Повторный запуск уже работающего менеджера отклоняется с `INVALID_STATE`.
+
+Если N-й `Start` бросает исключение, уже успешно запущенные сервисы останавливаются в обратном
+порядке. Сам бросивший сервис обязан откатить собственный частичный startup (RAII). Исходное исключение
+перебрасывается и сохраняется в `GetFailure()`; ошибки rollback его не заменяют. После чистого rollback
+можно повторить запуск. `Stop()` не бросает, идемпотентен и обходит все запущенные сервисы даже при
+ошибках. `GetStopFailures()` содержит заранее выделенный слот на каждый тип в порядке регистрации:
+пустой `Failure` означает отсутствие ошибки. Ошибка остановки переводит менеджер в `FAILED` и запрещает
+restart: завершение consumers не доказано. `GetFailure()` сохраняет первую operational error текущего
+поколения; новый разрешённый запуск очищает диагностику. Ошибки preflight/валидации выбрасываются
+непосредственно, без изменения диагностики предыдущего поколения.
+
+Регистрация, startup, shutdown, диагностика и уничтожение принадлежат создавшему потоку.
+Lifecycle hooks синхронны; повторный вход в `Register/Start` отклоняется, `Stop()` возвращает `false`
+при повторном входе, вызове из другого потока или неуспешном teardown. До первого запуска `Stop()`
+ничего не закрывает. После фиксации registry разрешены конкурентные `Get/TryGet/Observe`; lifecycle и
+уничтожение должны быть синхронизированы с читателями. Сам сервис отвечает за thread safety/affinity:
+lookup не даёт worker права обращаться к Window или World.
+
+Ссылки и экземпляры сохраняются между runtime generations; поколение нужно проверять в собственных
+асинхронных операциях сервиса. `Observe<T>()` возвращает проверяемую non-owning `ServiceReference<T>`:
+после уничтожения менеджера `TryGet()` возвращает `nullptr`, `Get()` — `INVALID_STATE`. Она не продлевает
+lifetime, не синхронизирует конкурентное уничтожение и не делает ранее полученный raw pointer безопасным.
+Деструктор менеджера сначала останавливает runtime, инвалидирует references, затем уничтожает сервисы
+в обратном topological order. При невалидированном DAG используется обратный порядок регистрации.
+Деструкторы сервисов не должны бросать; runtime consumers обязаны завершиться до уничтожения owners.
+
 ## Вывод кадра на графическое устройство
 
 Для включения вывода очищенного изображения задайте `ApplicationConfig::Presentation` равным `NGraphics::PresentationConfig{}`. Поле `MaxActiveFrames` в `Application` — единственный параметр глубины исполнения кадров; оно имеет приоритет над отдельным значением фабрики отображения. Должны быть включены Vulkan и GLFW. Приложения без графического устройства оставляют `Presentation` незаданным.
