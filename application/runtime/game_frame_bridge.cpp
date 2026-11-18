@@ -37,4 +37,11 @@ std::optional<NEngine::FrameKey> GameFrameBridge::TryBeginFrame(NEngine::Engine&
     return m_runtime->TryBeginFrame(engine, m_scenes, m_publish);
 }
 
+bool GameFrameBridge::AbortFrame(NEngine::Engine& engine, NEngine::FrameKey frame) {
+    if (m_runtime == nullptr || m_engine != &engine) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Game bridge requires its bound Engine");
+    }
+    return m_runtime->AbortFrame(engine, frame);
+}
+
 } // namespace NApplication::NRuntime

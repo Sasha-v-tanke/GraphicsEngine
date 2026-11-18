@@ -64,6 +64,27 @@ SceneRuntime::TryBeginFrame(NEngine::Engine& engine,
     return frame;
 }
 
+bool SceneRuntime::AbortFrame(NEngine::Engine& engine, NEngine::FrameKey frame) {
+    if (std::this_thread::get_id() != m_owner || m_engine != &engine) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Scene abort requires its owner Engine/thread");
+    }
+    if (!engine.AbortFrame(frame)) {
+        return false;
+    }
+    // Engine rejected all live/submitted reservations above. Retire the Scene outside the metadata lock.
+    std::shared_ptr<Binding> retired;
+    {
+        std::lock_guard lock{m_mutex};
+        if (frame.GetSlotIndex() < m_slots.size()) {
+            auto& binding = m_slots[frame.GetSlotIndex()];
+            if (binding && binding->Publication.Frame == frame) {
+                retired = std::exchange(binding, {});
+            }
+        }
+    }
+    return true;
+}
+
 std::shared_ptr<SceneRuntime::Binding> SceneRuntime::GetBinding(const NEngine::NRuntime::FrameContext& frame) {
     std::lock_guard lock{m_mutex};
     const auto handle = frame.GetFrame();

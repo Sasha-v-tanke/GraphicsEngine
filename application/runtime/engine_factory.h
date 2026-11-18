@@ -17,6 +17,11 @@ public:
     [[nodiscard]] virtual std::optional<NEngine::FrameKey> TryBeginFrame(NEngine::Engine& engine) {
         return engine.TryBeginFrame();
     }
+
+    // Roll back runtime publication only when Engine confirms that this reservation has no CPU consumers.
+    [[nodiscard]] virtual bool AbortFrame(NEngine::Engine& engine, NEngine::FrameKey frame) {
+        return engine.AbortFrame(frame);
+    }
 };
 
 class DefaultEngineFactory final: public IEngineFactory {

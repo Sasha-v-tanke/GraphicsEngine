@@ -39,6 +39,9 @@ public:
                   NScene::SceneManager& scenes,
                   const std::function<void(NScene::SceneManager&)>& publish = {});
 
+    // Owner thread only. Successful abort releases only the exact, unsubmitted publication.
+    [[nodiscard]] bool AbortFrame(NEngine::Engine& engine, NEngine::FrameKey frame);
+
     void Update(const NEngine::NRuntime::FrameContext&) override;
     void ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
                         NCommon::TaskSystem& tasks,

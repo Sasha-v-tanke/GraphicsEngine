@@ -297,6 +297,49 @@ TEST(GameFrameBridge, PublicationFailureRollsBackBeforeCallbacksAndShutdownClose
     loop.CheckError();
 }
 
+class ThrowingCapture final: public Callbacks {
+public:
+    void CaptureInput() override {
+        Callbacks::CaptureInput();
+        throw std::runtime_error{"capture"};
+    }
+};
+
+TEST(GameFrameBridge, FailedCaptureReleasesPublishedSceneBeforeNextFrameOrStop) {
+    for (const std::size_t workers: {1U, 2U, 8U}) {
+        for (const std::size_t slots: {1U, 2U, 3U}) {
+            NResources::ResourceManager resources;
+            NScene::SceneManager scenes;
+            Consumer consumer;
+            ThrowingCapture failed;
+            Callbacks recovered;
+            const auto scene = scenes.CreateScene("aborted");
+            scenes.Activate(scene);
+            const std::weak_ptr<NScene::Scene> lifetime = scenes.Acquire(scene);
+            int publications = 0;
+            NApplication::NRuntime::FrameLoop loop{
+                    Config(workers, slots),
+                    MakeBridge(scenes, resources, consumer, [&](auto&) { ++publications; })};
+            loop.Start();
+            EXPECT_THROW((void)loop.Step(failed), std::runtime_error);
+            scenes.Unload(scene);
+            // No Stop, replacement admission, CPU task or GPU completion may be needed for rollback.
+            EXPECT_TRUE(lifetime.expired());
+            EXPECT_FALSE(consumer.Drained);
+            EXPECT_EQ(publications, 1);
+            EXPECT_EQ(failed.Captures, 1);
+            EXPECT_EQ(failed.Updates.load(), 0);
+            EXPECT_EQ(failed.Posts.load(), 0);
+            EXPECT_EQ(consumer.Count(), 0U);
+            ASSERT_TRUE(Advance(loop, recovered, consumer, 1));
+            EXPECT_FALSE(consumer.Get(0)->Publication.Scene);
+            EXPECT_EQ(publications, 2);
+            loop.Stop();
+            loop.CheckError();
+        }
+    }
+}
+
 TEST(GameFrameBridge, AsyncEcsFailureSuppressesPostUpdateExtractionAndConsumer) {
     NResources::ResourceManager resources;
     NScene::SceneManager scenes;
@@ -391,9 +434,10 @@ TEST(GameFrameBridge, RejectsUnboundAndForeignEnginesAndDuplicateComposition) {
     ASSERT_TRUE(current);
     EXPECT_NE(stale->GetRunGeneration(), current->GetRunGeneration());
     EXPECT_FALSE(engine->CompleteUserUpdate(*stale));
-    EXPECT_FALSE(engine->AbortFrame(*stale));
+    EXPECT_FALSE(bridge->AbortFrame(*engine, *stale));
     EXPECT_FALSE(engine->IsUpdateComplete(*stale));
     ASSERT_TRUE(engine->CompleteUserUpdate(*current));
+    EXPECT_FALSE(bridge->AbortFrame(*engine, *current));
     ASSERT_TRUE(engine->Draw());
     ASSERT_TRUE(Eventually([&] { return consumer.Count() == 1; }));
     engine->Stop();

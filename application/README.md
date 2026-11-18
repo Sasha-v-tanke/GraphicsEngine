@@ -103,7 +103,10 @@ Application и не добавляет Game config; legacy CPU-only и clear-pre
 
 В `FrameLoop::Step` успешная reservation предшествует публикации Scene lease и capture input. Publication выполняется
 ровно один раз для допущенного `FrameKey`; backpressure и shutdown не вызывают её повторно. Исключение publication
-прерывает reservation до допуска пользовательских callbacks. `OnUpdate` выполняется на worker, затем
+прерывает reservation до допуска пользовательских callbacks. При ошибке capture input или допуска user update
+`FrameLoop` отменяет reservation через ту же фабрику: только после успешного `Engine::AbortFrame` освобождается
+Scene binding с полным совпадением `FrameKey`. Stale/submitted кадры этим rollback не затрагиваются; Scene
+освобождается без ожидания следующего кадра или Stop, вне metadata lock. `OnUpdate` выполняется на worker, затем
 `ScheduleWorldUpdate` передаёт семантическое завершение через `UpdateCompletion` без worker wait. После ECS join
 Engine вызывает worker `OnPostUpdate`, а `SceneRuntime::FinalizePostUpdate` применяет deferred structural commands
 перед extraction. Автоматический начальный commit/scene systems из FEATURE-0087/0095 этим мостом не вводится.

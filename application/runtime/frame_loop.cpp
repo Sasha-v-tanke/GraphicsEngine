@@ -137,7 +137,11 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
             }
             progressed = true;
         } catch (...) {
-            (void)m_engine->AbortFrame(*m_reservedFrame);
+            if (m_engineFactory) {
+                (void)m_engineFactory->AbortFrame(*m_engine, *m_reservedFrame);
+            } else {
+                (void)m_engine->AbortFrame(*m_reservedFrame);
+            }
             m_reservedFrame.reset();
             m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
             throw;

@@ -21,6 +21,7 @@ public:
 
     [[nodiscard]] std::unique_ptr<NEngine::Engine> Create(NEngine::EngineConfig config) override;
     [[nodiscard]] std::optional<NEngine::FrameKey> TryBeginFrame(NEngine::Engine& engine) override;
+    [[nodiscard]] bool AbortFrame(NEngine::Engine& engine, NEngine::FrameKey frame) override;
 
 private:
     NScene::SceneManager& m_scenes;
