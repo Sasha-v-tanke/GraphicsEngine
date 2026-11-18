@@ -93,6 +93,33 @@ cmake --build --preset ci-vulkan-glfw
 
 Дополнительные проверки жизненного цикла используют тот же путь `FrameLoop`, `Engine` и `Graphics` с управляемой обработкой платформенных событий: физическое сворачивание окна и явный нулевой размер, восстановление и возобновление отправок при одном и трёх слотах. Они также внедряют `NOT_READY`, `OUT_OF_DATE` и `SUBOPTIMAL` на границе вызовов Vulkan; успешные получение и отображение по-прежнему обращаются к настоящему драйверу. Эти детерминированные проверки статусов отделены от обычного теста публичного `Application`. Обе группы проверяют корректность вплоть до уничтожения и счётчики штатного завершения; проверки жизненного цикла дополнительно повторно запускают цикл и проверяют освобождение кадров.
 
+## Внутренний game frame bridge
+
+`GameFrameBridge` — внутренняя фабрика для существующего `FrameLoop`, заимствующая `SceneManager`,
+`ResourceManager`, consumer immutable кадров и owner-thread publication/drain callbacks. Фабрика создаёт
+ровно один Engine с принадлежащим ему `SceneRuntime`; отдельного scheduler, TaskSystem или main loop нет.
+Заимствованные сервисы и targets callbacks должны переживать `FrameLoop::Stop`. Фабрика не является публичным API
+Application и не добавляет Game config; legacy CPU-only и clear-presentation composition используют прежние runtime.
+
+В `FrameLoop::Step` успешная reservation предшествует публикации Scene lease и capture input. Publication выполняется
+ровно один раз для допущенного `FrameKey`; backpressure и shutdown не вызывают её повторно. Исключение publication
+прерывает reservation до допуска пользовательских callbacks. При ошибке capture input или допуска user update
+`FrameLoop` отменяет reservation через ту же фабрику: только после успешного `Engine::AbortFrame` освобождается
+Scene binding с полным совпадением `FrameKey`. Stale/submitted кадры этим rollback не затрагиваются; Scene
+освобождается без ожидания следующего кадра или Stop, вне metadata lock. `OnUpdate` выполняется на worker, затем
+`ScheduleWorldUpdate` передаёт семантическое завершение через `UpdateCompletion` без worker wait. После ECS join
+Engine вызывает worker `OnPostUpdate`, а `SceneRuntime::FinalizePostUpdate` применяет deferred structural commands
+перед extraction. Автоматический начальный commit/scene systems из FEATURE-0087/0095 этим мостом не вводится.
+
+Extraction удерживает Scene/World до quiescence, затем освобождает Scene lease. `Renderer::Prepare` и consumer читают
+только immutable `RenderWorld` и `RenderPlan` текущего слота. Consumer регистрирует GPU completion в `FrameContext`
+**до** публикации presentation intent. Только owner-thread pump/drain может выполнять platform/Graphics operations.
+Stop, пришедший во время extraction join, передаётся в Draw через тот же phase stop token и запрещает новый consumer.
+Данные frame arena и resource leases живут до окончания всех CPU/GPU consumers; повторный допуск физического слота
+заменяет старую Scene binding только после exact completion. Ошибка ECS отменяет последующие phases; Stop закрывает
+admission, отменяет update, присоединяет CPU work, вызывает owner-thread drain и затем освобождает frame storage.
+После штатного restart новый `FrameKey::GetRunGeneration()` отделяет кадры от прежнего запуска.
+
 ## Внутренний исполнитель основного потока
 
 `Application` владеет очередью FIFO `MainExecutor` через `FrameLoop`. Каждый `Run()` открывает новое монотонное поколение допуска; производители захватывают его до публикации действий. Команды прежнего запуска или остановленного исполнителя получают `SKIPPED`. Публикация до первого `Start()` вызывает `INVALID_STATE`. Допускаются перемещаемые обработчики, возвращающие `void`, включая захваты с уникальным владением; очередь и выполняющееся состояние удерживают их. Дескрипторы завершения могут пережить исполнитель. Ошибка команды сохраняет собственное исключение и не прерывает цикл событий. Потребители видят `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED` или `SKIPPED` и ожидают через отдельную условную переменную. Поток приложения не должен ожидать собственную ещё не исполненную команду.

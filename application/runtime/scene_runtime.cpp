@@ -64,6 +64,27 @@ SceneRuntime::TryBeginFrame(NEngine::Engine& engine,
     return frame;
 }
 
+bool SceneRuntime::AbortFrame(NEngine::Engine& engine, NEngine::FrameKey frame) {
+    if (std::this_thread::get_id() != m_owner || m_engine != &engine) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Scene abort requires its owner Engine/thread");
+    }
+    if (!engine.AbortFrame(frame)) {
+        return false;
+    }
+    // Engine rejected all live/submitted reservations above. Retire the Scene outside the metadata lock.
+    std::shared_ptr<Binding> retired;
+    {
+        std::lock_guard lock{m_mutex};
+        if (frame.GetSlotIndex() < m_slots.size()) {
+            auto& binding = m_slots[frame.GetSlotIndex()];
+            if (binding && binding->Publication.Frame == frame) {
+                retired = std::exchange(binding, {});
+            }
+        }
+    }
+    return true;
+}
+
 std::shared_ptr<SceneRuntime::Binding> SceneRuntime::GetBinding(const NEngine::NRuntime::FrameContext& frame) {
     std::lock_guard lock{m_mutex};
     const auto handle = frame.GetFrame();
@@ -84,6 +105,10 @@ void SceneRuntime::Update(const NEngine::NRuntime::FrameContext&) {
 void SceneRuntime::ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
                                   NCommon::TaskSystem& tasks,
                                   std::shared_ptr<NEngine::NRuntime::UpdateCompletion> completion) {
+    if (completion->IsStopRequested()) {
+        completion->Finish({.Status = NEngine::NRuntime::EUpdateStatus::CANCELLED});
+        return;
+    }
     const auto binding = GetBinding(frame);
     binding->Tasks = &tasks;
     if (!binding->Source) {
@@ -92,6 +117,13 @@ void SceneRuntime::ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
     }
     auto world = std::shared_ptr<NEcs::World>{binding->Source, &binding->Source->GetWorld()};
     NEngine::NRuntime::ScheduleWorldUpdate(std::move(world), tasks, completion);
+}
+
+void SceneRuntime::FinalizePostUpdate(const NEngine::NRuntime::FrameContext& frame) {
+    const auto binding = GetBinding(frame);
+    if (binding->Source) {
+        binding->Source->GetWorld().ApplyDeferredStructuralChanges();
+    }
 }
 
 NCommon::TaskHandle SceneRuntime::ScheduleExtract(const NEngine::NRuntime::FrameContext& frame,
@@ -113,6 +145,9 @@ NCommon::TaskHandle SceneRuntime::ScheduleExtract(const NEngine::NRuntime::Frame
 }
 
 void SceneRuntime::Draw(const NEngine::NRuntime::FrameContext& frame) {
+    if (frame.IsStopRequested()) {
+        return;
+    }
     const auto binding = GetBinding(frame);
     if (binding->Snapshot == nullptr) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Scene snapshot was not extracted");

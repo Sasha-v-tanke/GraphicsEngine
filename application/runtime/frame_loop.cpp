@@ -117,7 +117,7 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
         return progressed;
     }
     if (m_frameCheckpoint == EFrameCheckpoint::READY_FOR_USER_UPDATE) {
-        m_reservedFrame = m_engine->TryBeginFrame();
+        m_reservedFrame = m_engineFactory ? m_engineFactory->TryBeginFrame(*m_engine) : m_engine->TryBeginFrame();
         if (!m_reservedFrame) {
             return progressed;
         }
@@ -137,7 +137,11 @@ bool FrameLoop::Step(IFrameLoopCallbacks& callbacks) {
             }
             progressed = true;
         } catch (...) {
-            (void)m_engine->AbortFrame(*m_reservedFrame);
+            if (m_engineFactory) {
+                (void)m_engineFactory->AbortFrame(*m_engine, *m_reservedFrame);
+            } else {
+                (void)m_engine->AbortFrame(*m_reservedFrame);
+            }
             m_reservedFrame.reset();
             m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
             throw;

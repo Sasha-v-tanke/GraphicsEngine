@@ -720,7 +720,7 @@ private:
                     NController::FrameScheduler& frameScheduler,
                     NRuntime::IFrameRuntime& frameRuntime,
                     NCommon::TaskContext& task) {
-        const NRuntime::FrameContext context{frame, frameScheduler.GetFrameStorage(frame)};
+        const NRuntime::FrameContext context{frame, frameScheduler.GetFrameStorage(frame), m_phaseStop};
 
         {
             std::lock_guard lock{m_mutex};
