@@ -49,6 +49,7 @@ struct ResolvedBatch {
         EntityReference Entity;
         void* Component = nullptr;
         bool Writable = false;
+        bool Enabled = true;
     };
     SystemAccessList Declarations;
     std::vector<Entry> Entries;
@@ -75,10 +76,23 @@ public:
     void ForEach(Callback&& callback) const {
         Check();
         for (const auto& entry: m_batch->Entries) {
-            if (entry.Type == typeid(T) && (!Writable || entry.Writable)) {
+            if (entry.Type == typeid(T) && (!Writable || entry.Writable) && (m_includeDisabled || entry.Enabled)) {
                 std::invoke(callback, entry.Entity, *static_cast<Component*>(entry.Component));
             }
         }
+    }
+
+    [[nodiscard]] ScopedView SkipDisabled() const {
+        Check();
+        auto result = *this;
+        result.m_includeDisabled = false;
+        return result;
+    }
+    [[nodiscard]] ScopedView IncludeDisabled() const {
+        Check();
+        auto result = *this;
+        result.m_includeDisabled = true;
+        return result;
     }
 
 private:
@@ -91,6 +105,7 @@ private:
         }
     }
     std::shared_ptr<const ResolvedBatch> m_batch;
+    bool m_includeDisabled = false;
     friend class ScopedBatchContext;
 };
 

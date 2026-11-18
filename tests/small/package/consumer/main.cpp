@@ -118,6 +118,22 @@ int main() {
             entity.GetComponent<NEcs::NameComponent>().Value != "installed EntityRef") {
             return 83;
         }
+        entity.Disable();
+        entity.DisableComponent<NEcs::NameComponent>();
+        userScene.CommitPending();
+        int included = 0;
+        userScene.GetWorld().Query<NEcs::NameComponent>().IncludeDisabled().ForEach(
+                [&](NEcs::Entity, const NEcs::NameComponent&) { ++included; });
+        if (entity.IsEnabled() || entity.IsComponentEnabled<NEcs::NameComponent>() || included != 1 ||
+            !entity.HasComponent<NEcs::NameComponent>()) {
+            return 94;
+        }
+        entity.Enable();
+        entity.EnableComponent<NEcs::NameComponent>();
+        userScene.CommitPending();
+        if (!entity.IsEnabled() || !entity.IsComponentEnabled<NEcs::NameComponent>()) {
+            return 95;
+        }
         entity.Destroy();
         userScene.CommitPending();
         if (entity.IsAlive()) {
