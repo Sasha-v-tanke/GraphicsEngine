@@ -26,6 +26,66 @@
 
 `CreateEntity()` и `EntityRef` дают пользовательский доступ к существующему World. См. [создание сущности](../docs/how_to/create_entity.md) и [модель доступа и lifetime](../docs/about/entity_ref.md).
 
+## Opt-in metadata типов
+
+`NCommon::TypeRegistry` из `<GraphicsEngine/lib/common/type_registry.h>` — самостоятельная часть
+`Common`, не владеющая Scene/World. Обычным ECS-компонентам регистрация metadata не требуется.
+Разные модули явно добавляют свои типы в один выбранный владельцем registry:
+
+```cpp
+struct Position {
+    float X = 0;
+};
+NCommon::TypeRegistry types;
+types.Register<Position>({0x1001}, "Game.Position", 1, NCommon::ETypeKind::COMPONENT);
+types.Freeze();
+auto metadata = types.Get<Position>();
+auto value = types.Make<Position>(Position{.X = 3});
+auto copy = value.Copy();
+auto moved = value.MoveValue(); // value is empty; moved owns a newly move-constructed Position.
+```
+
+`TypeId` — назначенное автором ненулевое 64-битное значение. Его не вычисляют из `typeid`, имени,
+пути файла или порядка регистрации; переименование типа не меняет ID. Автор обеспечивает уникальность
+ID во всей persistent schema, не только внутри одной Scene. `GetCppType()` — только локальная связь с
+C++ типом; она не предназначена для файлов или протоколов. Имена полностью задаются вызывающим модулем,
+непустые и без встроенного NUL; версия схемы — положительный `uint32_t`.
+
+`Register<T>(id, name, version, kind)` проверяет уникальность C++ типа, ID и имени; совпадение даёт
+`ALREADY_EXISTS`, несовпадающая версия при таком конфликте — `INVALID_ARGUMENT`. Повторная регистрация
+не заменяет старый descriptor. Ошибка/нехватка памяти не публикует частичную запись. Enum автоматически
+получает `ENUM` и сведения о размере/знаковости underlying type; остальные типы — `VALUE` либо явно
+`COMPONENT`. Несовместимый kind отклоняется. Размер, выравнивание и capabilities выводятся из C++ типа.
+
+Владелец выполняет регистрацию и `Freeze()` в создавшем потоке. До закрытия любой lookup/creation
+даёт `INVALID_STATE`; после закрытия регистрация навсегда запрещена. Повторный `Freeze()` идемпотентен.
+Закрытие публикует immutable metadata с release/acquire ordering; `GetTypes()` перечисляет их в порядке
+явных ID, независимо от порядка регистрации модулей. Параллельные `Find/Get/Create/Make` разрешены
+после publication. Конструкторы и сами пользовательские значения требуют своей синхронизации.
+Lookup использует линейный поиск; нет глобального registry и фоновых задач.
+
+`Find(id/name)` и `Find<T>()` возвращают `nullptr` для неизвестного типа; `Get(id)` и `Get<T>()` дают
+`NOT_FOUND`. Возвращаемый `shared_ptr<const TypeDescriptor>` удерживает неизменяемые metadata даже
+после уничтожения registry. Контейнерный span `GetTypes()` заимствован; не сохраняйте его дольше registry.
+Уничтожение registry не должно совпадать с обращениями к нему.
+
+`TypeValue` — move-only владелец отдельного C++ объекта, а не указатель внутрь ECS. `Create(id)` выполняет
+default construction; `Make<T>(args...)` поддерживает типы без default constructor. `Copy()` явно копирует
+объект. `MoveValue()` создаёт новый объект из `T&&`, затем уничтожает исходный; обычное перемещение самого
+`TypeValue` лишь передаёт владение и доступно даже для immovable `T`. Typed `new/delete` сохраняют alignment
+и вызывают правильный destructor. Нетипизированные указатели и ручные placement operations наружу не выдаются.
+Неподдерживаемая операция даёт `UNSUPPORTED`. При исключении копирования/перемещения источник остаётся
+живым с exception guarantee самого `T`; успешное перемещение освобождает его ровно один раз.
+`Reset()` и destructors не бросают: зарегистрированный `T` должен быть nothrow-destructible. Значения и metadata
+могут пережить registry; модуль с кодом операций `T` должен оставаться загруженным. `TryGet<T>()` проверяет
+точный C++ тип, `Get<T>()` даёт `INVALID_ARGUMENT` для пустого/другого типа; на пустом владельце `GetType`,
+`Copy` и `MoveValue` дают `INVALID_STATE`. Операции над одним владельцем не должны перекрываться или повторно
+входить в него из пользовательского copy/move constructor.
+
+Одна регистрация не предоставляет сериализацию: `Capabilities.Serializable` всегда `false`. Codecs,
+property/enumerator values и генерация schema — следующие этапы; raw pointers и память C++ объекта не
+считаются portable serialized data. Reflection не даёт права читать/изменять live ECS вне access scope.
+
 ## Проверка контракта
 
 [scene_test.cpp](test/scene_test.cpp) покрывает stale/foreign handles, явное пустое active state, owner thread, worker leases после unload/уничтожения менеджера, извлечение старой сцены во время переключения и удержание aliasing World lease до quiescence async systems. Публичный `Scene` предоставляет имя, `GetWorld` и EntityRef facade; сериализация остаётся последующей задачей.

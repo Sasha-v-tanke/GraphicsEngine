@@ -21,6 +21,7 @@
 #include <GraphicsEngine/lib/common/change_tracker.h>
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
+#include <GraphicsEngine/lib/common/type_registry.h>
 #include <GraphicsEngine/lib/thread/job.h>
 #include <GraphicsEngine/lib/thread/task/frame_origin.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
@@ -79,6 +80,22 @@ private:
 };
 
 int main() {
+    NCommon::TypeValue retainedType;
+    {
+        NCommon::TypeRegistry types;
+        types.Register<std::unique_ptr<int>>({106}, "Consumer.UniqueInt");
+        types.Freeze();
+        const auto descriptor = types.Get<std::unique_ptr<int>>();
+        if (descriptor->GetId() != NCommon::TypeId{106} || descriptor->GetCapabilities().Serializable ||
+            descriptor->GetCapabilities().CopyConstructible) {
+            return 106;
+        }
+        retainedType = types.Make<std::unique_ptr<int>>(std::make_unique<int>(106));
+    }
+    auto movedType = retainedType.MoveValue();
+    if (retainedType.IsValid() || *movedType.Get<std::unique_ptr<int>>() != 106) {
+        return 107;
+    }
     {
         NApplication::ViewRegistry views;
         const auto mainView = views.GetMainView();
