@@ -262,6 +262,7 @@ set(
     "GraphicsEngine/renderer/render_graph.h"
     "GraphicsEngine/renderer/render_world.h"
     "GraphicsEngine/renderer/view_selection.h"
+    "GraphicsEngine/renderer/standard_graph.h"
     "GraphicsEngine/window/window.h"
     "GraphicsEngine/window/window_config.h"
     "GraphicsEngine/window/window_runtime.h"

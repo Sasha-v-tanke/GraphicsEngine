@@ -358,3 +358,31 @@ value для построения графа одного выхода с frame 
 камеру перед передачей этого значения; Renderer не читает Scene/World и не зависит от Application.
 `RenderWorld::GetDelta().WorldId` у всех extraction paths хранит происхождение снимка даже при
 полной перестройке, чтобы камеры разных World с совпадающими entity index/generation не смешивались.
+
+## Стандартный 3D graph builder (FEATURE-0092)
+
+`BuildStandardGraph(frame, plan, cameraId, target, options)` — CPU-only frontend
+в публичном `standard_graph.h`. Frame identity должен точно совпадать с RenderPlan;
+порядок отфильтрованных по camera ID команд и их instance payload сохраняются.
+Матрицы камеры/объектов и logical resource versions берутся из immutable плана.
+`nullopt`, отсутствующий view или отсутствие ready draws дают color-clear/present
+без depth и без чтения buffers. Невалидный camera ID отклоняется. Extraction владеет
+readiness policy; builder дополнительно пропускает незаполненные resource identities/versions.
+
+Для opaque draws создаётся transient D32 image того же размера и sample count,
+с semantic depth-stencil usage, clear depth 1 и discard после последнего использования.
+Color очищается и сохраняется; compiler создаёт terminal PRESENT transition.
+Depth test/pipeline и GPU uploads настраивает execution integration FEATURE-0096;
+этот builder не создаёт native pipelines и не исполняет кадр.
+
+Target должен быть live, ненулевого размера и оставаться живым до GPU completion.
+После resize/acquire generation WSI инвалидирует старый source и передаёт новый;
+каждый вызов получает отдельные graph-scoped IDs. CompiledGraph::ValidateResources
+отклоняет устаревший target/frame. Нулевой framebuffer означает suspended на уровне
+вызывающего кода. ViewSelection из FEATURE-0091 адаптируется через GetFrame(),
+GetCamera()->Id либо nullopt; plan должен быть подготовлен с тем же camera snapshot.
+
+Необязательный synchronous `options.Extend(builder, outputs)` добавляет semantic
+passes/dependencies до Compile. Он получает color, optional depth и opaque pass ID;
+не должен сохранять builder/IDs между вызовами. Resource leases принадлежат frame,
+WSI и GPU lifetime — прежним владельцам. Mutable global state не используется.

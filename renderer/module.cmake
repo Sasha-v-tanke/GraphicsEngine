@@ -1,6 +1,7 @@
 MODULE(Renderer)
 
 API(
+    standard_graph.h
     render_graph.h
     renderer.h
     render_components.h
@@ -9,6 +10,7 @@ API(
 )
 
 SOURCES(
+    standard_graph.cpp
     execution_validation.h
     execution_validation.cpp
     recording_plan.h

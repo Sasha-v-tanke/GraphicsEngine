@@ -43,6 +43,7 @@ static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
                                       const NCommon::TaskSystem&>);
 #endif
 #include <GraphicsEngine/renderer/renderer.h>
+#include <GraphicsEngine/renderer/standard_graph.h>
 #include <GraphicsEngine/resources/async_resource_loader.h>
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/image_loader.h>
@@ -55,6 +56,11 @@ static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
 #include <GraphicsEngine/scene/scene_manager.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
+
+NRenderer::CompiledGraph BuildUserStandardGraph(const NRenderer::RenderPlan& plan,
+                                                const std::shared_ptr<const NRenderer::SwapchainGraphTarget>& target) {
+    return NRenderer::BuildStandardGraph(plan.GetFrame(), plan, std::nullopt, target);
+}
 
 // Instantiates the facade using only installed public headers.
 class UserJobsConsumer: public NApplication::Application {

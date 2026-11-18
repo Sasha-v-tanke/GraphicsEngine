@@ -1,6 +1,7 @@
 TEST_SUITE(Renderer)
 
 SOURCES(
+    standard_graph.cpp
     recording_plan.cpp
     incremental_extraction.cpp
     resource_readiness.cpp
