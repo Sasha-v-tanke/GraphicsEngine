@@ -3,6 +3,7 @@ TEST_SUITE(Application)
 TEST(Application)
 
 SOURCES(
+    view_registry.cpp
     main_executor.cpp
     application_test.cpp
     runtime_mvp_test.cpp
@@ -14,6 +15,7 @@ SOURCES(
 
 PRIVATE_DEPENDS(
     Application
+    Engine
 )
 
 TEST_LABELS(

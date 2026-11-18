@@ -632,6 +632,9 @@ const RenderWorld* ExtractParallel(const NEcs::World& world,
     }
     tasks.Wait(join);
     EXPECT_EQ(tasks.GetStatus(join), NCommon::ETaskStatus::COMPLETED);
+    if (result != nullptr) {
+        EXPECT_EQ(result->GetDelta().WorldId, world.GetEntityReference({}).WorldId);
+    }
     return result;
 }
 

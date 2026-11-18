@@ -1,6 +1,7 @@
 MODULE(Application)
 
 API(
+    view_registry.h
     application.h
     application_config.h
     frame_diagnostics.h
@@ -8,6 +9,7 @@ API(
 )
 
 SOURCES(
+    view_registry.cpp
     application.cpp
     service_manager.cpp
 )

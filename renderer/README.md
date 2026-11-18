@@ -347,3 +347,14 @@ StopDrainsRunningIncrementalPublicationBeforeNoexceptReset удерживает 
 только idle. Отдельный CompletionFailureAfterResolverKeepsCursorAndRetriesWarmHierarchy
 бросает исключение из completion после успешного resolver и проверяет retry с прежним
 PreviousFrame, новой material version, корректной матрицей/дельтой и cache-hit resolver.
+
+### Выбор вида приложением
+
+`<GraphicsEngine/renderer/view_selection.h>` определяет `ViewSelection`: отдельный immutable
+value для построения графа одного выхода с frame identity, framebuffer size и optional копией
+`RenderView`. Потребитель проверяет совпадение frame identity с `RenderWorld`; пустая камера
+означает только очистку, а нулевой размер — suspended output. Нельзя подменять отсутствующий
+выбор первой камерой `RenderWorld::GetViews()`. `Application::ViewRegistry` разрешает сцену и
+камеру перед передачей этого значения; Renderer не читает Scene/World и не зависит от Application.
+`RenderWorld::GetDelta().WorldId` у всех extraction paths хранит происхождение снимка даже при
+полной перестройке, чтобы камеры разных World с совпадающими entity index/generation не смешивались.

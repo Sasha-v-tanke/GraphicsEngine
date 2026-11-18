@@ -291,3 +291,33 @@ m_valueJob = Spawn(AddOne(RunAsync([] { return 41; })));
 - `OnUpdate`/`OnPostUpdate`, публикация кадра и переключение сцен через SceneRuntime → `docs/about/application.md` и отдельные сценарии `docs/how_to/`.
 
 Внутренние состояния, потоки, владение и ошибки остаются контрактом этого README. Целевые пользовательские страницы пока не опубликованы; [индекс документации](../docs/README.md) ведёт только к существующим страницам.
+
+## Явный выбор камеры (ViewRegistry)
+
+`<GraphicsEngine/application/view_registry.h>` предоставляет отдельный `ViewRegistry`,
+которым владеет composition приложения. `GetMainView()` возвращает зарезервированный вид
+основного окна; `CreateView()` создаёт только логический вид, без окна и графического выхода.
+Идентичность вида включает владельца, слот и поколение; чужие, удалённые и пережившие
+перезапуск handles отклоняются. Основной вид удалить нельзя.
+
+На потоке владельца приложение передаёт framebuffer size через `SetFramebufferSize`
+после обработки оконных событий и явно вызывает `BindCamera(view, scenes, scene, identity)`.
+`SceneHandle` и `EntityReference` не удерживают Scene/World. Привязка проверяет зарегистрированную
+сцену, World identity и живое поколение сущности; наличие компонентов проверяется при публикации.
+Нельзя одновременно изменять registry или соответствующий World из другого потока.
+
+`Publish(view, scenes, extractedWorld)` вызывается в безопасной фазе владельца после extraction,
+при неизменном World до окончания вызова. Полученный `ViewSnapshot` полностью владеет копией
+камеры, проекции, размеров, идентичностей и диагностикой; он не держит указателей на ECS либо
+память кадра. Последующие resize, bind/unbind, scene switch, unload и новые публикации его не меняют.
+Aspect ratio вычисляется из framebuffer size только в копии `RenderView`, без изменения ECS.
+Проверяются active Scene, World provenance снимка, поколение и enabled state сущности/компонентов.
+Отсутствующая камера, disabled/stale identity, неактивная сцена или нулевой размер дают пустую
+камеру с `EViewDiagnostic`; выбор первой камеры из ECS запрещён.
+
+Граница с построителем графа — `snapshot.GetSelection()`:
+`NRenderer::ViewSelection` содержит только frame identity, размеры и optional `RenderView`.
+Построитель проверяет совпадение frame identity с `RenderWorld`; отсутствие камеры означает
+кадр только с очисткой, нулевой размер — приостановленную поверхность. Renderer не зависит
+от Application или Scene. Подключение к FrameLoop/SceneRuntime и автоматическая публикация
+из Application относятся к FEATURE-0095/0094; текущий registry не меняет эти пути.
