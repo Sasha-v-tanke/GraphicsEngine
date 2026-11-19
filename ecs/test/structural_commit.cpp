@@ -141,7 +141,7 @@ TEST(EcsStructuralCommit, HierarchyConflictsArePreflightedAgainstShadowTopology)
     EXPECT_FALSE(world.IsExecutionPoisoned());
 }
 
-TEST(EcsStructuralCommit, EnabledMetadataPublishesWithoutChangingLegacyQueryContract) {
+TEST(EcsStructuralCommit, EnabledMetadataPublishesAndDefaultQuerySkipsDisabled) {
     NEcs::World world;
     const auto entity = world.QueueCreateEntity();
     world.QueueAddComponent<Value>(entity, 4);
@@ -151,6 +151,10 @@ TEST(EcsStructuralCommit, EnabledMetadataPublishesWithoutChangingLegacyQueryCont
     EXPECT_FALSE(world.IsEntityEnabled(entity));
     EXPECT_FALSE(world.IsComponentEnabled<Value>(entity));
     EXPECT_TRUE(world.HasComponent<Value>(entity.Identity));
+    world.Query<Value>([](auto, auto&) { FAIL() << "Disabled metadata must filter default Query"; });
+    unsigned included = 0;
+    world.Query<Value>().IncludeDisabled().ForEach([&](auto, auto&) { ++included; });
+    EXPECT_EQ(included, 1U);
     world.QueueSetEnabled(entity, true);
     world.QueueSetComponentEnabled<Value>(entity, true);
     EXPECT_FALSE(world.IsEntityEnabled(entity));

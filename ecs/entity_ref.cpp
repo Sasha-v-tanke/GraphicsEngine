@@ -20,6 +20,18 @@ void EntityRef::Destroy() {
     GetWorld().QueueDestroyEntity(m_reference);
 }
 
+void EntityRef::Enable() {
+    GetWorld().QueueSetEnabled(m_reference, true);
+}
+
+void EntityRef::Disable() {
+    GetWorld().QueueSetEnabled(m_reference, false);
+}
+
+bool EntityRef::IsEnabled() const {
+    return GetWorld().ResolveEntityRefEnabled(m_reference);
+}
+
 bool EntityRef::IsPending() const {
     if (m_world == nullptr || m_lifetime.expired()) {
         return false;
