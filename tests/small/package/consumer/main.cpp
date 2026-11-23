@@ -55,6 +55,7 @@ static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
 #include <GraphicsEngine/scene/scene_manager.h>
 #include <GraphicsEngine/scene/spatial_bounds.h>
+#include <GraphicsEngine/scene/static_bvh.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
 
@@ -91,12 +92,20 @@ int main() {
         NScene::SceneManager scenes;
         const auto scene = scenes.CreateScene();
         auto lease = scenes.Acquire(scene);
-        const auto entity = lease->CreateEntity().AddComponent<NScene::SpatialBoundsComponent>();
+        NScene::SpatialBoundsComponent bounds;
+        bounds.Mobility = NScene::ESpatialMobility::STATIC;
+        const auto entity = lease->CreateEntity().AddComponent<NScene::SpatialBoundsComponent>(bounds);
         lease->CommitPending();
         const auto records = NScene::CaptureSpatialRecords(scenes, scene);
         if (records.size() != 1 || records[0].Validity != NScene::ESpatialValidity::VALID ||
             records[0].Identity.Entity != entity.GetReference()) {
             return 115;
+        }
+        const auto index = NScene::StaticBvh::Build(scene, 1, records);
+        const auto candidates = index.QueryRay({}).Candidates;
+        if (candidates.size() != 1 || !NScene::IsSpatialCandidateAlive(scenes, candidates[0]) ||
+            index.Refit(2, records).GetVersion() != 2) {
+            return 116;
         }
     }
     NCommon::TypeValue retainedType;

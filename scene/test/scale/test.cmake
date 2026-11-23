@@ -1,0 +1,5 @@
+TEST_SUITE(StaticBvhScale)
+SOURCES(static_bvh.cpp)
+PRIVATE_DEPENDS(Scene)
+TEST_LABELS(heavy cpp scene spatial)
+set_tests_properties(GraphicsEngineStaticBvhScaleTests PROPERTIES TIMEOUT 180)
