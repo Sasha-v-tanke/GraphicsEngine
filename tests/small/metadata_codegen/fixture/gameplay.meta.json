@@ -1,0 +1,18 @@
+{
+  "format_version": 1,
+  "types": [
+    {
+      "id": "0x1071", "cpp_type": "::NMetadataFixture::Position", "name": "Game.Position",
+      "version": 2, "kind": "COMPONENT", "header": "fixture_types.h",
+      "fields": [
+        {"id": 12, "member": "Y", "name": "Y", "cpp_type": "float"},
+        {"id": 11, "member": "X", "name": "Horizontal", "cpp_type": "float"}
+      ]
+    },
+    {
+      "id": "0x1072", "cpp_type": "::NMetadataFixture::Label", "name": "Game.Label",
+      "version": 1, "kind": "COMPONENT", "header": "fixture_types.h",
+      "fields": [{"id": 11, "member": "Text", "name": "Text", "cpp_type": "std::string"}]
+    }
+  ]
+}

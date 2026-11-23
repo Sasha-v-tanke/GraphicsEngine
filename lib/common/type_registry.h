@@ -50,6 +50,20 @@ struct EnumTypeInfo {
     bool IsSigned = false;
 };
 
+// Stable within its declaring TypeId; renaming/reordering a C++ member does not change this ID.
+struct PropertyId {
+    std::uint64_t Value = 0;
+    bool operator==(const PropertyId&) const noexcept = default;
+};
+
+// Declaration metadata only. No live component pointer, getter, setter or serialization codec.
+struct FieldMetadata {
+    PropertyId Id;
+    std::string Name;
+    std::type_index CppType = typeid(void);
+    std::type_index OwnerType = typeid(void);
+};
+
 class TypeRegistry;
 class TypeValue;
 
@@ -66,6 +80,7 @@ public:
     [[nodiscard]] std::optional<EnumTypeInfo> GetEnumInfo() const noexcept;
     // An in-process binding only. It is never the persistent identity.
     [[nodiscard]] std::type_index GetCppType() const noexcept;
+    [[nodiscard]] std::span<const FieldMetadata> GetFields() const noexcept;
 
 private:
     friend class TypeRegistry;
@@ -86,7 +101,8 @@ private:
                    std::size_t alignment,
                    std::type_index cppType,
                    Operations operations,
-                   std::optional<EnumTypeInfo> enumInfo);
+                   std::optional<EnumTypeInfo> enumInfo,
+                   std::vector<FieldMetadata> fields);
 
 private:
     TypeId m_id;
@@ -98,6 +114,7 @@ private:
     std::type_index m_cppType;
     Operations m_operations;
     std::optional<EnumTypeInfo> m_enumInfo;
+    std::vector<FieldMetadata> m_fields;
 };
 
 // Owns a standalone value and its immutable metadata, never a component pointer into a World.
@@ -165,7 +182,8 @@ public:
     void Register(TypeId id,
                   std::string name,
                   std::uint32_t schemaVersion = 1,
-                  ETypeKind kind = std::is_enum_v<T> ? ETypeKind::ENUM : ETypeKind::VALUE) {
+                  ETypeKind kind = std::is_enum_v<T> ? ETypeKind::ENUM : ETypeKind::VALUE,
+                  std::vector<FieldMetadata> fields = {}) {
         TypeDescriptor::Operations operations;
         if constexpr (std::is_default_constructible_v<T>) {
             operations.Create = []() -> void* { return new T(); };
@@ -190,7 +208,8 @@ public:
                            alignof(T),
                            typeid(T),
                            operations,
-                           enumInfo);
+                           enumInfo,
+                           std::move(fields));
     }
 
     // Idempotent on the owner. Enumerations are sorted by explicit ID, independent of module registration order.
@@ -235,7 +254,8 @@ private:
                             std::size_t alignment,
                             std::type_index cppType,
                             TypeDescriptor::Operations operations,
-                            std::optional<EnumTypeInfo> enumInfo);
+                            std::optional<EnumTypeInfo> enumInfo,
+                            std::vector<FieldMetadata> fields);
 
 private:
     const std::thread::id m_owner = std::this_thread::get_id();

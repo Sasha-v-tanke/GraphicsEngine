@@ -98,6 +98,7 @@ file(
 cmake_minimum_required(VERSION 3.31)
 
 project(GraphicsEngineBuildInterfaceConsumer LANGUAGES CXX)
+set(CMAKE_DISABLE_FIND_PACKAGE_Python3 TRUE)
 
 set(GRAPHICS_ENGINE_INSTALL OFF CACHE BOOL "" FORCE)
 set(GRAPHICS_ENGINE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -226,6 +227,7 @@ set(
     "GraphicsEngine/graphics/material.h"
     "GraphicsEngine/graphics/presentation.h"
     "GraphicsEngine/lib/common/change_tracker.h"
+    "GraphicsEngine/lib/common/metadata.h"
     "GraphicsEngine/lib/common/error/assert.h"
     "GraphicsEngine/lib/common/error/error.h"
     "GraphicsEngine/lib/common/error/exception.h"

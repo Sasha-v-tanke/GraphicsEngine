@@ -370,6 +370,11 @@ set(
     "${CMAKE_INSTALL_LIBDIR}/cmake/GraphicsEngine"
 )
 
+install(FILES "${PROJECT_SOURCE_DIR}/cmake/metadata_codegen.cmake"
+    DESTINATION "${graphicsEnginePackageDirectory}")
+install(FILES "${PROJECT_SOURCE_DIR}/tools/metadata_codegen/generate.py"
+    DESTINATION "${graphicsEnginePackageDirectory}" RENAME metadata_codegen.py)
+
 install(
     EXPORT
     GraphicsEngineTargets
