@@ -261,7 +261,11 @@ int main() {
 
     const auto shader =
             resources.Request<NResources::ShaderArtifact>(NResources::ResourceIdentity{"shader", "package.spv"});
-    const auto operation = resources.BeginLoading(shader);
+    const auto admitted = resources.TryBeginLoading(shader);
+    if (!admitted || resources.TryBeginLoading(shader)) {
+        return 1;
+    }
+    const auto operation = *admitted;
     const bool validSpirV = NResources::IsValidSpirVArtifact({0x07230203, 0x00010000, 0, 1, 0});
 
     resources.PublishReady(

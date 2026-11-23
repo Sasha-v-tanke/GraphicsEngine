@@ -45,6 +45,18 @@ public:
         };
     }
 
+    // Atomic synchronous admission. Busy valid handles coalesce without changing state or generation.
+    template<typename T>
+    [[nodiscard]] std::optional<ResourceOperation<T>> TryBeginLoading(ResourceHandle<T> handle) {
+        RetiredPayload retired;
+        std::unique_lock lock{m_mutex};
+        Entry& entry = Validate(handle, std::type_index{typeid(T)});
+        if (entry.State != EResourceState::UNLOADED && entry.State != EResourceState::FAILED) {
+            return std::nullopt;
+        }
+        return ResourceOperation<T>{handle, BeginLoading(entry, retired)};
+    }
+
     // Atomic admission: concurrent pipelines coalesce at the logical identity.
     template<typename T>
     [[nodiscard]] std::optional<ResourceOperation<T>> TryQueueLoading(ResourceHandle<T> handle) {
