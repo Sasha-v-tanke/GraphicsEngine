@@ -267,11 +267,11 @@ ResourceHandle<MeshData>
 LoadMesh(ResourceManager& resources, ResourceIdentity identity, const std::filesystem::path& path) {
     const ResourceIdentity failureIdentity = identity;
     const ResourceHandle<MeshData> handle = resources.Request<MeshData>(std::move(identity));
-    const EResourceState state = resources.GetState(handle);
-    if (state != EResourceState::UNLOADED && state != EResourceState::FAILED) {
+    const auto admitted = resources.TryBeginLoading(handle);
+    if (!admitted) {
         return handle;
     }
-    const ResourceOperation<MeshData> operation = resources.BeginLoading(handle);
+    const ResourceOperation<MeshData> operation = *admitted;
     const auto fail = [&](NCommon::EError code, const std::string& reason) {
         resources.Fail(operation,
                        NCommon::ErrorInfo{

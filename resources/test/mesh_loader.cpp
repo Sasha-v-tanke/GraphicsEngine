@@ -1,11 +1,14 @@
 #include <array>
+#include <barrier>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -216,6 +219,45 @@ TEST_F(MeshLoader, DuplicateIdentityReusesPayloadAndLeaseSurvivesUnload) {
     resources.CompleteUnload(first);
     EXPECT_EQ((*lease)->GetIndices().size(), 3);
     EXPECT_FALSE(resources.TryAcquire(first).has_value());
+}
+
+TEST_F(MeshLoader, ConcurrentFirstLoadsCoalesceWithoutDuplicateAdmission) {
+    Write(std::string{TRIANGLE} + "f 1 2 3\n");
+    for (const std::size_t count: {2U, 8U}) {
+        for (int iteration = 0; iteration < 32; ++iteration) {
+            ResourceManager resources;
+            const ResourceIdentity identity{"mesh", "concurrent"};
+            std::barrier start{static_cast<std::ptrdiff_t>(count + 1)};
+            std::vector<NResources::ResourceHandle<MeshData>> handles(count);
+            std::vector<std::exception_ptr> errors(count);
+            std::vector<std::thread> threads;
+            threads.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                threads.emplace_back([&, i] {
+                    start.arrive_and_wait();
+                    try {
+                        handles[i] = NResources::LoadMesh(resources, identity, Path);
+                    } catch (...) {
+                        errors[i] = std::current_exception();
+                    }
+                });
+            }
+            start.arrive_and_wait();
+            for (auto& thread: threads) {
+                thread.join();
+            }
+            for (std::size_t i = 0; i < count; ++i) {
+                EXPECT_FALSE(errors[i]);
+                EXPECT_EQ(handles[i], handles[0]);
+            }
+            ASSERT_TRUE(handles[0].IsValid());
+            EXPECT_EQ(resources.GetState(handles[0]), EResourceState::READY);
+            const auto lease = resources.TryAcquire(handles[0]);
+            ASSERT_TRUE(lease);
+            EXPECT_EQ(lease->GetVersion(), 1U);
+            EXPECT_EQ((*lease)->GetIndices().size(), 3U);
+        }
+    }
 }
 
 TEST_F(MeshLoader, ActiveAndStaleOperationsFollowResourceManagerGenerationRules) {

@@ -1,5 +1,8 @@
 #include <array>
+#include <barrier>
+#include <bit>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -171,6 +174,145 @@ TEST(ResourceManager, RejectsSameIdentityWithDifferentType) {
 
     ExpectError(NCommon::EError::INVALID_ARGUMENT,
                 [&] { static_cast<void>(resources.Request<TextureArtifact>(ResourceIdentity{"asset", "shared"})); });
+}
+
+TEST(ResourceManager, ConditionalLoadingAdmitsExactlyOneConcurrentRequestAndRetry) {
+    for (const std::size_t count: {2U, 8U}) {
+        ResourceManager resources;
+        const auto handle = resources.Request<TestShaderArtifact>({"shader", "atomic-admission"});
+        std::uint64_t previous = 0;
+        for (int retry = 0; retry < 32; ++retry) {
+            std::barrier start{static_cast<std::ptrdiff_t>(count + 1)};
+            std::vector<std::optional<NResources::ResourceOperation<TestShaderArtifact>>> operations(count);
+            std::vector<std::exception_ptr> errors(count);
+            std::vector<std::thread> threads;
+            threads.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                threads.emplace_back([&, i] {
+                    start.arrive_and_wait();
+                    try {
+                        operations[i] = resources.TryBeginLoading(handle);
+                    } catch (...) {
+                        errors[i] = std::current_exception();
+                    }
+                });
+            }
+            start.arrive_and_wait();
+            for (auto& thread: threads) {
+                thread.join();
+            }
+            std::optional<NResources::ResourceOperation<TestShaderArtifact>> winner;
+            std::size_t admitted = 0;
+            for (std::size_t i = 0; i < count; ++i) {
+                EXPECT_FALSE(errors[i]);
+                if (operations[i]) {
+                    ++admitted;
+                    winner = operations[i];
+                }
+            }
+            ASSERT_EQ(admitted, 1U);
+            ASSERT_TRUE(winner);
+            EXPECT_EQ(winner->GetGeneration(), previous + 1);
+            previous = winner->GetGeneration();
+            EXPECT_EQ(resources.GetState(handle), EResourceState::LOADING);
+            EXPECT_FALSE(resources.GetFailure(handle));
+            EXPECT_FALSE(resources.GetCancellationToken(*winner).stop_requested());
+            resources.Fail(*winner, {.Code = NCommon::EError::IO_ERROR, .Message = "retry"});
+        }
+    }
+}
+
+TEST(ResourceManager, ConditionalLoadingPreservesBusyStatesAndPublishedLease) {
+    ResourceManager resources;
+    const auto handle = resources.Request<TestShaderArtifact>({"shader", "busy"});
+    const auto operation = resources.TryQueueLoading(handle);
+    ASSERT_TRUE(operation);
+    EXPECT_FALSE(resources.TryBeginLoading(handle));
+    EXPECT_EQ(resources.GetState(handle), EResourceState::QUEUED);
+    ASSERT_TRUE(resources.TryAdvance(*operation, EResourceState::QUEUED, EResourceState::LOADING));
+    EXPECT_FALSE(resources.TryBeginLoading(handle));
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)resources.BeginLoading(handle); });
+    const std::shared_ptr<const TestShaderArtifact> cpu =
+            std::make_shared<TestShaderArtifact>(TestShaderArtifact{.Name = "retained"});
+    ASSERT_TRUE(resources.TryAdvance(*operation, EResourceState::LOADING, EResourceState::CPU_READY, cpu));
+    EXPECT_FALSE(resources.TryBeginLoading(handle));
+    EXPECT_EQ(resources.GetState(handle), EResourceState::CPU_READY);
+    ASSERT_TRUE(resources.TryAdvance(*operation, EResourceState::CPU_READY, EResourceState::UPLOADING));
+    EXPECT_FALSE(resources.TryBeginLoading(handle));
+    EXPECT_EQ(resources.GetState(handle), EResourceState::UPLOADING);
+    ASSERT_TRUE(resources.TryAdvance(*operation, EResourceState::UPLOADING, EResourceState::READY));
+    const auto lease = resources.TryAcquire(handle);
+    ASSERT_TRUE(lease);
+    EXPECT_FALSE(resources.TryBeginLoading(handle));
+    EXPECT_EQ(resources.GetCpuResource(handle), cpu);
+    EXPECT_EQ(lease->GetVersion(), 1U);
+    EXPECT_FALSE(resources.IsOperationCurrent(*operation));
+    resources.RequestUnload(handle);
+    EXPECT_FALSE(resources.TryBeginLoading(handle));
+    EXPECT_EQ(resources.GetState(handle), EResourceState::UNLOADING);
+    resources.CompleteUnload(handle);
+    const auto next = resources.TryBeginLoading(handle);
+    ASSERT_TRUE(next);
+    EXPECT_EQ(next->GetGeneration(), operation->GetGeneration() + 2);
+    EXPECT_EQ((*lease)->Name, "retained");
+}
+
+TEST(ResourceManager, ConditionalLoadingRejectsInvalidForeignWrongTypeAndStaleHandles) {
+    ResourceManager resources;
+    ResourceManager foreign;
+    const auto handle = resources.Request<TestShaderArtifact>({"shader", "validated"});
+    ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                [&] { (void)resources.TryBeginLoading(NResources::ResourceHandle<TestShaderArtifact>{}); });
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)foreign.TryBeginLoading(handle); });
+    const auto wrongType = std::bit_cast<NResources::ResourceHandle<TextureArtifact>>(handle);
+    ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)resources.TryBeginLoading(wrongType); });
+    EXPECT_EQ(resources.GetState(handle), EResourceState::UNLOADED);
+    resources.Forget(handle);
+    const auto replacement = resources.Request<TestShaderArtifact>({"shader", "validated"});
+    ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)resources.TryBeginLoading(handle); });
+    EXPECT_TRUE(resources.TryBeginLoading(replacement));
+}
+
+TEST(ResourceManager, ConditionalLoadingRacesUnloadAndNeverPublishesStaleRetry) {
+    ResourceManager resources;
+    const auto handle = resources.Request<TestShaderArtifact>({"shader", "unload-admission"});
+    for (int iteration = 0; iteration < 32; ++iteration) {
+        const auto old = resources.TryBeginLoading(handle);
+        ASSERT_TRUE(old);
+        const auto cancellation = resources.GetCancellationToken(*old);
+        std::barrier start{3};
+        std::optional<NResources::ResourceOperation<TestShaderArtifact>> retry;
+        std::thread admission{[&] {
+            start.arrive_and_wait();
+            retry = resources.TryBeginLoading(handle);
+        }};
+        std::thread unload{[&] {
+            start.arrive_and_wait();
+            resources.RequestUnload(handle);
+            resources.CompleteUnload(handle);
+        }};
+        start.arrive_and_wait();
+        admission.join();
+        unload.join();
+        if (!retry) {
+            retry = resources.TryBeginLoading(handle);
+        }
+        ASSERT_TRUE(retry);
+        EXPECT_GT(retry->GetGeneration(), old->GetGeneration());
+        EXPECT_TRUE(cancellation.stop_requested());
+        EXPECT_FALSE(resources.IsOperationCurrent(*old));
+        EXPECT_FALSE(resources.TryFail(*old, {.Code = NCommon::EError::IO_ERROR, .Message = "stale"}));
+        ExpectError(NCommon::EError::INVALID_STATE,
+                    [&] { resources.PublishReady(*old, std::make_shared<TestShaderArtifact>()); });
+        EXPECT_TRUE(resources.IsOperationCurrent(*retry));
+        resources.PublishReady(*retry, std::make_shared<TestShaderArtifact>(TestShaderArtifact{.Name = "current"}));
+        const auto lease = resources.TryAcquire(handle);
+        ASSERT_TRUE(lease);
+        EXPECT_EQ((*lease)->Name, "current");
+        resources.RequestUnload(handle);
+        resources.CompleteUnload(handle);
+        EXPECT_EQ((*lease)->Name, "current");
+    }
 }
 
 TEST(ResourceManager, PublishesCpuResourceAfterLoading) {
