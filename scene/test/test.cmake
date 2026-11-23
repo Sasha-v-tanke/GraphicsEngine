@@ -1,6 +1,7 @@
 TEST_SUITE(Scene)
 
 SOURCES(
+    spatial_bounds.cpp
     entity_ref.cpp
     scene_test.cpp
 )

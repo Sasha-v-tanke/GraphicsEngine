@@ -89,3 +89,51 @@ property/enumerator values и генерация schema — следующие �
 ## Проверка контракта
 
 [scene_test.cpp](test/scene_test.cpp) покрывает stale/foreign handles, явное пустое active state, owner thread, worker leases после unload/уничтожения менеджера, извлечение старой сцены во время переключения и удержание aliasing World lease до quiescence async systems. Публичный `Scene` предоставляет имя, `GetWorld` и EntityRef facade; сериализация остаётся последующей задачей.
+
+## Spatial bounds и records (FEATURE-0115)
+
+`spatial_bounds.h` не зависит от Renderer или Physics. `SpatialBoundsComponent`
+(также value-owned результат внешнего bounds provider) задаёт локальный AABB/sphere,
+необязательную STATIC/DYNAMIC classification и ненулевую source revision.
+При смене bounds/classification producer увеличивает revision. Замена компонента
+через deferred remove/commit/add/commit следует обычной ECS policy: remove/add
+одного компонента в одном epoch запрещены. Обычная запись payload/revision
+в owner phase разрешена, затем публикация после phase/commit barrier.
+
+`CaptureSpatialRecord` и `CaptureSpatialRecords` вызываются owner thread после
+retirement producers/commit при quiescent World. Они не запускают scheduler,
+не ждут tasks, не выполняют commit и не добавляют блокировки на components.
+Прямые записи компонентов/SetLocalTransform должны закончиться до capture;
+сам snapshot не превращает произвольную live запись в deferred command.
+Capture не должен пересекаться со Scene unload/World mutation. При allocation/access
+failure исключение выходит до возврата результата, частичная публикация отсутствует.
+
+Records содержат только копии: SceneHandle + world-qualified generational EntityReference,
+валидность, global AABB и enclosing sphere, classification, source revision и точную
+цепочку child→root identity/local revision существующей topology. Изменение предка
+и reparenting меняют token; hash collisions и второй transform cache отсутствуют.
+Цепочка разрешается serial reference path за O(depth); это foundation contract,
+не incremental spatial index или новый transform resolver. No stale pointer/World
+lease сохраняется после capture. Старые records переживают unload, но их identity
+не подтверждает текущую live entity: повторная валидация через capture обязательна.
+
+Single capture сообщает SCENE_UNAVAILABLE/FOREIGN_ENTITY/STALE_ENTITY/DISABLED/
+MISSING_BOUNDS/INVALID_BOUNDS; только VALID содержит Bounds. Component snapshot
+публикует enabled candidates в стабильном порядке entity index; invalid bounds
+сохраняются как diagnostics. Provider overload копирует supplied source синхронно,
+но всё равно проверяет scene/entity/enabled state. Disabled bounds component не
+влияет на независимый внешний provider; disabled entity подавляет оба adapters.
+
+TransformSpatialBounds принимает affine matrix и консервативно покрывает rotation,
+nonuniform/negative scale и shear. Double scene coordinates не зависят от render origin:
+origin offset сюда не передаётся и не изменяет global bounds. Input/output coordinates
+и радиус ограничены `SpatialBounds::MAX_COORDINATE` (1e12 scene units); NaN/inf,
+инвертированный AABB, отрицательный радиус, projective matrix и выход за бюджет
+дают nullopt/INVALID_BOUNDS. Нулевой объём допустим. Sphere — conservative enclosure,
+не tight minimal sphere. Native handles, GPU culling, collision и World Partition
+в эту задачу не входят.
+
+`test/spatial_bounds.cpp` проверяет геометрию, invalid inputs, commit visibility,
+disabled entities/components, stale/foreign/recycled identities, scene unload,
+provider/classification, hierarchy revisions и deterministic snapshots. Installed
+package consumer использует только публичный header и вызов capture.
