@@ -210,6 +210,7 @@ set(
     "GraphicsEngine/ecs/system_access.h"
     "GraphicsEngine/ecs/world.h"
     "GraphicsEngine/scene/scene.h"
+    "GraphicsEngine/scene/spatial_bounds.h"
     "GraphicsEngine/scene/scene_handle.h"
     "GraphicsEngine/scene/scene_manager.h"
     "GraphicsEngine/graphics/buffer.h"

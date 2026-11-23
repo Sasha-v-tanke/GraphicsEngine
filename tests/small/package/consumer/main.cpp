@@ -54,6 +54,7 @@ static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
 #include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
 #include <GraphicsEngine/scene/scene_manager.h>
+#include <GraphicsEngine/scene/spatial_bounds.h>
 #include <GraphicsEngine/window/window_runtime.h>
 #include <GraphicsEngine/window/window_type.h>
 
@@ -86,6 +87,18 @@ private:
 };
 
 int main() {
+    {
+        NScene::SceneManager scenes;
+        const auto scene = scenes.CreateScene();
+        auto lease = scenes.Acquire(scene);
+        const auto entity = lease->CreateEntity().AddComponent<NScene::SpatialBoundsComponent>();
+        lease->CommitPending();
+        const auto records = NScene::CaptureSpatialRecords(scenes, scene);
+        if (records.size() != 1 || records[0].Validity != NScene::ESpatialValidity::VALID ||
+            records[0].Identity.Entity != entity.GetReference()) {
+            return 115;
+        }
+    }
     NCommon::TypeValue retainedType;
     {
         NCommon::TypeRegistry types;
