@@ -1750,8 +1750,21 @@ void World::QueueUserCommand(EntityReference entity, std::unique_ptr<IDeferredCo
     if (!IsRunningSystems_ && IsAlive(entity.Identity)) {
         const auto& description = command->Description;
         const auto storage = ComponentStorageByType_.find(description.Component);
-        const bool present =
-                storage != ComponentStorageByType_.end() && storage->second->Contains(entity.Identity.Index);
+        bool present = storage != ComponentStorageByType_.end() && storage->second->Contains(entity.Identity.Index);
+        if (description.Kind == ECommandKind::ENABLE && description.Component != typeid(void)) {
+            // A queued Add on a committed entity may be followed by an enabled change.
+            // Reads still see only the committed component; preflight rechecks this order.
+            for (const auto& previous: commands) {
+                const auto& queued = previous->Description;
+                if (queued.Identity == entity.Identity && queued.Component == description.Component) {
+                    if (queued.Kind == ECommandKind::ADD) {
+                        present = true;
+                    } else if (queued.Kind == ECommandKind::REMOVE) {
+                        present = false;
+                    }
+                }
+            }
+        }
         if (description.Kind == ECommandKind::ADD && present) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::ALREADY_EXISTS, "ECS component already exists");
         }
@@ -1926,6 +1939,7 @@ EntityRef World::GetEntityRef(EntityReference entity) {
 void World::ValidateEntityRefContext(const EntityRef& entity) const {
     const auto* invocation = GetCurrentSystemInvocation();
     if (ExecutionPoisoned_ || m_isCommitting || (IsRunningSystems_ && invocation == nullptr) ||
+        (invocation == nullptr && std::this_thread::get_id() != m_ownerThread) ||
         (NCommon::TaskSystem::IsCurrentThreadWorker() && invocation == nullptr)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "EntityRef requires an owner phase or active invocation");
     }
@@ -1935,6 +1949,30 @@ void World::ValidateEntityRefContext(const EntityRef& entity) const {
             invocation->EntityScope != scope) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "EntityRef invocation capability has expired");
         }
+    }
+}
+
+bool World::ResolveEntityRefEnabled(EntityReference entity) const {
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    ValidateUserIdentity(entity);
+    return IsAlive(entity.Identity) && !m_disabledEntities.contains(entity.Identity.Index);
+}
+
+std::uint64_t World::CaptureQueryInvocation() const {
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (ExecutionPoisoned_ || m_isCommitting || (IsRunningSystems_ && invocation == nullptr) ||
+        (invocation == nullptr && std::this_thread::get_id() != m_ownerThread) ||
+        (NCommon::TaskSystem::IsCurrentThreadWorker() && invocation == nullptr)) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query requires an owner phase or active invocation");
+    }
+    ValidateUnscopedAccess();
+    return invocation != nullptr ? invocation->Id : 0;
+}
+
+void World::ValidateQueryInvocation(std::uint64_t invocation) const {
+    const auto current = CaptureQueryInvocation();
+    if (invocation != 0 && invocation != current) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query invocation capability has expired");
     }
 }
 

@@ -2,6 +2,7 @@ TEST_SUITE(Ecs)
 
 SOURCES(
     entity_ref.cpp
+    enabled_state.cpp
     structural_commit.cpp
     transform_resolver.cpp
     adaptive_traversal.cpp

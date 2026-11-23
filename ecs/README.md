@@ -16,7 +16,7 @@
 
 ## Границы реализации
 
-Публичные заголовки и зависимости заданы в [module.cmake](module.cmake): `Common`, `Thread`, `Math`. Внутренние coordinator, traversal, resolver и async run не являются установленным пользовательским API. Реализованный `Queue*` intake описан ниже отдельно от legacy immediate/`Defer*`. EntityRef/Scene facade уже реализован; range Query, enabled filtering и typed systems остаются последующими задачами. Пользовательская навигация находится в [docs](../docs/README.md); этот файл фиксирует механизмы и инварианты модуля.
+Публичные заголовки и зависимости заданы в [module.cmake](module.cmake): `Common`, `Thread`, `Math`. Внутренние coordinator, traversal, resolver и async run не являются установленным пользовательским API. Реализованный `Queue*` intake описан ниже отдельно от legacy immediate/`Defer*`. EntityRef/Scene facade уже реализован; range Query и typed systems остаются последующими задачами. Enabled API и фильтрация реализованы в FEATURE-0083. Пользовательская навигация находится в [docs](../docs/README.md); этот файл фиксирует механизмы и инварианты модуля.
 
 ## Владение миром
 
@@ -48,7 +48,7 @@
 
 `AddComponent<T>()`, `GetComponent<T>()` и обработчики запросов требуют существующую сущность; устаревшие дескрипторы отклоняются. `HasComponent<T>()` и `RemoveComponent<T>()` возвращают `false` при устаревшем дескрипторе или отсутствии данных.
 
-`Query<T...>(callback)` — текущий callback API: отбирает живые сущности с полным набором компонентов, передаёт `Entity` и ссылки (const при чтении const World). Он не возвращает range и пока не фильтрует enabled metadata. Активный query reader запрещает `Queue*` commit до завершения обхода; это не разрешение на конкурентные произвольные записи. Ссылки на компоненты нельзя сохранять через удаление/replacement или использовать вне объявленной фазы доступа.
+`Query<T...>(callback)` — текущий callback API: отбирает живые сущности с полным набором компонентов, передаёт `Entity` и ссылки (const при чтении const World). Он не возвращает range. По умолчанию пропускает disabled entities и любые disabled required components; Get/Has продолжают видеть сохранённые значения. Активный query reader запрещает `Queue*` commit до завершения обхода; это не разрешение на конкурентные произвольные записи. Ссылки на компоненты нельзя сохранять через удаление/replacement или использовать вне объявленной фазы доступа.
 
 Внутренние основы доступа по областям реализованы в `internal/access_coordinator.*`. Они не устанавливаются как публичные интерфейсы и не заменяют существующий планировщик систем `World`. Правила владения и исполнения приведены в [документации внутреннего координатора](#внутреннее-планирование-доступа-к-областям-данных).
 
@@ -87,7 +87,7 @@ Query/Get и topology extraction отвергаются. Это не успеш�
 
 Legacy immediate `CreateEntity/AddComponent` и `Defer*` сохраняют прежнюю семантику совместимости, включая
 replace/partial apply в чисто legacy пакете. При смешивании с Queue-командами весь commit проходит preflight.
-Enabled metadata публикуется здесь; изменение фильтрации Query относится к FEATURE-0083/0084. EntityRef реализован в FEATURE-0082.
+Enabled metadata публикуется здесь; фильтрация Query реализована в FEATURE-0083, range iteration и World::ForEach относятся к FEATURE-0084. EntityRef реализован в FEATURE-0082.
 Имена и fluent Scene-фасад реализованы в FEATURE-0082, runtime Scene capability integration относится к FEATURE-0087.
 
 Пользовательский фасад `EntityRef` и его scope/lifetime описаны в [docs/about/entity_ref.md](../docs/about/entity_ref.md); пример — [создание сущности](../docs/how_to/create_entity.md).
@@ -302,3 +302,58 @@ stale child, cache hits, несколько views, 10k bamboo, reparent modes, �
 | `internal/transform_resolver.md` | [Выборочный resolver](#выборочный-world-transform-resolver) |
 
 Сведения о вызовах API сохранены здесь как часть lifetime/access контрактов до пользовательского этапа IMPROVE-0074. Быстрые старты, полные сценарии и целевой будущий ECS API относятся к `docs/about` и `docs/how_to`, а не к этому внутреннему описанию.
+
+
+## Enabled state и фильтрация (FEATURE-0083)
+
+`EntityRef::Enable/Disable` и `EnableComponent<T>/DisableComponent<T>` записывают команды в
+существующий structural intake. Новая сущность и каждый добавленный компонент включены по умолчанию.
+Отключённое значение не уничтожается: `GetComponent`, `TryGetComponent`, `HasComponent` и scoped `Get`
+работают независимо от флагов; это относится и к пустым tag-компонентам. Дети не отключаются автоматически.
+
+`IsEnabled` и `IsComponentEnabled<T>` отражают committed state, независимо друг от друга.
+Pending entity ещё не enabled; запрос её component flag выдаёт `NOT_READY`, как чтение компонента.
+Для отсутствующего committed T фасад выдаёт `NOT_FOUND`. Для pending structural commands ошибка
+может диагностироваться при preflight commit; Add можно сразу сопровождать DisableComponent того же T.
+Повторные включения/отключения идемпотентны по состоянию; последовательные toggles одного producer
+применяются в порядке enqueue, разные producer — по существующему deterministic merge protocol.
+Ошибка/отмена системы отбрасывает её commands; изменение не публикуется в обход commit barrier.
+
+```cpp
+entity.Disable();
+entity.DisableComponent<Velocity>();
+scene.CommitPending(); // Только quiescent host: runtime использует свои safe commit boundaries.
+```
+
+Текущий callback `Query<T...>(callback)` использует `SkipDisabled` по умолчанию.
+Отбор проверяет флаг сущности и всех required T; выключенный нерелевантный компонент не исключает сущность.
+Явный второй параметр — `EQueryEnabledPolicy::SKIP_DISABLED` либо `INCLUDE_DISABLED`.
+Для fluent выбора политики доступен callback descriptor:
+
+```cpp
+world.Query<Position, Velocity>().SkipDisabled().ForEach(
+    [](NEcs::Entity entity, Position& position, Velocity& velocity) { /* ... */ });
+std::as_const(world).Query<Position>().IncludeDisabled().ForEach(
+    [](NEcs::Entity entity, const Position& position) { /* ... */ });
+```
+
+Descriptor не является range и не удерживает ссылки на компоненты: membership выбирается при
+`ForEach`, через тот же callback Query. Он не удерживает World, отвергает вызов после его уничтожения,
+с постороннего потока (включая обычный std::thread и TaskSystem worker) или после завершения invocation, в которой был создан. Callback получает прежний
+`Entity`, а не новый tuple с EntityRef. Range API и публичный `World::ForEach` с EntityRef — FEATURE-0084.
+Существующие ограничения доступа callback Query сохраняются; scoped systems используют свои views.
+
+Внутренний `ScopedView::ForEach` тоже использует SkipDisabled, а `.IncludeDisabled()` включает оба вида
+отключения. Enabled bits фиксируются вместе с resolved batch до worker execution; `Get` не фильтруется.
+Queued изменения невидимы текущему обходу, commit запрещён при активных Query/scoped readers.
+Flags проверяются в той же фазе, что component access; произвольный конкурентный доступ к World не разрешён.
+
+Все три пути Renderer extraction используют default Query: после commit отключённые renderables,
+их Transform либо камеры не попадают в следующий RenderWorld. Enabled commit помечает change domains
+для перестройки incremental membership; ранее опубликованный снимок остаётся неизменным.
+Callbacks OnEnable/OnDisable, physics integration и hierarchy cascade не добавлены.
+
+Host-owner нового Query descriptor и EntityRef — поток создания World. Без активной зарегистрированной
+ECS invocation разрешён только этот поток; проверки не ограничиваются распознаванием TaskSystem workers.
+В зарегистрированной invocation действуют её прежние scoped/read-write права, независимо от потока исполнения.
+Остальные legacy World методы и явный producer protocol этим ограничением не заменяются.

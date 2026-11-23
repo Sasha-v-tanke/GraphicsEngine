@@ -47,8 +47,58 @@ namespace NEcs {
 
 class EntityRef;
 
+enum class EQueryEnabledPolicy {
+    SKIP_DISABLED,
+    INCLUDE_DISABLED,
+};
+
 class World {
 public:
+    // A callback query policy, not a range or a component lease. Membership is captured
+    // when ForEach executes. Range iteration and its lifetime rules belong to FEATURE-0084.
+    template<typename TWorld, typename... TComponents>
+    class QuerySelection final {
+    public:
+        [[nodiscard]] QuerySelection SkipDisabled() const {
+            auto result = *this;
+            result.m_policy = EQueryEnabledPolicy::SKIP_DISABLED;
+            return result;
+        }
+        [[nodiscard]] QuerySelection IncludeDisabled() const {
+            auto result = *this;
+            result.m_policy = EQueryEnabledPolicy::INCLUDE_DISABLED;
+            return result;
+        }
+        template<typename TCallback>
+        void ForEach(TCallback&& callback) const {
+            if (m_lifetime.expired()) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query World lifetime has ended");
+            }
+            m_world->ValidateQueryInvocation(m_invocation);
+            m_world->template Query<TComponents...>(std::forward<TCallback>(callback), m_policy);
+        }
+
+    private:
+        explicit QuerySelection(TWorld& world)
+            : m_world(&world)
+            , m_lifetime(world.LifetimeToken_)
+            , m_invocation(world.CaptureQueryInvocation()) {
+        }
+        TWorld* m_world;
+        std::weak_ptr<bool> m_lifetime;
+        std::uint64_t m_invocation;
+        EQueryEnabledPolicy m_policy = EQueryEnabledPolicy::SKIP_DISABLED;
+        friend class World;
+    };
+
+    template<typename... TComponents>
+    [[nodiscard]] QuerySelection<World, TComponents...> Query() {
+        return QuerySelection<World, TComponents...>{*this};
+    }
+    template<typename... TComponents>
+    [[nodiscard]] QuerySelection<const World, TComponents...> Query() const {
+        return QuerySelection<const World, TComponents...>{*this};
+    }
     using SystemCallback = std::function<void(World&)>;
 
     struct DeferredProducer {
@@ -247,7 +297,7 @@ public:
     }
 
     template<typename... TComponents, typename TCallback>
-    void Query(TCallback&& callback) {
+    void Query(TCallback&& callback, EQueryEnabledPolicy policy = EQueryEnabledPolicy::SKIP_DISABLED) {
         ValidateUnscopedAccess();
         QueryReadGuard queryGuard{*this};
         std::vector<Entity> entities;
@@ -266,13 +316,18 @@ public:
             if ((!HasComponent<TComponents>(entity) || ...)) {
                 continue;
             }
+            if (policy == EQueryEnabledPolicy::SKIP_DISABLED &&
+                (m_disabledEntities.contains(entity.Index) ||
+                 (IsComponentDisabled(entity, typeid(TComponents)) || ...))) {
+                continue;
+            }
 
             std::invoke(callback, entity, GetComponent<TComponents>(entity)...);
         }
     }
 
     template<typename... TComponents, typename TCallback>
-    void Query(TCallback&& callback) const {
+    void Query(TCallback&& callback, EQueryEnabledPolicy policy = EQueryEnabledPolicy::SKIP_DISABLED) const {
         ValidateUnscopedAccess();
         QueryReadGuard queryGuard{*this};
         std::vector<Entity> entities;
@@ -289,6 +344,11 @@ public:
 
         for (Entity entity: entities) {
             if ((!HasComponent<TComponents>(entity) || ...)) {
+                continue;
+            }
+            if (policy == EQueryEnabledPolicy::SKIP_DISABLED &&
+                (m_disabledEntities.contains(entity.Index) ||
+                 (IsComponentDisabled(entity, typeid(TComponents)) || ...))) {
                 continue;
             }
 
@@ -572,6 +632,9 @@ private:
     friend class EntityRef;
     friend class NScene::Scene;
     void ValidateEntityRefContext(const EntityRef& entity) const;
+    [[nodiscard]] bool ResolveEntityRefEnabled(EntityReference entity) const;
+    [[nodiscard]] std::uint64_t CaptureQueryInvocation() const;
+    void ValidateQueryInvocation(std::uint64_t invocation) const;
     [[nodiscard]] bool ValidateEntityRefComponentAccess(EntityReference entity, std::type_index type, bool write) const;
     void TrackEntityRefWrite(std::type_index type);
     template<typename T>
@@ -688,6 +751,7 @@ private:
     std::uint32_t NextNewEntityGeneration_ = 0;
     std::uint64_t NextDeferredBatchSubmissionOrder_ = 0;
     std::shared_ptr<bool> LifetimeToken_;
+    const std::thread::id m_ownerThread = std::this_thread::get_id();
     std::atomic_bool IsRunningSystems_ = false;
     std::uint64_t NextSystemInvocationId_ = 0;
 

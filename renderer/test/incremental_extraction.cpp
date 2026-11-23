@@ -411,6 +411,44 @@ TEST_P(Incremental, SkippedObjectRetainsUpdatedHierarchyWhenDiagnosticsDoNotChan
     EXPECT_EQ(Cache.GetStatistics().RecomputedTransforms, 0U);
 }
 
+TEST_P(Incremental, EnabledCommitInvalidatesMembershipAndReenableRestoresPayloads) {
+    const auto& first = Extract();
+    ASSERT_EQ(first.GetObjects().size(), 5U);
+    World.QueueSetEnabled(World.GetEntityReference(Objects[0]), false);
+    World.CommitPending();
+    const auto& second = Extract();
+    EXPECT_EQ(second.GetObjects().size(), 4U);
+    EXPECT_EQ(second.GetDelta().RemovedObjects.size(), 1U);
+    if (GetParam().second > 1) {
+        EXPECT_EQ(first.GetObjects().size(), 5U);
+    }
+    World.QueueSetComponentEnabled<RenderableComponent>(World.GetEntityReference(Objects[1]), false);
+    World.QueueSetComponentEnabled<TransformComponent>(World.GetEntityReference(Objects[2]), false);
+    World.QueueSetComponentEnabled<CameraComponent>(World.GetEntityReference(Camera), false);
+    const auto& pending = Extract();
+    EXPECT_EQ(pending.GetObjects().size(), 4U);
+    EXPECT_EQ(pending.GetViews().size(), 1U);
+    World.CommitPending();
+    const auto& disabled = Extract();
+    ASSERT_EQ(disabled.GetObjects().size(), 2U);
+    EXPECT_TRUE(disabled.GetViews().empty());
+    EXPECT_EQ(disabled.GetObjects()[0].Id.Index, Objects[3].Index);
+    EXPECT_EQ(disabled.GetObjects()[1].Id.Index, Objects[4].Index);
+    const auto& serial =
+            NRenderer::NInternal::ExtractRenderWorld(World, Resources, Frames->GetFrameStorage(Active.back()));
+    EXPECT_EQ(serial.GetObjects().size(), disabled.GetObjects().size());
+    EXPECT_EQ(serial.GetViews().size(), disabled.GetViews().size());
+    World.QueueSetEnabled(World.GetEntityReference(Objects[0]), true);
+    World.QueueSetComponentEnabled<RenderableComponent>(World.GetEntityReference(Objects[1]), true);
+    World.QueueSetComponentEnabled<TransformComponent>(World.GetEntityReference(Objects[2]), true);
+    World.QueueSetComponentEnabled<CameraComponent>(World.GetEntityReference(Camera), true);
+    World.CommitPending();
+    const auto& restored = Extract();
+    EXPECT_EQ(restored.GetObjects().size(), 5U);
+    EXPECT_EQ(restored.GetViews().size(), 1U);
+    EXPECT_EQ(restored.GetObjects()[0].Id.Index, Objects[0].Index);
+}
+
 INSTANTIATE_TEST_SUITE_P(WorkersAndFrameSlots,
                          Incremental,
                          testing::Values(std::pair{1U, 1U},
