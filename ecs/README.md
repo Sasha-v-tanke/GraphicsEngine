@@ -339,7 +339,7 @@ std::as_const(world).Query<Position>().IncludeDisabled().ForEach(
 
 Descriptor не является range и не удерживает ссылки на компоненты: membership выбирается при
 `ForEach`, через тот же callback Query. Он не удерживает World, отвергает вызов после его уничтожения,
-из detached worker или после завершения invocation, в которой был создан. Callback получает прежний
+с постороннего потока (включая обычный std::thread и TaskSystem worker) или после завершения invocation, в которой был создан. Callback получает прежний
 `Entity`, а не новый tuple с EntityRef. Range API и публичный `World::ForEach` с EntityRef — FEATURE-0084.
 Существующие ограничения доступа callback Query сохраняются; scoped systems используют свои views.
 
@@ -352,3 +352,8 @@ Flags проверяются в той же фазе, что component access; �
 их Transform либо камеры не попадают в следующий RenderWorld. Enabled commit помечает change domains
 для перестройки incremental membership; ранее опубликованный снимок остаётся неизменным.
 Callbacks OnEnable/OnDisable, physics integration и hierarchy cascade не добавлены.
+
+Host-owner нового Query descriptor и EntityRef — поток создания World. Без активной зарегистрированной
+ECS invocation разрешён только этот поток; проверки не ограничиваются распознаванием TaskSystem workers.
+В зарегистрированной invocation действуют её прежние scoped/read-write права, независимо от потока исполнения.
+Остальные legacy World методы и явный producer protocol этим ограничением не заменяются.

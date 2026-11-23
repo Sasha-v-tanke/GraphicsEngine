@@ -751,6 +751,7 @@ private:
     std::uint32_t NextNewEntityGeneration_ = 0;
     std::uint64_t NextDeferredBatchSubmissionOrder_ = 0;
     std::shared_ptr<bool> LifetimeToken_;
+    const std::thread::id m_ownerThread = std::this_thread::get_id();
     std::atomic_bool IsRunningSystems_ = false;
     std::uint64_t NextSystemInvocationId_ = 0;
 

@@ -1939,6 +1939,7 @@ EntityRef World::GetEntityRef(EntityReference entity) {
 void World::ValidateEntityRefContext(const EntityRef& entity) const {
     const auto* invocation = GetCurrentSystemInvocation();
     if (ExecutionPoisoned_ || m_isCommitting || (IsRunningSystems_ && invocation == nullptr) ||
+        (invocation == nullptr && std::this_thread::get_id() != m_ownerThread) ||
         (NCommon::TaskSystem::IsCurrentThreadWorker() && invocation == nullptr)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "EntityRef requires an owner phase or active invocation");
     }
@@ -1960,6 +1961,7 @@ bool World::ResolveEntityRefEnabled(EntityReference entity) const {
 std::uint64_t World::CaptureQueryInvocation() const {
     const auto* invocation = GetCurrentSystemInvocation();
     if (ExecutionPoisoned_ || m_isCommitting || (IsRunningSystems_ && invocation == nullptr) ||
+        (invocation == nullptr && std::this_thread::get_id() != m_ownerThread) ||
         (NCommon::TaskSystem::IsCurrentThreadWorker() && invocation == nullptr)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query requires an owner phase or active invocation");
     }

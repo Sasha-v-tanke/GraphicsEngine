@@ -238,6 +238,71 @@ TEST(EnabledState, DetachedWorkersCannotUseFacadeOrPolicySelection) {
     EXPECT_EQ(tasks.GetStatus(task), NCommon::ETaskStatus::COMPLETED);
 }
 
+TEST(EnabledState, ForeignHostThreadCannotUseEnabledFacadeOrQuerySelection) {
+    NEcs::World world;
+    auto entity = world.GetEntityRef(world.QueueCreateEntity()).AddComponent<Value>();
+    world.CommitPending();
+    const auto query = world.Query<Value>();
+    const auto readQuery = std::as_const(world).Query<Value>();
+    auto foreign = std::async(std::launch::async, [&] {
+        EXPECT_FALSE(NCommon::TaskSystem::IsCurrentThreadWorker());
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { entity.Enable(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { entity.Disable(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { entity.EnableComponent<Value>(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { entity.DisableComponent<Value>(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)entity.IsEnabled(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)entity.IsComponentEnabled<Value>(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)world.Query<Value>(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)std::as_const(world).Query<Value>(); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                           [&] { query.IncludeDisabled().ForEach([](auto, Value& value) { value.Number = 991; }); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE,
+                           [&] { readQuery.ForEach([](auto, const Value&) { FAIL() << "Foreign query executed"; }); });
+    });
+    foreign.get();
+    world.CommitPending();
+    EXPECT_TRUE(entity.IsEnabled());
+    EXPECT_TRUE(entity.IsComponentEnabled<Value>());
+    EXPECT_EQ(entity.GetComponent<Value>().Number, 7);
+}
+
+TEST(EnabledState, RegisteredInvocationsRetainQueryAndEnabledCapabilities) {
+    for (unsigned workers: {0U, 1U, 2U, 8U}) {
+        NEcs::World world;
+        auto entity = world.GetEntityRef(world.QueueCreateEntity()).AddComponent<Value>();
+        entity.Disable();
+        world.CommitPending();
+        unsigned visited = 0;
+        world.RegisterSystem(
+                {NEcs::Write<Value>()},
+                [&](NEcs::World& current) {
+                    current.Query<Value>().IncludeDisabled().ForEach([&](NEcs::Entity identity, Value& value) {
+                        auto local = current.GetEntityRef(current.GetEntityReference(identity));
+                        EXPECT_FALSE(local.IsEnabled());
+                        EXPECT_TRUE(local.IsComponentEnabled<Value>());
+                        local.Enable();
+                        local.DisableComponent<Value>();
+                        EXPECT_FALSE(local.IsEnabled());
+                        EXPECT_TRUE(local.IsComponentEnabled<Value>());
+                        ++value.Number;
+                        ++visited;
+                    });
+                },
+                NEcs::SystemSchedule{.Id = 1},
+                1);
+        if (workers == 0) {
+            world.RunSystems();
+        } else {
+            NCommon::TaskSystem tasks{workers};
+            world.RunSystems(tasks);
+        }
+        EXPECT_EQ(visited, 1U);
+        EXPECT_TRUE(entity.IsEnabled());
+        EXPECT_FALSE(entity.IsComponentEnabled<Value>());
+        EXPECT_EQ(entity.GetComponent<Value>().Number, 8);
+    }
+}
+
 TEST(EnabledState, ScopedForEachUsesFrozenEntityAndComponentFlagsAndGetStillWorks) {
     for (unsigned workers: {0U, 1U, 2U, 8U}) {
         NEcs::World world;
