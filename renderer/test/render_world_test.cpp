@@ -638,6 +638,59 @@ const RenderWorld* ExtractParallel(const NEcs::World& world,
     return result;
 }
 
+TEST(RenderWorld, EnabledEntityAndComponentFlagsMatchAcrossSerialAndParallelExtraction) {
+    ResourceManager resources;
+    const auto mesh = MakeReadyMesh(resources, {"mesh", "enabled"});
+    const auto material = MakeReadyMaterial(resources, {"material", "enabled"});
+    NEcs::World world;
+    for (unsigned mask = 0; mask < 16; ++mask) {
+        const auto entity = world.CreateEntity();
+        world.AddComponent<TransformComponent>(entity);
+        world.AddComponent<CameraComponent>(entity);
+        world.AddComponent<RenderableComponent>(entity, RenderableComponent{.Mesh = mesh, .Material = material});
+        const auto identity = world.GetEntityReference(entity);
+        if (mask & 1U) {
+            world.QueueSetEnabled(identity, false);
+        }
+        if (mask & 2U) {
+            world.QueueSetComponentEnabled<TransformComponent>(identity, false);
+        }
+        if (mask & 4U) {
+            world.QueueSetComponentEnabled<RenderableComponent>(identity, false);
+        }
+        if (mask & 8U) {
+            world.QueueSetComponentEnabled<CameraComponent>(identity, false);
+        }
+    }
+    FrameScheduler scheduler{EngineConfig{.MaxActiveFrames = 3}};
+    const auto pendingFrame = BeginExtractionFrame(scheduler);
+    const auto& pending =
+            NRenderer::NInternal::ExtractRenderWorld(world, resources, scheduler.GetFrameStorage(pendingFrame));
+    EXPECT_EQ(pending.GetObjects().size(), 16U);
+    EXPECT_EQ(pending.GetViews().size(), 16U);
+    world.CommitPending();
+    const auto serialFrame = BeginExtractionFrame(scheduler);
+    const auto& serial =
+            NRenderer::NInternal::ExtractRenderWorld(world, resources, scheduler.GetFrameStorage(serialFrame));
+    ASSERT_EQ(serial.GetObjects().size(), 2U);
+    ASSERT_EQ(serial.GetViews().size(), 2U);
+    EXPECT_EQ(serial.GetObjects()[0].Id.Index, 0U);
+    EXPECT_EQ(serial.GetObjects()[1].Id.Index, 8U);
+    EXPECT_EQ(serial.GetViews()[0].Id.Index, 0U);
+    EXPECT_EQ(serial.GetViews()[1].Id.Index, 4U);
+    NCommon::TaskSystem tasks{2};
+    const auto parallelFrame = BeginExtractionFrame(scheduler);
+    const auto* parallel = ExtractParallel(world, resources, scheduler.GetFrameStorage(parallelFrame), tasks, 3);
+    ASSERT_NE(parallel, nullptr);
+    ASSERT_EQ(parallel->GetObjects().size(), serial.GetObjects().size());
+    ASSERT_EQ(parallel->GetViews().size(), serial.GetViews().size());
+    for (std::size_t index = 0; index < serial.GetObjects().size(); ++index) {
+        EXPECT_EQ(parallel->GetObjects()[index].Id, serial.GetObjects()[index].Id);
+        EXPECT_EQ(parallel->GetViews()[index].Id, serial.GetViews()[index].Id);
+    }
+    EXPECT_EQ(pending.GetObjects().size(), 16U);
+}
+
 TEST(RenderWorld, ParallelExtractionMatchesSerialAcrossUnevenChunksAndFrameSlots) {
     ResourceManager resources;
     const auto mesh = MakeReadyMesh(resources, {"mesh", "parallel"}, 7);

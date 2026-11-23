@@ -65,6 +65,27 @@ public:
     }
 
     void Destroy();
+    void Enable();
+    void Disable();
+    [[nodiscard]] bool IsEnabled() const;
+
+    template<typename T>
+    void EnableComponent() {
+        static_assert(std::is_same_v<T, std::remove_cvref_t<T>>);
+        GetWorld().QueueSetComponentEnabled<T>(m_reference, true);
+    }
+    template<typename T>
+    void DisableComponent() {
+        static_assert(std::is_same_v<T, std::remove_cvref_t<T>>);
+        GetWorld().QueueSetComponentEnabled<T>(m_reference, false);
+    }
+    template<typename T>
+    [[nodiscard]] bool IsComponentEnabled() const {
+        if (!HasComponent<T>()) {
+            ThrowMissingComponent();
+        }
+        return !GetWorld().IsComponentDisabled(m_reference.Identity, typeid(T));
+    }
     // Pending refers to unpublished creation. A pending destroy remains alive until commit.
     [[nodiscard]] bool IsPending() const;
     [[nodiscard]] bool IsAlive() const;

@@ -103,7 +103,9 @@ std::shared_ptr<ResolvedBatch> ScopedWorldAccess::Resolve(World& world, const Sc
                 return entry.Type == declaration.Access.Component && entry.Entity == entity;
             });
             if (existing == batch->Entries.end()) {
-                batch->Entries.push_back({declaration.Access.Component, entity, component, write});
+                const bool enabled = !world.m_disabledEntities.contains(entity.Identity.Index) &&
+                                     !world.IsComponentDisabled(entity.Identity, declaration.Access.Component);
+                batch->Entries.push_back({declaration.Access.Component, entity, component, write, enabled});
             } else {
                 existing->Writable = existing->Writable || write;
             }
