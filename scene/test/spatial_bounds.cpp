@@ -55,6 +55,8 @@ TEST(SpatialBounds, AffineRotationNegativeScaleAndShearEncloseEveryCorner) {
 }
 
 TEST(SpatialBounds, IntervalRoundingContainsHighCancellationReferenceCorners) {
+    // Fixed seed makes the numerical regression corpus reproducible.
+    // NOLINTNEXTLINE(cert-msc51-cpp)
     std::mt19937 random{115};
     std::uniform_real_distribution<double> coordinate{-1e4, 1e4};
     for (int iteration = 0; iteration < 128; ++iteration) {
