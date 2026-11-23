@@ -83,8 +83,12 @@ default construction; `Make<T>(args...)` поддерживает типы бе�
 входить в него из пользовательского copy/move constructor.
 
 Одна регистрация не предоставляет сериализацию: `Capabilities.Serializable` всегда `false`. Codecs,
-property/enumerator values и генерация schema — следующие этапы; raw pointers и память C++ объекта не
+property access и enumerator values — следующие этапы; raw pointers и память C++ объекта не
 считаются portable serialized data. Reflection не даёт права читать/изменять live ECS вне access scope.
+
+Opt-in [генератор metadata](../tools/metadata_codegen/README.md) создаёт typed registration и canonical manifest
+из явных sidecars. `GetFields()` описывает стабильные PropertyId/имя/C++ тип/owner без указателя внутрь World;
+`GRAPHICS_ENGINE_METADATA_FIELD` проверяет member/owner при компиляции. Ручной API остаётся совместимым.
 
 ## Проверка контракта
 

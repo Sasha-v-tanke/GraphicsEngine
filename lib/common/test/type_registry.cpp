@@ -14,6 +14,7 @@
 #include <utility>
 
 #include <gtest/gtest.h>
+#include <lib/common/metadata.h>
 #include <tests/common/test_error.h>
 
 namespace {
@@ -317,6 +318,8 @@ TEST(TypeRegistry, ConcurrentReadersObserveFrozenPublicationAndForeignConfigurat
             for (int iteration = 0; iteration < 1000; ++iteration) {
                 const auto descriptor = registry.Get<Position>();
                 if (descriptor->GetId() == TypeId{1002} && registry.GetTypes().size() == 3 &&
+                    descriptor->GetFields().size() == 1 && descriptor->GetFields()[0].Name == "X" &&
+                    descriptor->GetFields()[0].OwnerType == typeid(Position) &&
                     registry.Create(TypeId{1002}).Get<Position>().X == 0) {
                     ++completed;
                 }
@@ -344,6 +347,65 @@ TEST(TypeRegistry, UnregisteredOrdinaryCppTypesNeedNoMetadataAndEmptyRegistryIsV
     EXPECT_FALSE(empty.IsValid());
     empty.Reset();
     NTest::ExpectError(EError::INVALID_ARGUMENT, [&] { (void)empty.Get<Position>(); });
+}
+
+struct FieldRecord {
+    int Count = 0;
+    float Weight = 0;
+};
+
+TEST(TypeRegistry, FieldDeclarationsAreTypedOwnedAndSortedByStableId) {
+    TypeRegistry registry;
+    registry.Register<FieldRecord>({107},
+                                   "FieldRecord",
+                                   1,
+                                   ETypeKind::COMPONENT,
+                                   {GRAPHICS_ENGINE_METADATA_FIELD(FieldRecord, Weight, 12, "Weight"),
+                                    GRAPHICS_ENGINE_METADATA_FIELD(FieldRecord, Count, 11, "Count")});
+    registry.Freeze();
+    const auto fields = registry.Get<FieldRecord>()->GetFields();
+    ASSERT_EQ(fields.size(), 2);
+    EXPECT_EQ(fields[0].Id.Value, 11);
+    EXPECT_EQ(fields[0].Name, "Count");
+    EXPECT_EQ(fields[0].CppType, typeid(int));
+    EXPECT_EQ(fields[0].OwnerType, typeid(FieldRecord));
+    EXPECT_EQ(fields[1].Id.Value, 12);
+    EXPECT_EQ(fields[1].CppType, typeid(float));
+    EXPECT_FALSE(registry.Get<FieldRecord>()->GetCapabilities().Serializable);
+}
+
+TEST(TypeRegistry, DuplicateOrInvalidFieldDeclarationsDoNotPublishTheType) {
+    TypeRegistry registry;
+    const auto count = GRAPHICS_ENGINE_METADATA_FIELD(FieldRecord, Count, 11, "Count");
+    auto weight = GRAPHICS_ENGINE_METADATA_FIELD(FieldRecord, Weight, 11, "Weight");
+    NTest::ExpectError(EError::ALREADY_EXISTS, [&] {
+        registry.Register<FieldRecord>({107}, "FieldRecord", 1, ETypeKind::COMPONENT, {count, weight});
+    });
+    weight.Id.Value = 12;
+    weight.Name = "Count";
+    NTest::ExpectError(EError::ALREADY_EXISTS, [&] {
+        registry.Register<FieldRecord>({107}, "FieldRecord", 1, ETypeKind::COMPONENT, {count, weight});
+    });
+    weight.Name = "Weight";
+    weight.Id.Value = 0;
+    NTest::ExpectError(EError::INVALID_ARGUMENT, [&] {
+        registry.Register<FieldRecord>({107}, "FieldRecord", 1, ETypeKind::COMPONENT, {weight});
+    });
+    weight.Id.Value = 12;
+    weight.CppType = typeid(void);
+    NTest::ExpectError(EError::INVALID_ARGUMENT, [&] {
+        registry.Register<FieldRecord>({107}, "FieldRecord", 1, ETypeKind::COMPONENT, {weight});
+    });
+    const auto foreign = GRAPHICS_ENGINE_METADATA_FIELD(Position, X, 11, "X");
+    NTest::ExpectError(EError::INVALID_ARGUMENT, [&] {
+        registry.Register<FieldRecord>({107}, "FieldRecord", 1, ETypeKind::COMPONENT, {foreign});
+    });
+    NTest::ExpectError(EError::INVALID_ARGUMENT,
+                       [&] { registry.Register<EMode>({108}, "EMode", 1, ETypeKind::ENUM, {count}); });
+    registry.Register<FieldRecord>({107}, "FieldRecord", 1, ETypeKind::COMPONENT, {count});
+    registry.Freeze();
+    EXPECT_EQ(registry.GetTypes().size(), 1);
+    EXPECT_EQ(registry.Get<FieldRecord>()->GetFields().size(), 1);
 }
 
 } // namespace

@@ -28,6 +28,7 @@ endif ()
 include(
     "${CMAKE_CURRENT_LIST_DIR}/small/package/package.cmake"
 )
+include("${CMAKE_CURRENT_LIST_DIR}/small/metadata_codegen/tests.cmake")
 
 RECURSE(
     medium/cpp

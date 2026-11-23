@@ -15,3 +15,4 @@ include("${CMAKE_CURRENT_LIST_DIR}/utils/external.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/utils/package_api.cmake")
 
 include("${CMAKE_CURRENT_LIST_DIR}/utils/window_engine.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/metadata_codegen.cmake")

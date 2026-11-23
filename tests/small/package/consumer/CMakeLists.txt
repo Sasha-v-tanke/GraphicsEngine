@@ -41,6 +41,7 @@ if (
 endif ()
 
 enable_testing()
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../metadata_codegen/fixture" metadata-fixture)
 
 add_test(
     NAME GraphicsEnginePackageConsumerRun

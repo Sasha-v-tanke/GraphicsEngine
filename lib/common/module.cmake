@@ -2,6 +2,7 @@ MODULE(Common)
 
 API(
     change_tracker.h
+    metadata.h
     error/assert.h
     error/error.h
     error/exception.h

@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "types": [
+    {"id": "0x1073", "cpp_type": "::NMetadataFixture::EMode", "name": "Game.Mode",
+     "version": 1, "kind": "ENUM", "header": "fixture_types.h"}
+  ]
+}

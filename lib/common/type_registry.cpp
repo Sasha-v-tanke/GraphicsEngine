@@ -13,7 +13,8 @@ TypeDescriptor::TypeDescriptor(TypeId id,
                                std::size_t alignment,
                                std::type_index cppType,
                                Operations operations,
-                               std::optional<EnumTypeInfo> enumInfo)
+                               std::optional<EnumTypeInfo> enumInfo,
+                               std::vector<FieldMetadata> fields)
     : m_id(id)
     , m_name(std::move(name))
     , m_schemaVersion(schemaVersion)
@@ -22,7 +23,8 @@ TypeDescriptor::TypeDescriptor(TypeId id,
     , m_alignment(alignment)
     , m_cppType(cppType)
     , m_operations(operations)
-    , m_enumInfo(enumInfo) {
+    , m_enumInfo(enumInfo)
+    , m_fields(std::move(fields)) {
 }
 
 TypeId TypeDescriptor::GetId() const noexcept {
@@ -62,6 +64,10 @@ std::optional<EnumTypeInfo> TypeDescriptor::GetEnumInfo() const noexcept {
 
 std::type_index TypeDescriptor::GetCppType() const noexcept {
     return m_cppType;
+}
+
+std::span<const FieldMetadata> TypeDescriptor::GetFields() const noexcept {
+    return m_fields;
 }
 
 TypeValue::TypeValue(std::shared_ptr<const TypeDescriptor> descriptor, void* value)
@@ -148,7 +154,8 @@ void TypeRegistry::RegisterDescriptor(TypeId id,
                                       std::size_t alignment,
                                       std::type_index cppType,
                                       TypeDescriptor::Operations operations,
-                                      std::optional<EnumTypeInfo> enumInfo) {
+                                      std::optional<EnumTypeInfo> enumInfo,
+                                      std::vector<FieldMetadata> fields) {
     ValidateOwner();
     if (IsFrozen()) {
         GRAPHICS_ENGINE_THROW(EError::INVALID_STATE, "TypeRegistry registration is closed");
@@ -170,6 +177,22 @@ void TypeRegistry::RegisterDescriptor(TypeId id,
         break;
     default:
         GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Unknown metadata type kind");
+    }
+    if (enumInfo && !fields.empty()) {
+        GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Enum metadata cannot declare object fields");
+    }
+    std::ranges::sort(fields, {}, [](const FieldMetadata& field) { return field.Id.Value; });
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+        const auto& field = fields[index];
+        if (field.Id.Value == 0 || field.Name.empty() || field.Name.find('\0') != std::string::npos ||
+            field.CppType == typeid(void) || field.OwnerType != cppType) {
+            GRAPHICS_ENGINE_THROW(EError::INVALID_ARGUMENT, "Invalid field declaration for type {}", name);
+        }
+        for (std::size_t previous = 0; previous < index; ++previous) {
+            if (fields[previous].Id == field.Id || fields[previous].Name == field.Name) {
+                GRAPHICS_ENGINE_THROW(EError::ALREADY_EXISTS, "Duplicate property ID or name in type {}", name);
+            }
+        }
     }
     for (const auto& existing: m_types) {
         if (existing->GetId() == id || existing->GetCppType() == cppType || existing->GetName() == name) {
@@ -195,7 +218,8 @@ void TypeRegistry::RegisterDescriptor(TypeId id,
                                                                                alignment,
                                                                                cppType,
                                                                                operations,
-                                                                               enumInfo}};
+                                                                               enumInfo,
+                                                                               std::move(fields)}};
     m_types.push_back(std::move(descriptor));
 }
 
