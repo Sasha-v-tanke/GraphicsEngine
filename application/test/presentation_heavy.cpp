@@ -17,6 +17,7 @@
 #include <graphics/vulkan/test/wsi_result_override.h>
 #include <gtest/gtest.h>
 #include <lib/common/error/exception.h>
+#include <renderer/render_components.h>
 #include <window/engine/GLFW/window_engine.h>
 #include <window/internal/window_engine_access.h>
 #include <window/window.h>
@@ -245,4 +246,73 @@ TEST(ApplicationPresentation, MainCommandWakesNativeWindowEventWait) {
     EXPECT_TRUE(ran);
 }
 
+} // namespace
+
+namespace {
+class StandardGameApplication final: public NApplication::Application {
+public:
+    StandardGameApplication(std::size_t slots, std::atomic<int>& errors, bool camera)
+        : Application(GameConfig(slots, errors)) {
+        EXPECT_FALSE(GetScenes().GetActiveHandle());
+        const auto scene = GetScenes().CreateScene("manual-game-smoke");
+        if (camera) {
+            auto& world = GetScenes().Acquire(scene)->GetWorld();
+            const auto entity = world.CreateEntity();
+            world.AddComponent<NRenderer::TransformComponent>(entity);
+            world.AddComponent<NRenderer::CameraComponent>(entity);
+            BindCamera(GetMainWindowView(), scene, world.GetEntityReference(entity));
+        }
+        GetScenes().Activate(scene);
+    }
+
+private:
+    static NApplication::ApplicationConfig GameConfig(std::size_t slots, std::atomic<int>& errors) {
+        auto config = Config(slots, errors);
+        config.Game = NApplication::GameConfig{};
+        config.Presentation->MaxActiveFrames = 99;
+        return config;
+    }
+    void OnUpdate() override {
+        const auto stats = GetFrameDiagnostics();
+        if (!m_resized && stats.Submitted >= 4) {
+            RunOnMainThread([this] { GetWindow().SetSize({240, 180}); });
+            m_resized = true;
+        }
+        if (stats.Submitted >= 12) {
+            RequestShutdown();
+        }
+        if (std::chrono::steady_clock::now() - m_started > std::chrono::seconds{15}) {
+            throw std::runtime_error{"Standard Game presentation timed out"};
+        }
+    }
+    bool m_resized = false;
+    std::chrono::steady_clock::time_point m_started = std::chrono::steady_clock::now();
+};
+
+void RunGameApplication(std::size_t slots, bool camera) {
+    std::atomic<int> errors{0};
+    std::unique_ptr<StandardGameApplication> app;
+    try {
+        app = std::make_unique<StandardGameApplication>(slots, errors, camera);
+    } catch (const NCommon::Exception& error) {
+        if (UnsupportedEnvironment(error)) {
+            GTEST_SKIP() << error.what();
+        }
+        throw;
+    }
+    app->Run();
+    const auto stats = app->GetFrameDiagnostics();
+    EXPECT_GE(stats.Submitted, 12U);
+    EXPECT_EQ(stats.Submitted, stats.Completed);
+    EXPECT_EQ(stats.Completed, stats.Recycled);
+    app.reset();
+    EXPECT_EQ(errors.load(), 0);
+}
+
+TEST(ApplicationPresentation, StandardGameEmptyScene) {
+    RunGameApplication(1, false);
+}
+TEST(ApplicationPresentation, StandardGameExplicitCamera) {
+    RunGameApplication(3, true);
+}
 } // namespace

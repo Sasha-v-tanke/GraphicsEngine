@@ -20,6 +20,7 @@ endif ()
 add_executable(
     GraphicsEnginePackageConsumer
     main.cpp
+    game.cpp
 )
 
 target_link_libraries(

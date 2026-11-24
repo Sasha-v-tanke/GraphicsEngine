@@ -4,6 +4,7 @@
 #include <memory>
 #include <utility>
 
+#include <application/runtime/game_frame_bridge.h>
 #include <application/runtime/presentation_runtime.h>
 #include <lib/common/error/error.h>
 #include <lib/common/error/exception.h>
@@ -54,6 +55,25 @@ FrameLoop::FrameLoop(const ApplicationConfig& config, std::unique_ptr<NGraphics:
             std::move(runtime));
 }
 
+FrameLoop::FrameLoop(const ApplicationConfig& config,
+                     NScene::SceneManager& scenes,
+                     NResources::ResourceManager& resources,
+                     std::unique_ptr<IGameOutput> output)
+    : m_gamePresentation(std::make_unique<PresentationRuntime>(std::move(output))) {
+    auto* presentation = m_gamePresentation.get();
+    m_engineFactory = std::make_unique<GameFrameBridge>(
+            scenes,
+            resources,
+            [presentation](const auto& frame, const auto&, const auto& world, const auto& plan) {
+                presentation->Consume(frame, world, plan);
+            },
+            GameFrameBridge::Publication{},
+            [presentation] { presentation->Drain(); });
+    m_engine = CreateEngine(*m_engineFactory,
+                            {.MaxActiveFrames = config.MaxActiveFrames, .WorkerCount = config.WorkerCount});
+    m_presentation = presentation;
+}
+
 void FrameLoop::PumpPresentation(int width, int height) {
     if (m_presentation) {
         m_presentation->Pump(width, height);
@@ -87,6 +107,9 @@ void FrameLoop::Start(MainExecutor::Wakeup wakeup) {
         m_frameCheckpoint = EFrameCheckpoint::READY_FOR_USER_UPDATE;
     } catch (...) {
         m_mainExecutor.Stop();
+        if (m_presentation) {
+            m_presentation->Drain();
+        }
         throw;
     }
 }
@@ -100,6 +123,9 @@ void FrameLoop::Stop() noexcept {
     if (m_engine != nullptr) {
         m_engine->Stop();
         m_reservedFrame.reset();
+    }
+    if (m_gamePresentation) {
+        m_gamePresentation->Drain();
     }
 }
 

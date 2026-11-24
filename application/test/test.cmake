@@ -10,6 +10,7 @@ SOURCES(
     presentation_runtime.cpp
     scene_runtime.cpp
     game_frame_bridge.cpp
+    game_application.cpp
     post_update.cpp
     service_manager.cpp
 )

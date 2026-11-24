@@ -11,10 +11,13 @@
 #include <engine/engine.h>
 #include <graphics/graphics.h>
 #include <lib/thread/job_control.h>
+#include <resources/resource_manager.h>
+#include <scene/scene_manager.h>
 
 namespace NApplication::NRuntime {
 
 class PresentationRuntime;
+class IGameOutput;
 
 class IFrameLoopCallbacks {
 public:
@@ -38,6 +41,10 @@ public:
     FrameLoop(const ApplicationConfig& config, std::unique_ptr<IEngineFactory> engineFactory);
 
     FrameLoop(const ApplicationConfig& config, std::unique_ptr<NGraphics::Graphics> graphics);
+    FrameLoop(const ApplicationConfig& config,
+              NScene::SceneManager& scenes,
+              NResources::ResourceManager& resources,
+              std::unique_ptr<IGameOutput> output);
     void PumpPresentation(int width, int height);
     [[nodiscard]] FrameDiagnostics GetDiagnostics() const;
 
@@ -72,6 +79,7 @@ private:
 
 private:
     MainExecutor m_mainExecutor;
+    std::unique_ptr<PresentationRuntime> m_gamePresentation;
     std::unique_ptr<IEngineFactory> m_engineFactory;
     std::unique_ptr<NEngine::Engine> m_engine;
     PresentationRuntime* m_presentation = nullptr;

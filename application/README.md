@@ -1,10 +1,45 @@
 # Приложение и отображение кадров
 
+## Opt-in Game Runtime
+
+`ApplicationConfig::Game = GameConfig{}` включает `STANDARD_3D`; отсутствие Game либо `DISABLED` сохраняет
+прежний выбор CPU-only/clear presentation. Включённый Game требует Vulkan+GLFW, использует тот же Window,
+единственный FrameLoop/Engine/TaskSystem и `MaxActiveFrames` из ApplicationConfig. Отдельный MaxActiveFrames
+в PresentationConfig заменяется этим значением. Invalid mode/zero bound дают `INVALID_ARGUMENT`, недоступный
+backend — `UNSUPPORTED`; частично созданные output/Window и сервисы освобождаются по RAII.
+
+Application владеет ServiceManager весь lifetime. В нём заранее зарегистрированы ResourceManager, SceneManager
+и ViewRegistry (в таком dependency order); пользователь добавляет свои сервисы в конструкторе до первого Run.
+Scene никогда не создаётся и не активируется автоматически. Public `GetServices/GetScenes/GetResources` возвращают
+заимствованные ссылки; их per-service affinity сохраняется. `GetMainWindowView/BindCamera` используют ViewRegistry;
+BindCamera разрешён на owner thread до Run. Безопасные runtime scene/view requests и initial commit добавляет
+FEATURE-0095, основанная на FEATURE-0087.
+
+Внутренняя factory создаёт GameFrameBridge с единственным Engine-owned SceneRuntime. Publication, worker
+OnUpdate, асинхронный ScheduleWorldUpdate, OnPostUpdate, commit и immutable extraction идут через существующий
+phase graph. PresentationRuntime заимствует только immutable RenderWorld/RenderPlan текущего frame slot;
+перед публикацией intent регистрируется GPU future. Owner-thread output использует GraphPresentation и стандартный
+builder с явным `nullopt` camera: на этом этапе отображается clear-only graph, без неявного выбора первой камеры
+или неподготовленных Mesh/Material. Selected view и automatic GPU preparation/opaque rendering принадлежат
+FEATURE-0095/0096 и IMPROVE-0083; данный PR их не имитирует.
+
+NOT_READY/SUSPENDED/OUT_OF_DATE сохраняют один intent, не повторяя callbacks. Stop закрывает MainExecutor,
+присоединяет CPU phases, дренирует output по exact GPU completions, освобождает native presentation, затем
+останавливает сервисы. FrameLoop и сервисы уничтожаются до Window. Каждый обычный Run использует новое
+поколение Engine, тот же registry/объекты сервисов и свежий output sequence; composition не удерживает submissions
+прежнего Run. Ошибка startup допускает retry после чистого rollback; ошибка backend/drain либо Stop сервиса
+запрещает небезопасный restart. Исходное исключение не маскируется cleanup failure.
+
+Проверки: GameApplication CPU doubles (включая матрицу 1/2/8 workers × 1/2/3 slots, callback/ECS ordering,
+bounded GPU delay, inactive Scene, zero extent, startup rollback/retry и два Run), installed public Game consumer,
+существующие legacy tests и Vulkan smoke пустого/ручного camera Scene. [Публичный API](../docs/about/application.md).
+
 ## Типизированные сервисы
 
 `ServiceManager` — самостоятельный application-scoped registry из публичного
-`<GraphicsEngine/application/service_manager.h>`. Подключение к `Application` выполняется отдельно;
-этот API не меняет существующий `Run()` и не создаёт Engine, TaskSystem или Graphics.
+`<GraphicsEngine/application/service_manager.h>`. `Application::GetServices()` предоставляет общий registry:
+`Run()` запускает его до Engine и останавливает после CPU/GPU consumers. Сам ServiceManager не создаёт Engine,
+TaskSystem или Graphics; его также можно использовать отдельно.
 
 ```cpp
 struct Settings {};

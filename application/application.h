@@ -11,8 +11,11 @@
 
 #include <GraphicsEngine/application/application_config.h>
 #include <GraphicsEngine/application/frame_diagnostics.h>
+#include <GraphicsEngine/application/service_manager.h>
+#include <GraphicsEngine/application/view_registry.h>
 #include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 #include <GraphicsEngine/lib/thread/job.h>
+#include <GraphicsEngine/resources/resource_manager.h>
 #include <GraphicsEngine/window/window_size.h>
 
 namespace NWindow {
@@ -56,6 +59,17 @@ public:
     [[nodiscard]] FrameDiagnostics GetFrameDiagnostics() const;
 
     [[nodiscard]] bool IsShutdownRequested() const;
+
+    // Application-scoped objects remain stable across Run and Scene changes. Per-service affinity applies.
+    [[nodiscard]] ServiceManager& GetServices() noexcept;
+    [[nodiscard]] const ServiceManager& GetServices() const noexcept;
+    [[nodiscard]] NScene::SceneManager& GetScenes();
+    [[nodiscard]] const NScene::SceneManager& GetScenes() const;
+    [[nodiscard]] NResources::ResourceManager& GetResources();
+    [[nodiscard]] const NResources::ResourceManager& GetResources() const;
+    [[nodiscard]] ViewHandle GetMainWindowView() const;
+    // Owner-thread, before Run. Runtime scene/view publication is a separate phase-owned integration.
+    void BindCamera(ViewHandle view, NScene::SceneHandle scene, NEcs::EntityReference camera);
 
 protected:
     // Synchronously invokes short void work on the application thread; nested main calls run directly.
@@ -133,11 +147,13 @@ private:
 private:
     const std::thread::id m_applicationThread = std::this_thread::get_id();
     bool m_hasPresentation = false;
+    bool m_running = false;
     std::atomic_bool m_shutdownRequested = false;
     InputSnapshot m_input;
     std::unique_ptr<FrameLoopCallbacks> m_callbacks;
     std::unique_ptr<NWindow::WindowRuntime> m_windowRuntime;
     std::unique_ptr<NWindow::Window> m_window;
+    std::unique_ptr<ServiceManager> m_services;
     std::unique_ptr<NRuntime::FrameLoop> m_frameLoop;
 };
 
