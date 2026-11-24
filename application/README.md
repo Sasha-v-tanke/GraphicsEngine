@@ -27,7 +27,9 @@ NOT_READY/SUSPENDED/OUT_OF_DATE сохраняют один intent, не пов�
 присоединяет CPU phases, дренирует output по exact GPU completions, освобождает native presentation, затем
 останавливает сервисы. FrameLoop и сервисы уничтожаются до Window. Каждый обычный Run использует новое
 поколение Engine, тот же registry/объекты сервисов и свежий output sequence; composition не удерживает submissions
-прежнего Run. Ошибка startup допускает retry после чистого rollback; ошибка backend/drain либо Stop сервиса
+прежнего Run. Перед следующим Game Run внутренний Window lifecycle сбрасывает close request и once-per-close
+notification; реальный GLFW window снова принимает кадры без замены Window/сервисов. Legacy path не изменён.
+Ошибка startup допускает retry после чистого rollback; ошибка backend/drain либо Stop сервиса
 запрещает небезопасный restart. Исходное исключение не маскируется cleanup failure.
 
 Проверки: GameApplication CPU doubles (включая матрицу 1/2/8 workers × 1/2/3 slots, callback/ECS ordering,

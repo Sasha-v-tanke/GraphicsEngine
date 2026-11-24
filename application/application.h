@@ -147,6 +147,8 @@ private:
 private:
     const std::thread::id m_applicationThread = std::this_thread::get_id();
     bool m_hasPresentation = false;
+    bool m_gameMode = false;
+    bool m_hasCompletedRun = false;
     bool m_running = false;
     std::atomic_bool m_shutdownRequested = false;
     InputSnapshot m_input;

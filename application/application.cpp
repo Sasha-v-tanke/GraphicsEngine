@@ -109,6 +109,7 @@ private:
 
 Application::Application(const ApplicationConfig& config)
     : m_hasPresentation(ValidatePresentation(config))
+    , m_gameMode(UsesGame(config))
     , m_callbacks(std::make_unique<FrameLoopCallbacks>(*this))
     , m_windowRuntime(std::make_unique<NWindow::WindowRuntime>())
     , m_window(std::make_unique<ApplicationWindow>(*this, config.Window))
@@ -162,6 +163,9 @@ void Application::Run() {
     }
     m_running = true;
     try {
+        if (m_gameMode && m_hasCompletedRun) {
+            NWindow::NInternal::ResetCloseRequest(*m_window);
+        }
         (void)m_services->Start();
         m_shutdownRequested.store(m_window->ShouldClose());
         m_frameLoop->Start(
@@ -179,6 +183,7 @@ void Application::Run() {
             }
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Application services did not stop safely");
         }
+        m_hasCompletedRun = true;
     } catch (...) {
         m_frameLoop->Stop();
         (void)m_services->Stop();

@@ -30,6 +30,12 @@ public:
 
     virtual void RequestClose() = 0;
 
+    // Owner-thread lifecycle operation after a completed Application run. No callbacks.
+    // Backends without restart support reject a still-closed window.
+    [[nodiscard]] virtual bool ResetCloseRequest() {
+        return !ShouldClose();
+    }
+
     virtual void ProcessEvents() = 0;
 
     // Owner-thread event wait. Platforms override this to also wake for native events.

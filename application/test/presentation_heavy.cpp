@@ -264,8 +264,12 @@ public:
         }
         GetScenes().Activate(scene);
     }
+    int Closes = 0;
 
 private:
+    void OnClose() override {
+        ++Closes;
+    }
     static NApplication::ApplicationConfig GameConfig(std::size_t slots, std::atomic<int>& errors) {
         auto config = Config(slots, errors);
         config.Game = NApplication::GameConfig{};
@@ -300,11 +304,14 @@ void RunGameApplication(std::size_t slots, bool camera) {
         }
         throw;
     }
-    app->Run();
-    const auto stats = app->GetFrameDiagnostics();
-    EXPECT_GE(stats.Submitted, 12U);
-    EXPECT_EQ(stats.Submitted, stats.Completed);
-    EXPECT_EQ(stats.Completed, stats.Recycled);
+    for (int run = 0; run < 2; ++run) {
+        app->Run();
+        const auto stats = app->GetFrameDiagnostics();
+        EXPECT_GE(stats.Submitted, 12U);
+        EXPECT_EQ(stats.Submitted, stats.Completed);
+        EXPECT_EQ(stats.Completed, stats.Recycled);
+        EXPECT_EQ(app->Closes, run + 1);
+    }
     app.reset();
     EXPECT_EQ(errors.load(), 0);
 }

@@ -20,6 +20,7 @@ namespace {
 struct State {
     const std::thread::id Owner = std::this_thread::get_id();
     bool Close = false;
+    bool CanRestart = true;
     bool WindowLive = false;
     bool Completed = true;
     bool OutputActive = false;
@@ -68,6 +69,14 @@ public:
     }
     void RequestClose() override {
         m_state.Close = true;
+    }
+    [[nodiscard]] bool ResetCloseRequest() override {
+        EXPECT_EQ(std::this_thread::get_id(), m_state.Owner);
+        if (!m_state.CanRestart) {
+            return false;
+        }
+        m_state.Close = false;
+        return true;
     }
     void ProcessEvents() override {
         if (m_state.Events) {
@@ -201,8 +210,12 @@ public:
     std::atomic<int> Updates = 0;
     std::atomic<int> Posts = 0;
     std::atomic<int> Systems = 0;
+    int Closes = 0;
 
 private:
+    void OnClose() override {
+        ++Closes;
+    }
     void OnUpdate() override {
         EXPECT_TRUE(NCommon::TaskSystem::IsCurrentThreadWorker());
         const int update = ++Updates;
@@ -320,9 +333,11 @@ TEST_F(GameApplication, ServicesAndPublicReferencesRemainStableAcrossValidRuns) 
     const auto view = app.GetMainWindowView();
     const auto observed = services->Observe<ProbeService>();
     for (int run = 0; run < 2; ++run) {
-        Output.Close = false;
+        const auto before = app.Updates.load();
         CloseAfter(app, Output.Frames.size() + 3);
         app.Run();
+        EXPECT_GT(app.Updates.load(), before);
+        EXPECT_EQ(app.Closes, run + 1);
         EXPECT_EQ(scenes, &app.GetScenes());
         EXPECT_EQ(resources, &app.GetResources());
         EXPECT_EQ(services, &app.GetServices());
@@ -333,6 +348,25 @@ TEST_F(GameApplication, ServicesAndPublicReferencesRemainStableAcrossValidRuns) 
         EXPECT_EQ(Output.Starts, run + 1);
         EXPECT_EQ(Output.Stops, run + 1);
     }
+}
+
+TEST_F(GameApplication, UnsupportedWindowRestartDoesNotStartServicesOrAdmitFrames) {
+    GameApp app{Config(), Output};
+    CloseAfter(app, 3);
+    app.Run();
+    const auto updates = app.Updates.load();
+    Output.CanRestart = false;
+    NTest::ExpectError(NCommon::EError::UNSUPPORTED, [&] { app.Run(); });
+    EXPECT_TRUE(Output.Close);
+    EXPECT_EQ(app.Updates.load(), updates);
+    EXPECT_EQ(app.Probe->Starts, 1);
+    EXPECT_EQ(app.Closes, 1);
+    Output.CanRestart = true;
+    CloseAfter(app, Output.Frames.size() + 3);
+    app.Run();
+    EXPECT_GT(app.Updates.load(), updates);
+    EXPECT_EQ(app.Probe->Starts, 2);
+    EXPECT_EQ(app.Closes, 2);
 }
 
 TEST_F(GameApplication, OutputStartupFailureRollsBackServicesAndAllowsRetry) {
