@@ -141,3 +141,76 @@ origin offset сюда не передаётся и не изменяет global
 disabled entities/components, stale/foreign/recycled identities, scene unload,
 provider/classification, hierarchy revisions и deterministic snapshots. Installed
 package consumer использует только публичный header и вызов capture.
+
+## Static BVH (FEATURE-0116)
+
+`static_bvh.h` строит pointer-free CPU index из value snapshots FEATURE-0115.
+`StaticBvh::Build(scene, version, records, config)` берёт только VALID records с
+явной STATIC classification; dynamic, unclassified и diagnostic records учитываются
+в SkippedRecords. Malformed included AABB/identity/source revision, mixed Worlds,
+чужая Scene, duplicate identity и превышение MaxRecords отклоняются до publication.
+Построение/Refit выполняются вне worker-critical Update после owner-thread capture:
+caller может отправить value-owned inputs обычному TaskSystem, без worker Wait.
+Отдельный scheduler, SceneManager, TransformResolver cache или GPU BVH не создаётся.
+
+Builder использует median split по самой длинной оси AABB, tie X→Y→Z и полный
+identity tie-breaker. Листья упорядочены по identity, shape/порядок nodes не зависит
+от входного порядка. Complexity: build O(n log n), storage O(n), balanced depth
+O(log n); на полностью перекрывающихся bounds queries остаются O(n). LeafCapacity
+по умолчанию 8, диапазон 1–64; MaxRecords по умолчанию 1M, ограничение uint32/2
+гарантирует безопасные node IDs и ограниченный stack traversal.
+
+Снимок содержит immutable versioned nodes и компактные identity/AABB entries,
+не удерживает World/Scene/components. Const queries параллельны без mutable counters.
+Публикация принадлежит caller: например synchronized shared_ptr<const StaticBvh> на safe
+boundary после завершения build. Caller назначает ненулевые монотонные версии
+в пределах stream Scene. Старые snapshots остаются корректны для своих версий;
+ни один rebuild/refit не меняет уже опубликованное дерево.
+
+`Refit(newVersion, records)` требует строго новую версию и тот же набор static
+identities; сохраняет topology/permutation и пересчитывает bounds bottom-up в новом
+снимке. Меняются membership, generation или classification — нужен Build. Большое
+перемещение может ухудшить pruning: Build восстанавливает median spatial grouping.
+Refit не является dynamic AABB tree или change-driven синхронизацией FEATURE-0118.
+Source/hierarchy revisions остаются в producer snapshot; index version связывает
+геометрию с его publication, live revisions внутри BVH не читаются.
+
+Ray/frustum/overlap возвращают AABB candidates в стабильном identity order, а не
+geometry hits или ray-distance order. Контакт с boundary включается. Луч задаётся
+`Origin + t * Direction`, MinDistance >= 0, MaxDistance >= MinDistance; направление
+не обязано быть единичным, нулевой вектор запрещён, +infinity допустим только для max.
+Frustum — шесть inward planes `dot(normal, point) + offset >= 0`, нормализация не
+обязательна, нулевые normals запрещены. NaN/inf/inverted и out-of-budget inputs
+отклоняются даже у пустого index. Query inputs используют тот же coordinate budget,
+что SpatialBounds; origin-relative conversion может временно дать координаты до
+двух budgets. Intermediate arithmetic округляется наружу: false negatives на границе
+не допускаются, conservatively expanded candidates требуют обычного narrowphase.
+
+Все query inputs допускают camera-relative coordinates с явным global origin.
+Bounds в index не rebase/перезаписываются. Query результат содержит index version
+и non-owning Scene-qualified identities. Перед доступом к live entity owner thread
+вызывает `IsSpatialCandidateAlive`: unload, foreign World, stale generation и disabled
+entity отклоняются. Это не проверка актуальности старой геометрии: caller обязан
+использовать нужную snapshot version и собственный rebuild/refit policy. Смена Scene
+не перепривязывает старую identity; old index не разыменовывает World после unload.
+
+`GetStatistics().Serialize()` и per-query `Statistics.Serialize()` дают JSON schema 1:
+version/input/indexed/skipped/nodes/leaves/depth/storage и visited/tested/matched.
+StorageBytes — размер собственных vector capacities/Data, без allocator/control-block
+надбавок, input SpatialRecords, внешних shared_ptr и query result buffers; это не RSS.
+Latency не включается в deterministic counters и измеряется внешним scale harness.
+
+`test/static_bvh.cpp` проверяет randomized brute-force parity, degenerate overlaps,
+ray boundaries, relative origins, invalid inputs, deterministic nodes/candidates,
+refit policy, stale/unloaded identities и rebuild/refit при concurrent readers.
+`GraphicsEngineStaticBvhScaleTests` (label heavy) отдельно измеряет 1M bounds и 1000
+localized queries, проверяет bounded memory/depth/pruning; запускается без GPU.
+Installed package consumer собирает Build/Refit/query через public header.
+
+Локальный измеренный baseline (Debug, Clang 23.1.1, этот Mac; не SLA):
+1M records → 262143 nodes, 131072 leaves, depth 18, StorageBytes 124000240;
+build 2285.59 ms; 1000 localized queries: 4.37 µs/query в среднем,
+41.43 visited nodes/query. Query timing включает выделение result и asserts harness;
+input records и allocator overhead не входят в StorageBytes. Команда повторения:
+`cmake-build-ci-lite/GraphicsEngineStaticBvhScaleTests`. Измерения зависят от нагрузки
+и конфигурации, а тест проверяет memory/depth/pruning, не hardware latency threshold.

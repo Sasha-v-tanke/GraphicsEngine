@@ -1,6 +1,7 @@
 MODULE(Scene)
 
 API(
+    static_bvh.h
     spatial_bounds.h
     scene.h
     scene_handle.h
@@ -8,6 +9,7 @@ API(
 )
 
 SOURCES(
+    static_bvh.cpp
     spatial_bounds.cpp
     scene_manager.cpp
 )

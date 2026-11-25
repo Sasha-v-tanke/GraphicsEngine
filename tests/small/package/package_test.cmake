@@ -213,6 +213,7 @@ set(
     "GraphicsEngine/ecs/world.h"
     "GraphicsEngine/scene/scene.h"
     "GraphicsEngine/scene/spatial_bounds.h"
+    "GraphicsEngine/scene/static_bvh.h"
     "GraphicsEngine/scene/scene_handle.h"
     "GraphicsEngine/scene/scene_manager.h"
     "GraphicsEngine/graphics/buffer.h"

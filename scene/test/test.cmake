@@ -1,6 +1,8 @@
 TEST_SUITE(Scene)
 
 SOURCES(
+    static_bvh.cpp
+    bvh_fixture.h
     spatial_bounds.cpp
     entity_ref.cpp
     scene_test.cpp
@@ -19,3 +21,5 @@ TEST_LABELS(
     cpp
     scene
 )
+
+RECURSE(scale)
