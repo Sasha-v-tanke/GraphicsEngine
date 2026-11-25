@@ -50,6 +50,7 @@ static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
 #include <GraphicsEngine/resources/mesh_loader.h>
 #include <GraphicsEngine/resources/resource_io.h>
 #include <GraphicsEngine/resources/resource_manager.h>
+#include <GraphicsEngine/resources/resource_memory.h>
 #include <GraphicsEngine/resources/resource_observation.h>
 #include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
@@ -88,6 +89,17 @@ private:
 };
 
 int main() {
+    {
+        NResources::ResourceManager memory{NResources::ResourceMemoryBudget{sizeof(int)}};
+        auto pending = memory.ReserveDecode("package", sizeof(int));
+        auto handle = memory.Request<int>({"package", "memory"});
+        auto operation = memory.BeginLoading(handle);
+        memory.PublishReady(operation, std::make_shared<int>(1), &pending);
+        if (memory.GetMemorySnapshot().Total.CacheBytes != sizeof(int) || pending.IsValid()) {
+            return 1;
+        }
+    }
+
     {
         NScene::SceneManager scenes;
         const auto scene = scenes.CreateScene();

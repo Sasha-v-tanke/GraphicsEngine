@@ -45,7 +45,8 @@ struct AsyncResourceLoader::Work {
     }
 
     void Failure(const std::exception& error) const {
-        Fail({.Code = NCommon::EError::IO_ERROR,
+        const auto* engineError = dynamic_cast<const NCommon::Exception*>(&error);
+        Fail({.Code = engineError ? engineError->code() : NCommon::EError::IO_ERROR,
               .Message =
                       "Resource '" + std::string{Identity.GetKey()} + "' at '" + Path.string() + "': " + error.what()});
     }

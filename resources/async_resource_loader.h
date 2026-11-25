@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <stop_token>
 
+#include <GraphicsEngine/lib/common/error/exception.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <GraphicsEngine/resources/image_data.h>
 #include <GraphicsEngine/resources/mesh_data.h>
@@ -42,14 +43,17 @@ public:
     // Nonblocking admission, safe for concurrent callers. Same identity/type implies the same source/decoder.
     // The first admitted request wins; errors become FAILED and may be retried by another Load.
     template<typename T>
-    ResourceHandle<T>
-    Load(ResourceIdentity identity, std::filesystem::path path, Decoder<T> decode, Uploader<T> upload = {}) {
+    ResourceHandle<T> Load(ResourceIdentity identity,
+                           std::filesystem::path path,
+                           Decoder<T> decode,
+                           Uploader<T> upload = {},
+                           std::size_t decodeReservationBytes = 0) {
         const auto handle = m_resources.Request<T>(std::move(identity));
         const auto operation = m_resources.TryQueueLoading(handle);
         if (!operation) {
             return handle;
         }
-        EnqueueOperation(*operation, std::move(path), std::move(decode), std::move(upload));
+        EnqueueOperation(*operation, std::move(path), std::move(decode), std::move(upload), decodeReservationBytes);
         return handle;
     }
 
@@ -78,7 +82,8 @@ private:
     void EnqueueOperation(ResourceOperation<T> operation,
                           std::filesystem::path path,
                           Decoder<T> decode,
-                          Uploader<T> upload) {
+                          Uploader<T> upload,
+                          std::size_t decodeReservationBytes = 0) {
         const auto handle = operation.GetResource();
         try {
             Enqueue(
@@ -91,15 +96,26 @@ private:
                     [this, op = operation] {
                         return m_resources.TryAdvance(op, EResourceState::QUEUED, EResourceState::LOADING);
                     },
-                    [this, op = operation, decode = std::move(decode), upload = std::move(upload)](
-                            std::span<const std::byte> bytes,
-                            const std::stop_token& stop) -> std::function<ResourceUpload()> {
+                    [this,
+                     op = operation,
+                     decode = std::move(decode),
+                     upload = std::move(upload),
+                     decodeReservationBytes](std::span<const std::byte> bytes,
+                                             const std::stop_token& stop) -> std::function<ResourceUpload()> {
+                        auto reservation = m_resources.ReserveDecode(
+                                std::string{m_resources.GetIdentity(op.GetResource()).GetResourceClass()},
+                                decodeReservationBytes);
                         auto cpu = decode(bytes, stop);
                         if (!cpu) {
                             throw std::invalid_argument("Resource decoder returned null");
                         }
-                        if (stop.stop_requested() ||
-                            !m_resources.TryAdvance(op, EResourceState::LOADING, EResourceState::CPU_READY, cpu)) {
+                        if (stop.stop_requested() || !m_resources.TryAdvance(op,
+                                                                             EResourceState::LOADING,
+                                                                             EResourceState::CPU_READY,
+                                                                             cpu,
+                                                                             {},
+                                                                             &reservation,
+                                                                             &cpu)) {
                             return {};
                         }
                         return [this, op, cpu = std::move(cpu), upload]() {
@@ -129,7 +145,10 @@ private:
                                                std::move(gpu));
                     });
         } catch (const std::exception& error) {
-            m_resources.TryFail(operation, {.Code = NCommon::EError::IO_ERROR, .Message = error.what()});
+            const auto* engineError = dynamic_cast<const NCommon::Exception*>(&error);
+            m_resources.TryFail(
+                    operation,
+                    {.Code = engineError ? engineError->code() : NCommon::EError::IO_ERROR, .Message = error.what()});
         }
     }
 

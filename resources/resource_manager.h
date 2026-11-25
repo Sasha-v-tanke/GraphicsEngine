@@ -18,6 +18,7 @@
 #include <GraphicsEngine/resources/resource_handle.h>
 #include <GraphicsEngine/resources/resource_identity.h>
 #include <GraphicsEngine/resources/resource_lease.h>
+#include <GraphicsEngine/resources/resource_memory.h>
 #include <GraphicsEngine/resources/resource_observation.h>
 #include <GraphicsEngine/resources/resource_state.h>
 
@@ -26,6 +27,13 @@ namespace NResources {
 class ResourceManager final: private NCommon::NonTransferable {
 public:
     ResourceManager();
+    explicit ResourceManager(ResourceMemoryBudget budget);
+
+    // Budget updates affect future admission; retained leases are never revoked.
+    void SetMemoryBudget(ResourceMemoryBudget budget);
+    [[nodiscard]] ResourceMemorySnapshot GetMemorySnapshot() const;
+    // Throws OUT_OF_MEMORY on pressure, without waiting or changing existing charges.
+    [[nodiscard]] ResourceMemoryReservation ReserveDecode(std::string resourceClass, std::size_t bytes);
 
     // Registration is atomic: allocation failure preserves identities, handles and generations.
     template<typename T>
@@ -89,7 +97,11 @@ public:
                     EResourceState from,
                     EResourceState to,
                     std::shared_ptr<const T> cpu = {},
-                    std::shared_ptr<const void> gpu = {}) {
+                    std::shared_ptr<const void> gpu = {},
+                    ResourceMemoryReservation* reservation = nullptr,
+                    std::shared_ptr<const T>* cpuOwnership = nullptr) {
+        std::shared_ptr<const T> previousCpu;
+        const auto cpuBytes = cpu ? ResourceMemorySize<T>::GetBytes(*cpu) : 0;
         // The alias keeps both immutable representations alive in leases/use records.
         struct Payload {
             std::shared_ptr<const T> Cpu;
@@ -120,13 +132,28 @@ public:
             throw std::overflow_error("Resource version space exhausted");
         }
         if (retained) {
+            if (!entry->CpuResource || entry->CpuResource.get() != retained.get()) {
+                retained = TrackPayload(*entry, retained, cpuBytes, reservation);
+            }
             entry->CpuResource.swap(retained);
+            if (entry->Memory) {
+                entry->Memory->CachedPayload = entry->CpuResource;
+            }
         }
         if (to == EResourceState::READY) {
             ++entry->PublishedVersion;
             entry->GpuResource.swap(gpuVersion);
         }
+        // Hand the accounted alias to a continuing decoder before concurrent unload can retire it.
+        // An existing output owner is released only after unlocking.
+        if (cpuOwnership) {
+            previousCpu.swap(*cpuOwnership);
+            *cpuOwnership = std::static_pointer_cast<const T>(entry->CpuResource);
+        }
         entry->State = to;
+        if (entry->Memory) {
+            entry->Memory->Ready = to == EResourceState::READY;
+        }
         lock.unlock();
         return true;
     }
@@ -185,14 +212,19 @@ public:
     }
 
     template<typename T>
-    void PublishReady(ResourceOperation<T> operation, std::shared_ptr<T> resource) {
+    void PublishReady(ResourceOperation<T> operation,
+                      std::shared_ptr<T> resource,
+                      ResourceMemoryReservation* reservation = nullptr) {
         // Erase ownership before taking the lock: conversion/callee temporaries must not
         // destroy a rejected payload while validation still holds the metadata mutex.
+        const auto bytes = resource ? ResourceMemorySize<T>::GetBytes(*resource) : 0;
         std::shared_ptr<const void> published = std::move(resource);
         std::unique_lock lock{m_mutex};
         PublishReady(Validate(operation.GetResource(), std::type_index{typeid(T)}),
                      operation.GetGeneration(),
-                     published);
+                     published,
+                     bytes,
+                     reservation);
     }
 
     template<typename T>
@@ -335,6 +367,16 @@ private:
         std::weak_ptr<const void> Gpu;
     };
 
+    struct MemoryRecord {
+        std::string ResourceClass;
+        std::size_t Bytes = 0;
+        bool Pending = false;
+        bool Cached = false;
+        bool Ready = false;
+        std::weak_ptr<const void> Lifetime;
+        std::weak_ptr<const void> CachedPayload;
+    };
+
     struct Entry {
         bool Occupied = false;
         ResourceIdentity Identity;
@@ -347,6 +389,7 @@ private:
         std::stop_source Cancellation{std::nostopstate};
         std::shared_ptr<const void> CpuResource;
         std::weak_ptr<const void> GpuResource;
+        std::shared_ptr<MemoryRecord> Memory;
         std::optional<NCommon::ErrorInfo> Failure;
     };
 
@@ -377,6 +420,10 @@ private:
     [[nodiscard]] static std::uint64_t AcquireOwnerId();
 
     static void RetirePayload(Entry& entry, RetiredPayload& retired) noexcept {
+        if (entry.Memory) {
+            entry.Memory->Cached = false;
+            entry.Memory.reset();
+        }
         entry.CpuResource.swap(retired.Cpu);
         entry.GpuResource.swap(retired.Gpu);
     }
@@ -385,7 +432,18 @@ private:
 
     [[nodiscard]] static std::uint64_t BeginLoading(Entry& entry, RetiredPayload& retired);
 
-    static void PublishReady(Entry& entry, std::uint64_t operationGeneration, std::shared_ptr<const void>& resource);
+    void PublishReady(Entry& entry,
+                      std::uint64_t operationGeneration,
+                      std::shared_ptr<const void>& resource,
+                      std::size_t bytes,
+                      ResourceMemoryReservation* reservation);
+    [[nodiscard]] std::shared_ptr<const void> TrackPayload(Entry& entry,
+                                                           const std::shared_ptr<const void>& payload,
+                                                           std::size_t bytes,
+                                                           ResourceMemoryReservation* reservation);
+    [[nodiscard]] ResourceMemorySnapshot MemorySnapshot(const void* excluded = nullptr) const;
+    void CheckMemoryAdmission(std::size_t bytes, const void* excluded) const;
+    void RecordMemory(const std::shared_ptr<MemoryRecord>& record, const void* excluded = nullptr);
 
     static void
     Fail(Entry& entry, std::uint64_t operationGeneration, NCommon::ErrorInfo error, RetiredPayload& retired);
@@ -439,6 +497,10 @@ private:
     }
 
 private:
+    ResourceMemoryBudget m_memoryBudget;
+    std::vector<std::shared_ptr<MemoryRecord>> m_memoryRecords;
+    std::unordered_map<std::string, std::size_t> m_memoryHighWater;
+    std::size_t m_memoryTotalHighWater = 0;
     mutable std::shared_mutex m_mutex;
     std::uint64_t m_ownerId = 0;
     std::vector<Entry> m_entries;

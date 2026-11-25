@@ -8,6 +8,7 @@
 #include <GraphicsEngine/graphics/material.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
 #include <GraphicsEngine/renderer/render_components.h>
+#include <GraphicsEngine/resources/mesh_data.h>
 #include <GraphicsEngine/resources/resource_manager.h>
 #include <GraphicsEngine/scene/scene_manager.h>
 #include <ecs/internal/system_run.h>
@@ -15,10 +16,6 @@
 #include <gtest/gtest.h>
 #include <renderer/extraction.h>
 #include <tests/common/test_error.h>
-
-namespace NResources {
-class MeshData final {};
-} // namespace NResources
 
 namespace {
 

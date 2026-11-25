@@ -217,4 +217,76 @@ TEST(ResourceRegistrationFault, ConcurrentFirstRequestsCoalesceAfterFailedInsert
     }
 }
 
+TEST(ResourceRegistrationFault, PublicationAllocationFailuresPreserveReservationAndOperation) {
+    bool succeeded = false;
+    std::size_t failures = 0;
+    for (std::ptrdiff_t prefix = 0; prefix < 64; ++prefix) {
+        ResourceManager resources{NResources::ResourceMemoryBudget{sizeof(int)}};
+        auto pending = resources.ReserveDecode("test", sizeof(int));
+        auto handle = resources.Request<int>({"test", "fault"});
+        auto op = resources.BeginLoading(handle);
+        auto payload = std::make_shared<int>(42);
+        AllocationBudget = prefix;
+        bool failed = false;
+        try {
+            resources.PublishReady(op, payload, &pending);
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        AllocationBudget = -1;
+        if (failed) {
+            ++failures;
+            EXPECT_TRUE(pending.IsValid());
+            EXPECT_EQ(resources.GetState(handle), EResourceState::LOADING);
+            EXPECT_EQ(resources.GetMemorySnapshot().Total.PendingDecodeBytes, sizeof(int));
+            EXPECT_EQ(resources.GetMemorySnapshot().Total.DecodedBytes, 0U);
+            resources.PublishReady(op, payload, &pending);
+        }
+        EXPECT_EQ(resources.GetState(handle), EResourceState::READY);
+        EXPECT_EQ(resources.GetMemorySnapshot().Total.HighWaterBytes, sizeof(int));
+        EXPECT_EQ(**resources.TryAcquire(handle), 42);
+        if (!failed) {
+            succeeded = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(succeeded);
+    EXPECT_GT(failures, 0U);
+}
+
+TEST(ResourceRegistrationFault, ReservationAllocationFailureLeavesNoChargeOrClass) {
+    bool succeeded = false;
+    std::size_t failures = 0;
+    for (std::ptrdiff_t prefix = 0; prefix < 32; ++prefix) {
+        ResourceManager resources{NResources::ResourceMemoryBudget{4}};
+        NResources::ResourceMemoryReservation pending;
+        AllocationBudget = prefix;
+        bool failed = false;
+        try {
+            pending = resources.ReserveDecode("test", 4);
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        AllocationBudget = -1;
+        if (failed) {
+            ++failures;
+            EXPECT_FALSE(pending.IsValid());
+            const auto snapshot = resources.GetMemorySnapshot();
+            EXPECT_EQ(snapshot.Total.PendingDecodeBytes, 0U);
+            EXPECT_EQ(snapshot.Total.HighWaterBytes, 0U);
+            EXPECT_TRUE(snapshot.Classes.empty());
+            pending = resources.ReserveDecode("test", 4);
+        }
+        EXPECT_EQ(resources.GetMemorySnapshot().Total.PendingDecodeBytes, 4U);
+        pending = {};
+        EXPECT_EQ(resources.GetMemorySnapshot().Total.PendingDecodeBytes, 0U);
+        if (!failed) {
+            succeeded = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(succeeded);
+    EXPECT_GT(failures, 0U);
+}
+
 } // namespace

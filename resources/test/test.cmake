@@ -1,6 +1,7 @@
 TEST_MODULE(Resources)
 
 SOURCES(
+    resource_memory.cpp
     resource_observation.cpp
     async_resource_loader.cpp
     resource_io.cpp

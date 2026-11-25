@@ -45,6 +45,49 @@ Logical unload прекращает новые acquisitions, но ранее в�
 потоке после завершения использования. Cancellation callbacks также вызываются вне mutex.
 Это CPU ownership-протокол; физическое освобождение GPU representations остаётся ответственностью Graphics.
 
+## Бюджет CPU-кэша
+
+`ResourceManager(ResourceMemoryBudget{maxBytes})` ограничивает сумму живых decoded bytes и
+pending decode reservations; по умолчанию лимит равен `size_t::max()`. `SetMemoryBudget` меняет
+будущий admission: уже выданные leases не отзываются, автоматического eviction нет.
+`OUT_OF_MEMORY` содержит used/requested/limit; отказ не меняет operation, payload или reservation.
+Проверка и commit charge сериализованы общим mutex менеджера, сложение защищено проверкой
+остатка бюджета. Это учёт принадлежащих Resources данных, не ограничитель всей памяти процесса.
+
+`ReserveDecode(resourceClass, estimatedBytes)` возвращает move-only RAII reservation. Её нужно
+удерживать до фактического завершения decode, даже после cancel/unload. `PublishReady(..., &reservation)`
+или `TryAdvance(..., cpu, gpu, &reservation)` атомарно заменяет резерв фактическим размером; при
+отказе резерв остаётся действительным. Чужой/использованный резерв и несовпадение класса запрещены.
+`AsyncResourceLoader::Load(..., upload, decodeReservationBytes)` резервирует перед вызовом decoder,
+сохраняет reservation до его выхода и переводит budget error в структурированный `FAILED`.
+Последний optional output `TryAdvance(..., &reservation, &cpuOwnership)` атомарно возвращает
+учитываемый CPU alias для продолжения decode/upload, не оставляя окна между публикацией и unload.
+Старые вызовы совместимы: estimate по умолчанию нулевой, итоговый размер всё равно проверяется.
+Оценка должна включать пиковое рабочее хранение декодера; неизвестные временные allocations и
+буфер ResourceIo в эти CPU-cache counters не входят. Нет нового allocator, scheduler или worker waits.
+
+`ResourceMemorySize<T>::GetBytes` по умолчанию возвращает `sizeof(T)`; пользователь специализирует
+trait для динамических payloads. Image/Mesh/Shader учитывают объект и capacity принадлежащих им
+массивов с проверкой overflow. Immutable payload нельзя изменять через сохранённые внешние aliases.
+Внешние shared_ptr исходного декодера не становятся Resources leases: передавать владение следует
+через move, а для дальнейшего использования получать `GetCpuResource`/`TryAcquire`.
+
+`GetMemorySnapshot()` возвращает общий и лексически отсортированный per-class снимок:
+
+- `DecodedBytes` — живые версии, включая уже выгруженные, но удерживаемые потребителями;
+- `CacheBytes` — версии, которыми ещё владеет менеджер;
+- `PendingDecodeBytes` — живые оценки декодирования;
+- `PinnedBytes` — версии с внешним удержанием или ещё не достигшие READY;
+- `EvictableBytes` — READY cache без обнаруженных внешних удержаний;
+- `HighWaterBytes` — максимум decoded + pending за жизнь менеджера, без удвоения при conversion.
+
+`PinnedBytes + EvictableBytes == DecodedBytes`. Lease, use record и выданный CPU shared_ptr сохраняют
+charge после unload/Forget/retry; добавление GPU representation не удваивает CPU bytes. Завершение
+lease не вызывает менеджер, поэтому lease/reservation могут пережить его. Snapshot/admission
+сканируют текущие charge records; expired records убираются при следующем admission. Pin counts —
+наблюдение за shared ownership, могут измениться сразу после снимка и не являются eviction lock.
+Физическое освобождение payload выполняется вне mutex менеджера; GPU retirement остаётся у Graphics.
+
 ## Артефакты шейдеров
 
 Ресурсы шейдеров загружают только заранее собранные артефакты SPIR-V. Загрузчик записывает явные метаданные стадии и проверяет контейнер в объёме, необходимом для исполнения: данные должны быть непустыми, выровненными по 32-битным словам и содержать корректные сигнатуру, версию и поле границы идентификаторов SPIR-V.

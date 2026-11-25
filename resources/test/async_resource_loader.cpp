@@ -537,4 +537,53 @@ TEST_F(AsyncResources, CoalescedLoaderCancellationStopsOwnerDecode) {
     EXPECT_FALSE(Resources.TryAcquire(handle));
 }
 
+TEST_F(AsyncResources, DecodeReservationSurvivesCancelUntilDecoderRetiresAndRestartCanRetry) {
+    Resources.SetMemoryBudget({sizeof(int)});
+    std::atomic_bool entered = false;
+    std::atomic_bool release = false;
+    AsyncResourceLoader loader{Resources, Tasks, {}, Reader()};
+    auto handle = loader.Load<int>(
+            {"test", "budget"},
+            "file",
+            [&](auto, const auto&) {
+                entered = true;
+                while (!release.load()) {
+                    std::this_thread::yield();
+                }
+                return std::make_shared<const int>(1);
+            },
+            {},
+            sizeof(int));
+    ASSERT_TRUE(Until([&] { return entered.load(); }));
+    EXPECT_EQ(Resources.GetMemorySnapshot().Total.PendingDecodeBytes, sizeof(int));
+    loader.Cancel(handle);
+    EXPECT_EQ(Resources.GetMemorySnapshot().Total.PendingDecodeBytes, sizeof(int));
+    release = true;
+    loader.Shutdown();
+    EXPECT_EQ(Resources.GetMemorySnapshot().Total.PendingDecodeBytes, 0U);
+    EXPECT_EQ(Resources.GetMemorySnapshot().Total.DecodedBytes, 0U);
+    AsyncResourceLoader restarted{Resources, Tasks, {}, Reader()};
+    EXPECT_EQ(restarted.Load<int>({"test", "budget"}, "file", Decoder(), {}, sizeof(int)), handle);
+    ASSERT_TRUE(Until([&] {
+        restarted.PumpUploads();
+        return Resources.GetState(handle) == EResourceState::READY;
+    }));
+    EXPECT_EQ(Resources.GetMemorySnapshot().Total.HighWaterBytes, sizeof(int));
+}
+
+TEST_F(AsyncResources, BudgetPressureFailsBeforeDecodeAndRetainsStructuredError) {
+    Resources.SetMemoryBudget({0});
+    AsyncResourceLoader loader{Resources, Tasks, {}, Reader()};
+    auto handle = loader.Load<int>({"test", "budget"}, "file", Decoder(), {}, sizeof(int));
+    ASSERT_TRUE(Until([&] {
+        loader.PumpUploads();
+        return Resources.GetState(handle) == EResourceState::FAILED;
+    }));
+    EXPECT_EQ(Decodes, 0);
+    ASSERT_TRUE(Resources.GetFailure(handle));
+    EXPECT_EQ(Resources.GetFailure(handle)->Code, NCommon::EError::OUT_OF_MEMORY);
+    EXPECT_NE(Resources.GetFailure(handle)->Message.find("CPU resource budget exceeded"), std::string::npos);
+    EXPECT_EQ(Resources.GetMemorySnapshot().Total.PendingDecodeBytes, 0U);
+}
+
 } // namespace
