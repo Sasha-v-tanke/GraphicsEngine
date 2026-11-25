@@ -1,5 +1,29 @@
 # Измерения ECS concurrency
 
+## Range Query и ForEach
+
+`BM_Query/<entities>/<mode>` сравнивает legacy callback (0), новый `World::ForEach` (1)
+и range (2), включая snapshot, проверяемые EntityRef и уничтожение reader. Компоненты не копируются.
+`BM_SystemQuery/<mode>/<workers>` добавляет тот же обход внутри одного зарегистрированного Read-system;
+измеряется wall time с scheduling/join, без создания World и TaskSystem. Это сравнение стоимости API,
+а не параллельный обход одной query. Все варианты проверяют одну и ту же контрольную сумму.
+
+Повторение: `GraphicsEngineBenchmarks --benchmark_filter='BM_(System)?Query/' --benchmark_min_time=0.05s
+--benchmark_repetitions=3 --benchmark_out=/tmp/query.json --benchmark_out_format=json`.
+Локальный baseline FEATURE-0084: macOS arm64, AppleClang 21, Release, медиана трёх повторений,
+4096 сущностей, микросекунды wall time:
+
+| Исполнение | Legacy | ForEach | Range |
+| --- | ---: | ---: | ---: |
+| Owner | 104.99 | 291.86 | 308.56 |
+| 1 worker | 127.31 | 318.66 | 317.31 |
+| 2 workers | 130.94 | 243.37 | 226.66 |
+| 8 workers | 87.35 | 232.99 | 234.26 |
+
+Проверяемый range на этом backend дороже прежнего callback примерно в 2–3 раза.
+Это зафиксированная стоимость lifetime/access checks и snapshot адресов, а не доказательство ускорения.
+Сравнение чувствительно к нагрузке машины; для регрессионного решения повторять на одинаковом окружении.
+
 `acceptance.cpp` расширяет существующий Google Benchmark target, не вводя другой runner.
 Tree fixtures и независимые эталоны общие с [acceptance-тестами](../../tests/ecs_concurrency/README.md).
 `BM_EcsAcceptanceTraversal` сравнивает runtime `RunSerial` (workers=0) с неблокирующим

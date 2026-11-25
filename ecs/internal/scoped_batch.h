@@ -111,6 +111,15 @@ private:
 
 class ScopedBatchContext final: public NCommon::NonTransferable {
 public:
+    template<typename... T>
+    [[nodiscard]] auto Query() const {
+        ValidateActive();
+        return m_world.Query<T...>();
+    }
+    template<typename... T, typename Callback>
+    void ForEach(Callback&& callback) const {
+        Query<T...>().ForEach(std::forward<Callback>(callback));
+    }
     template<typename T>
     [[nodiscard]] ScopedView<T, false> Read() const {
         Validate(typeid(T), false);
@@ -137,6 +146,7 @@ public:
 
 private:
     ScopedBatchContext(World& world, std::shared_ptr<ResolvedBatch> batch);
+    void ValidateActive() const;
     void Validate(std::type_index type, bool write) const;
     void ValidateEntity(EntityReference entity) const;
     World& m_world;

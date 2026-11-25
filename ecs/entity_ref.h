@@ -18,7 +18,7 @@ public:
     template<typename T, typename... TArgs>
     EntityRef AddComponent(TArgs&&... args) {
         static_assert(std::is_same_v<T, std::remove_cvref_t<T>>);
-        World& world = GetWorld();
+        World& world = GetWorld(true);
         EntityRef result = world.GetEntityRef(m_reference);
         world.QueueAddComponent<T>(m_reference, std::forward<TArgs>(args)...);
         return result;
@@ -44,7 +44,8 @@ public:
     template<typename T>
     [[nodiscard]] T* TryGetComponent() {
         static_assert(!std::is_reference_v<T> && !std::is_volatile_v<T>);
-        return GetWorld().ResolveEntityRefComponent<std::remove_const_t<T>>(m_reference, !std::is_const_v<T>);
+        return GetWorld(!std::is_const_v<T>)
+                .template ResolveEntityRefComponent<std::remove_const_t<T>>(m_reference, !std::is_const_v<T>);
     }
 
     template<typename T>
@@ -61,7 +62,7 @@ public:
     template<typename T>
     void RemoveComponent() {
         static_assert(std::is_same_v<T, std::remove_cvref_t<T>>);
-        GetWorld().QueueRemoveComponent<T>(m_reference);
+        GetWorld(true).QueueRemoveComponent<T>(m_reference);
     }
 
     void Destroy();
@@ -72,12 +73,12 @@ public:
     template<typename T>
     void EnableComponent() {
         static_assert(std::is_same_v<T, std::remove_cvref_t<T>>);
-        GetWorld().QueueSetComponentEnabled<T>(m_reference, true);
+        GetWorld(true).QueueSetComponentEnabled<T>(m_reference, true);
     }
     template<typename T>
     void DisableComponent() {
         static_assert(std::is_same_v<T, std::remove_cvref_t<T>>);
-        GetWorld().QueueSetComponentEnabled<T>(m_reference, false);
+        GetWorld(true).QueueSetComponentEnabled<T>(m_reference, false);
     }
     template<typename T>
     [[nodiscard]] bool IsComponentEnabled() const {
@@ -95,7 +96,7 @@ public:
 private:
     friend class World;
     EntityRef(World& world, EntityReference reference);
-    [[nodiscard]] World& GetWorld() const;
+    [[nodiscard]] World& GetWorld(bool write = false) const;
     [[noreturn]] void ThrowMissingComponent() const;
 
 private:
@@ -104,6 +105,7 @@ private:
     std::weak_ptr<bool> m_lifetime;
     std::weak_ptr<const NInternal::EntityAccessScope> m_scope;
     bool m_scopeBound = false;
+    bool m_readOnly = false;
 };
 
 } // namespace NEcs

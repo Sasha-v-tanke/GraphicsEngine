@@ -53,18 +53,18 @@ TEST(EnabledState, FullEntityAndRequiredComponentMatrixPreservesGetAndHas) {
         EXPECT_EQ(std::as_const(entity).TryGetComponent<Value>(), &entity.GetComponent<Value>());
         unsigned legacy = 0, explicitSkip = 0, included = 0, single = 0, constIncluded = 0;
         world.Query<Value, Tag>([&](auto, auto&, auto&) { ++legacy; });
-        world.Query<Value, Tag>().SkipDisabled().ForEach([&](auto, auto&, auto&) { ++explicitSkip; });
-        world.Query<Value, Tag>().IncludeDisabled().ForEach([&](auto, auto&, auto&) { ++included; });
+        world.Query<Value, Tag>().SkipDisabled().ForEach([&](const auto&, auto&, auto&) { ++explicitSkip; });
+        world.Query<Value, Tag>().IncludeDisabled().ForEach([&](const auto&, auto&, auto&) { ++included; });
         world.Query<Value>([&](auto, auto&) { ++single; });
         std::as_const(world).Query<Value, Tag>().IncludeDisabled().ForEach(
-                [&](auto, const Value&, const Tag&) { ++constIncluded; });
+                [&](const auto&, const Value&, const Tag&) { ++constIncluded; });
         EXPECT_EQ(legacy, mask == 0 ? 1U : 0U);
         EXPECT_EQ(explicitSkip, legacy);
         EXPECT_EQ(included, 1U);
         EXPECT_EQ(constIncluded, 1U);
         EXPECT_EQ(single, (mask & 3U) == 0 ? 1U : 0U);
         unsigned reset = 0;
-        world.Query<Value, Tag>().IncludeDisabled().SkipDisabled().ForEach([&](auto, auto&, auto&) { ++reset; });
+        world.Query<Value, Tag>().IncludeDisabled().SkipDisabled().ForEach([&](const auto&, auto&, auto&) { ++reset; });
         EXPECT_EQ(reset, legacy);
     }
 }
@@ -158,14 +158,14 @@ TEST(EnabledState, EmptyAndExpiredHandlesAndQueriesRejectAccess) {
     {
         NEcs::World world;
         query = world.Query<Value>();
-        query->IncludeDisabled().ForEach([](auto, auto&) { FAIL() << "Empty World"; });
+        query->IncludeDisabled().ForEach([](const auto&, auto&) { FAIL() << "Empty World"; });
         expired = world.GetEntityRef(world.QueueCreateEntity()).AddComponent<Value>();
         world.CommitPending();
     }
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { expired.Enable(); });
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)expired.IsEnabled(); });
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)expired.IsComponentEnabled<Value>(); });
-    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { query->ForEach([](auto, auto&) {}); });
+    NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { query->ForEach([](const auto&, auto&) {}); });
     NEcs::EntityRef empty;
     NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { empty.Disable(); });
 }
@@ -197,12 +197,12 @@ TEST(EnabledState, FailedSystemDiscardsEnabledChangesAndEscapedSelectionExpires)
         NEcs::World world;
         auto entity = world.GetEntityRef(world.QueueCreateEntity()).AddComponent<Value>();
         world.CommitPending();
-        using Selection = decltype(world.Query<Value>());
+        using Selection = decltype(world.Query<const Value>());
         std::optional<Selection> escaped;
         world.RegisterSystem(
                 {NEcs::Read<Value>()},
                 [&](NEcs::World& current) {
-                    escaped = current.Query<Value>();
+                    escaped = current.Query<const Value>();
                     EXPECT_TRUE(entity.IsEnabled());
                     entity.Disable();
                     entity.DisableComponent<Value>();
@@ -219,7 +219,7 @@ TEST(EnabledState, FailedSystemDiscardsEnabledChangesAndEscapedSelectionExpires)
         }
         EXPECT_TRUE(entity.IsEnabled());
         EXPECT_TRUE(entity.IsComponentEnabled<Value>());
-        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { escaped->ForEach([](auto, auto&) {}); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { escaped->ForEach([](const auto&, auto&) {}); });
     }
 }
 
@@ -232,7 +232,7 @@ TEST(EnabledState, DetachedWorkersCannotUseFacadeOrPolicySelection) {
     const auto task = tasks.Submit([&](NCommon::TaskContext&) {
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { entity.Disable(); });
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)entity.IsEnabled(); });
-        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { query.ForEach([](auto, auto&) {}); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { query.ForEach([](const auto&, auto&) {}); });
     });
     tasks.Wait(task);
     EXPECT_EQ(tasks.GetStatus(task), NCommon::ETaskStatus::COMPLETED);
@@ -254,10 +254,12 @@ TEST(EnabledState, ForeignHostThreadCannotUseEnabledFacadeOrQuerySelection) {
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)entity.IsComponentEnabled<Value>(); });
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)world.Query<Value>(); });
         NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] { (void)std::as_const(world).Query<Value>(); });
-        NTest::ExpectError(NCommon::EError::INVALID_STATE,
-                           [&] { query.IncludeDisabled().ForEach([](auto, Value& value) { value.Number = 991; }); });
-        NTest::ExpectError(NCommon::EError::INVALID_STATE,
-                           [&] { readQuery.ForEach([](auto, const Value&) { FAIL() << "Foreign query executed"; }); });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] {
+            query.IncludeDisabled().ForEach([](const auto&, Value& value) { value.Number = 991; });
+        });
+        NTest::ExpectError(NCommon::EError::INVALID_STATE, [&] {
+            readQuery.ForEach([](const auto&, const Value&) { FAIL() << "Foreign query executed"; });
+        });
     });
     foreign.get();
     world.CommitPending();
@@ -329,7 +331,7 @@ TEST(EnabledState, ScopedForEachUsesFrozenEntityAndComponentFlagsAndGetStillWork
                         EXPECT_EQ(identity, entities[0].GetReference());
                         world.GetEntityRef(identity).Disable();
                     });
-                    view.SkipDisabled().ForEach([&](auto, Value&) { ++explicitSkip; });
+                    view.SkipDisabled().ForEach([&](const auto&, Value&) { ++explicitSkip; });
                     view.IncludeDisabled().ForEach([&](auto identity, Value& value) {
                         ++included;
                         EXPECT_EQ(view.Get(identity).Number, value.Number);

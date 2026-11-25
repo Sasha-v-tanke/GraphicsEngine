@@ -8,24 +8,27 @@ EntityRef::EntityRef(World& world, EntityReference reference)
     , m_lifetime(world.LifetimeToken_) {
 }
 
-World& EntityRef::GetWorld() const {
+World& EntityRef::GetWorld(bool write) const {
     if (m_world == nullptr || m_lifetime.expired()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "EntityRef World lifetime has ended");
     }
     m_world->ValidateEntityRefContext(*this);
+    if (write && m_readOnly) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "EntityRef from const Query is read-only");
+    }
     return *m_world;
 }
 
 void EntityRef::Destroy() {
-    GetWorld().QueueDestroyEntity(m_reference);
+    GetWorld(true).QueueDestroyEntity(m_reference);
 }
 
 void EntityRef::Enable() {
-    GetWorld().QueueSetEnabled(m_reference, true);
+    GetWorld(true).QueueSetEnabled(m_reference, true);
 }
 
 void EntityRef::Disable() {
-    GetWorld().QueueSetEnabled(m_reference, false);
+    GetWorld(true).QueueSetEnabled(m_reference, false);
 }
 
 bool EntityRef::IsEnabled() const {

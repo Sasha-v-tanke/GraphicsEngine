@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -53,40 +54,174 @@ enum class EQueryEnabledPolicy {
 };
 
 class World {
+    struct QueryLease {
+        World* Owner;
+        std::weak_ptr<bool> Lifetime;
+        std::atomic_bool Active = true;
+        explicit QueryLease(World& owner);
+        ~QueryLease();
+        void Retire() noexcept;
+    };
+
 public:
-    // A callback query policy, not a range or a component lease. Membership is captured
-    // when ForEach executes. Range iteration and its lifetime rules belong to FEATURE-0084.
+    // Ephemeral, input range. First begin freezes membership without copying components.
+    // Release active ranges before structural writes/commit or starting another systems phase.
     template<typename TWorld, typename... TComponents>
     class QuerySelection final {
+        template<typename T>
+        using Component = std::conditional_t<std::is_const_v<TWorld>, const std::remove_const_t<T>, T>;
+        struct Row {
+            EntityReference Entity;
+            std::tuple<Component<TComponents>*...> Values;
+        };
+        struct State {
+            std::shared_ptr<QueryLease> Lease;
+            std::vector<Row> Rows;
+        };
+
     public:
+        class Iterator {
+        public:
+            using difference_type = std::ptrdiff_t;
+            using value_type = std::tuple<EntityRef, Component<TComponents>&...>;
+            using iterator_concept = std::input_iterator_tag;
+            Iterator() = default;
+            [[nodiscard]] auto operator*() const {
+                const auto state = Check();
+                if (m_index >= state->Rows.size()) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query iterator is at end");
+                }
+                const auto& row = state->Rows[m_index];
+                return std::apply(
+                        [&](auto*... values) {
+                            return value_type{m_world->MakeQueryEntityRef(row.Entity, std::is_const_v<TWorld>),
+                                              *values...};
+                        },
+                        row.Values);
+            }
+            Iterator& operator++() {
+                const auto state = Check();
+                if (m_index >= state->Rows.size()) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Cannot advance Query end");
+                }
+                ++m_index;
+                return *this;
+            }
+            Iterator operator++(int) {
+                auto previous = *this;
+                ++*this;
+                return previous;
+            }
+            [[nodiscard]] bool operator==(std::default_sentinel_t) const {
+                return m_index == Check()->Rows.size();
+            }
+
+        private:
+            [[nodiscard]] std::shared_ptr<State> Check() const {
+                auto state = m_state.lock();
+                if (!state || state->Lease->Lifetime.expired() || !state->Lease->Active.load()) {
+                    GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query iterator lifetime has ended");
+                }
+                m_world->ValidateQueryInvocation(m_invocation);
+                return state;
+            }
+            Iterator(TWorld& world, const std::shared_ptr<State>& state, std::uint64_t invocation)
+                : m_world(&world)
+                , m_state(state)
+                , m_invocation(invocation) {
+            }
+            TWorld* m_world = nullptr;
+            std::weak_ptr<State> m_state;
+            std::uint64_t m_invocation = 0;
+            std::size_t m_index = 0;
+            friend class QuerySelection;
+        };
+
         [[nodiscard]] QuerySelection SkipDisabled() const {
             auto result = *this;
             result.m_policy = EQueryEnabledPolicy::SKIP_DISABLED;
+            result.m_state.reset();
             return result;
         }
         [[nodiscard]] QuerySelection IncludeDisabled() const {
             auto result = *this;
             result.m_policy = EQueryEnabledPolicy::INCLUDE_DISABLED;
+            result.m_state.reset();
             return result;
         }
+        [[nodiscard]] Iterator begin() const {
+            Check();
+            if (!m_state) {
+                auto state = std::make_shared<State>();
+                state->Lease = m_world->AcquireQueryLease(m_invocation, m_epoch);
+                state->Rows.reserve(m_world->Entities_.size());
+                for (std::uint32_t index = 0; index < m_world->Entities_.size(); ++index) {
+                    const auto& entity = m_world->Entities_[index];
+                    if (!entity.Alive) {
+                        continue;
+                    }
+                    const Entity identity{index, entity.Generation};
+                    auto values = std::tuple{m_world->template ResolveQueryValue<Component<TComponents>>(identity)...};
+                    if (!std::apply([](auto*... value) { return ((value != nullptr) && ...); }, values)) {
+                        continue;
+                    }
+                    if (m_policy == EQueryEnabledPolicy::SKIP_DISABLED &&
+                        (m_world->m_disabledEntities.contains(index) ||
+                         (m_world->IsComponentDisabled(identity, typeid(TComponents)) || ...))) {
+                        continue;
+                    }
+                    state->Rows.push_back({m_world->GetEntityReference(identity), values});
+                }
+                m_state = std::move(state);
+            }
+            if (!m_state->Lease->Active.load()) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query invocation has ended");
+            }
+            return Iterator{*m_world, m_state, m_invocation};
+        }
+        [[nodiscard]] std::default_sentinel_t end() const {
+            return {};
+        }
+
         template<typename TCallback>
         void ForEach(TCallback&& callback) const {
-            if (m_lifetime.expired()) {
-                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query World lifetime has ended");
+            auto selection = *this;
+            for (auto row: selection) {
+                std::apply(
+                        [&](auto& entity, auto&... values) {
+                            if constexpr (std::is_invocable_v<TCallback&, decltype(entity), decltype(values)...>) {
+                                std::invoke(callback, entity, values...);
+                            } else {
+                                // Compatibility with the FEATURE-0083 descriptor callback.
+                                std::invoke(callback, entity.GetReference().Identity, values...);
+                            }
+                        },
+                        row);
             }
-            m_world->ValidateQueryInvocation(m_invocation);
-            m_world->template Query<TComponents...>(std::forward<TCallback>(callback), m_policy);
         }
 
     private:
         explicit QuerySelection(TWorld& world)
             : m_world(&world)
             , m_lifetime(world.LifetimeToken_)
-            , m_invocation(world.CaptureQueryInvocation()) {
+            , m_invocation(world.CaptureQueryInvocation())
+            , m_epoch(world.m_queryEpoch.load()) {
+            (world.ValidateQueryType(typeid(TComponents), !std::is_const_v<Component<TComponents>>), ...);
+        }
+        void Check() const {
+            if (m_lifetime.expired()) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query World lifetime has ended");
+            }
+            m_world->ValidateQueryInvocation(m_invocation);
+            if (m_epoch != m_world->m_queryEpoch.load()) {
+                GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query crossed a structural/phase boundary");
+            }
         }
         TWorld* m_world;
         std::weak_ptr<bool> m_lifetime;
         std::uint64_t m_invocation;
+        std::uint64_t m_epoch;
+        mutable std::shared_ptr<State> m_state;
         EQueryEnabledPolicy m_policy = EQueryEnabledPolicy::SKIP_DISABLED;
         friend class World;
     };
@@ -98,6 +233,14 @@ public:
     template<typename... TComponents>
     [[nodiscard]] QuerySelection<const World, TComponents...> Query() const {
         return QuerySelection<const World, TComponents...>{*this};
+    }
+    template<typename... TComponents, typename TCallback>
+    void ForEach(TCallback&& callback) {
+        Query<TComponents...>().ForEach(std::forward<TCallback>(callback));
+    }
+    template<typename... TComponents, typename TCallback>
+    void ForEach(TCallback&& callback) const {
+        Query<TComponents...>().ForEach(std::forward<TCallback>(callback));
     }
     using SystemCallback = std::function<void(World&)>;
 
@@ -635,6 +778,26 @@ private:
     [[nodiscard]] bool ResolveEntityRefEnabled(EntityReference entity) const;
     [[nodiscard]] std::uint64_t CaptureQueryInvocation() const;
     void ValidateQueryInvocation(std::uint64_t invocation) const;
+    void ValidateQueryType(std::type_index type, bool write) const;
+    [[nodiscard]] EntityRef MakeQueryEntityRef(EntityReference entity, bool readOnly) const;
+    [[nodiscard]] std::shared_ptr<QueryLease> AcquireQueryLease(std::uint64_t invocation, std::uint64_t epoch) const;
+    [[nodiscard]] void* ResolveScopedQueryValue(Entity entity, std::type_index type, bool write, bool& scoped) const;
+    template<typename T>
+    [[nodiscard]] T* ResolveQueryValue(Entity entity) const {
+        bool scoped = false;
+        void* value = ResolveScopedQueryValue(entity, typeid(T), !std::is_const_v<T>, scoped);
+        if (scoped) {
+            return static_cast<T*>(value);
+        }
+        auto* storage = const_cast<World*>(this)->FindStorage<std::remove_const_t<T>>();
+        if (!storage || !storage->Contains(entity.Index)) {
+            return nullptr;
+        }
+        if constexpr (!std::is_const_v<T>) {
+            const_cast<World*>(this)->TrackEntityRefWrite(typeid(T));
+        }
+        return &storage->Get(entity.Index);
+    }
     [[nodiscard]] bool ValidateEntityRefComponentAccess(EntityReference entity, std::type_index type, bool write) const;
     void TrackEntityRefWrite(std::type_index type);
     template<typename T>
@@ -697,6 +860,10 @@ private:
     std::atomic_bool ExecutionPoisoned_ = false;
     std::atomic_bool m_isCommitting = false;
     mutable std::atomic_size_t m_activeQueries = 0;
+    mutable std::atomic_size_t m_activeRanges = 0;
+    std::atomic_uint64_t m_queryEpoch = 0;
+    mutable std::mutex m_queryAdmissionMutex;
+    std::size_t m_structuralWriters = 0;
     bool m_commitRejectedBeforePublication = false;
     struct SystemInvocation;
     [[nodiscard]] SystemInvocation* GetCurrentSystemInvocation() const noexcept;
@@ -770,3 +937,6 @@ private:
 };
 
 } // namespace NEcs
+
+// Query rows contain EntityRef by value; keep world.h usable as a standalone public header.
+#include "entity_ref.h"
