@@ -74,10 +74,38 @@ TEST(QueryRange, RangeAndForEachShareDisabledMembershipAndReferences) {
         static_cast<void>(tag);
         ranged.push_back(value.Number);
     }
-    world.Query<Value, Tag>().IncludeDisabled().ForEach(
-            [&](const NEcs::EntityRef&, Value& value, Tag&) { callbacks.push_back(value.Number); });
+    world.ForEach<Value, Tag>([&](const NEcs::EntityRef&, Value& value, Tag&) { callbacks.push_back(value.Number); },
+                              NEcs::EQueryEnabledPolicy::INCLUDE_DISABLED);
     EXPECT_EQ(ranged, (std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7}));
     EXPECT_EQ(ranged, callbacks);
+}
+
+TEST(QueryRange, GenericDescriptorCallbacksKeepLegacyEntityFieldsAndOverloadSelection) {
+    NEcs::World world;
+    auto expected = Add(world, 7);
+    world.CommitPending();
+    auto check = [&](auto entity, const Value& value) {
+        static_assert(std::is_same_v<decltype(entity), NEcs::Entity>);
+        EXPECT_EQ(entity.Index, expected.GetReference().Identity.Index);
+        EXPECT_EQ(entity.Generation, expected.GetReference().Identity.Generation);
+        EXPECT_EQ(value.Number, 7);
+    };
+    world.Query<Value>().ForEach(check);
+    std::as_const(world).Query<Value>().IncludeDisabled().ForEach(check);
+    struct Overloaded {
+        int* Selected;
+        void operator()(NEcs::Entity, const Value&) const {
+            *Selected = 1;
+        }
+        void operator()(const NEcs::EntityRef&, const Value&) const {
+            *Selected = 2;
+        }
+    };
+    int selected = 0;
+    world.Query<Value>().ForEach(Overloaded{&selected});
+    EXPECT_EQ(selected, 1);
+    world.ForEach<Value>(Overloaded{&selected});
+    EXPECT_EQ(selected, 2);
 }
 
 TEST(QueryRange, StructuredBindingsBreakContinueEmptyAndMoveOnlyValues) {

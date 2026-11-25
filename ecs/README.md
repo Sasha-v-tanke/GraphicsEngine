@@ -337,15 +337,20 @@ for (auto [entity, position, velocity] : world.Query<Position, const Velocity>()
 }
 world.ForEach<Position, const Velocity>(
     [](NEcs::EntityRef entity, Position& position, const Velocity& velocity) { /* ... */ });
-std::as_const(world).Query<Position>().IncludeDisabled().ForEach(
-    [](NEcs::EntityRef entity, const Position& position) { /* ... */ });
+std::as_const(world).ForEach<Position>(
+    [](const NEcs::EntityRef& entity, const Position& position) { /* ... */ },
+    NEcs::EQueryEnabledPolicy::INCLUDE_DISABLED);
 ```
 
 Первый `begin()` фиксирует membership и адреса компонентов; повторный `begin()` использует тот же snapshot.
-`ForEach` проходит этот же input range. Legacy `Query<T...>(callback)` продолжает передавать `Entity`;
-descriptor `ForEach` также принимает явно типизированный legacy callback для совместимости.
-На текущем unordered_map backend стоимость создания snapshot — O(entity slots × required types),
-память — O(matches × required types), шаг итератора — O(1). Нет копий компонентов и обещания порядка итерации.
+`World::ForEach` проходит этот же input range и передаёт EntityRef. Второй параметр позволяет
+явно выбрать IncludeDisabled. Legacy `Query<T...>(callback)` и descriptor `Query<T...>().ForEach`
+сохраняют Entity для всех callbacks, включая generic lambdas с `entity.Index` и overload sets.
+Выбор контракта задаётся методом API, а не попыткой вывести намерение callback через is_invocable.
+На текущем unordered_map backend snapshot сканирует entity slots и проверяет required types:
+storage lookup в среднем O(1), disabled set lookup O(log N), scoped lookup O(resolved batch entries).
+Выделяемая ёмкость snapshot — O(entity slots × required types), шаг итератора — O(1).
+Нет копий компонентов и обещания порядка итерации.
 Baseline и новый API сравниваются в `benchmarks/traversal/query.cpp` (legacy/ForEach/range, workers 1/2/8).
 
 Range не удерживает World. Descriptor/итератор отвергают использование после уничтожения World,

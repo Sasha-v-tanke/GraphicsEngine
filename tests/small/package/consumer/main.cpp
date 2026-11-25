@@ -167,6 +167,17 @@ int main() {
         entity.DisableComponent<NEcs::NameComponent>();
         userScene.CommitPending();
         int included = 0;
+        userScene.GetWorld().Query<const NEcs::NameComponent>().IncludeDisabled().ForEach(
+                [&](auto identity, const NEcs::NameComponent&) {
+                    if (identity.Index == entity.GetReference().Identity.Index &&
+                        identity.Generation == entity.GetReference().Identity.Generation) {
+                        ++included;
+                    }
+                });
+        if (included != 1) {
+            return 97;
+        }
+        included = 0;
         for (auto [reference, name]: userScene.GetWorld().Query<const NEcs::NameComponent>().IncludeDisabled()) {
             if (reference.GetReference() != entity.GetReference() || name.Value != "installed EntityRef") {
                 return 95;

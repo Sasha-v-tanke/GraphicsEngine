@@ -118,7 +118,8 @@ public:
     }
     template<typename... T, typename Callback>
     void ForEach(Callback&& callback) const {
-        Query<T...>().ForEach(std::forward<Callback>(callback));
+        ValidateActive();
+        m_world.ForEach<T...>(std::forward<Callback>(callback));
     }
     template<typename T>
     [[nodiscard]] ScopedView<T, false> Read() const {

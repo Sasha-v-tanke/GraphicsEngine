@@ -185,14 +185,21 @@ public:
 
         template<typename TCallback>
         void ForEach(TCallback&& callback) const {
+            Visit<false>(std::forward<TCallback>(callback));
+        }
+
+    private:
+        // The existing descriptor callback keeps Entity, including generic lambdas.
+        // The new World facade explicitly selects EntityRef; callback deduction is unsafe here.
+        template<bool UseEntityRef, typename TCallback>
+        void Visit(TCallback&& callback) const {
             auto selection = *this;
             for (auto row: selection) {
                 std::apply(
                         [&](auto& entity, auto&... values) {
-                            if constexpr (std::is_invocable_v<TCallback&, decltype(entity), decltype(values)...>) {
+                            if constexpr (UseEntityRef) {
                                 std::invoke(callback, entity, values...);
                             } else {
-                                // Compatibility with the FEATURE-0083 descriptor callback.
                                 std::invoke(callback, entity.GetReference().Identity, values...);
                             }
                         },
@@ -200,7 +207,6 @@ public:
             }
         }
 
-    private:
         explicit QuerySelection(TWorld& world)
             : m_world(&world)
             , m_lifetime(world.LifetimeToken_)
@@ -235,12 +241,16 @@ public:
         return QuerySelection<const World, TComponents...>{*this};
     }
     template<typename... TComponents, typename TCallback>
-    void ForEach(TCallback&& callback) {
-        Query<TComponents...>().ForEach(std::forward<TCallback>(callback));
+    void ForEach(TCallback&& callback, EQueryEnabledPolicy policy = EQueryEnabledPolicy::SKIP_DISABLED) {
+        auto selection = Query<TComponents...>();
+        selection.m_policy = policy;
+        selection.template Visit<true>(std::forward<TCallback>(callback));
     }
     template<typename... TComponents, typename TCallback>
-    void ForEach(TCallback&& callback) const {
-        Query<TComponents...>().ForEach(std::forward<TCallback>(callback));
+    void ForEach(TCallback&& callback, EQueryEnabledPolicy policy = EQueryEnabledPolicy::SKIP_DISABLED) const {
+        auto selection = Query<TComponents...>();
+        selection.m_policy = policy;
+        selection.template Visit<true>(std::forward<TCallback>(callback));
     }
     using SystemCallback = std::function<void(World&)>;
 
