@@ -109,9 +109,11 @@ public:
         };
         std::weak_ptr<const void> gpuVersion = gpu;
         std::shared_ptr<const void> retained;
+        std::shared_ptr<const void> superseded;
+        std::shared_ptr<Payload> combined;
         if (gpu && cpu) {
-            auto payload = std::make_shared<Payload>(cpu, std::move(gpu));
-            retained = std::shared_ptr<const T>{std::move(payload), cpu.get()};
+            combined = std::make_shared<Payload>(cpu, std::move(gpu));
+            retained = std::shared_ptr<const T>{combined, cpu.get()};
         } else {
             retained = std::move(cpu);
         }
@@ -134,6 +136,14 @@ public:
         if (retained) {
             if (!entry->CpuResource || entry->CpuResource.get() != retained.get()) {
                 retained = TrackPayload(*entry, retained, cpuBytes, reservation);
+            } else if (combined) {
+                // Equal addresses do not imply equal control blocks. The GPU alias must pin
+                // the accounted CPU owner, even when the caller resubmits the original pointer.
+                combined->Cpu = std::static_pointer_cast<const T>(entry->CpuResource);
+            } else {
+                // Keep a superseded caller control block alive until after unlocking too.
+                superseded.swap(retained);
+                retained = entry->CpuResource;
             }
             entry->CpuResource.swap(retained);
             if (entry->Memory) {

@@ -196,4 +196,41 @@ TEST(ResourceMemory, AtomicDecoderOwnershipRemainsChargedAfterCancel) {
     EXPECT_EQ(resources.GetMemorySnapshot().Total.DecodedBytes, 0U);
 }
 
+TEST(ResourceMemory, RepublishingOriginalCpuOwnerPreservesChargeWithAndWithoutGpu) {
+    for (const bool upload: {false, true}) {
+        SCOPED_TRACE(upload);
+        ResourceManager resources{ResourceMemoryBudget{sizeof(int)}};
+        auto handle = resources.Request<int>({"test", "republish"});
+        auto operation = resources.BeginLoading(handle);
+        std::shared_ptr<const int> original = std::make_shared<const int>(42);
+        ASSERT_TRUE(resources.TryAdvance(operation, EResourceState::LOADING, EResourceState::CPU_READY, original));
+        const auto from = upload ? EResourceState::UPLOADING : EResourceState::CPU_READY;
+        if (upload) {
+            ASSERT_TRUE(resources.TryAdvance(operation, EResourceState::CPU_READY, EResourceState::UPLOADING));
+        }
+        std::shared_ptr<const void> gpu = upload ? std::make_shared<int>(7) : nullptr;
+        std::weak_ptr<const void> weakGpu = gpu;
+        ASSERT_TRUE(resources.TryAdvance(operation, from, EResourceState::READY, original, gpu));
+        original.reset();
+        gpu.reset();
+        auto snapshot = resources.GetMemorySnapshot();
+        EXPECT_EQ(snapshot.Total.DecodedBytes, sizeof(int));
+        EXPECT_EQ(snapshot.Total.CacheBytes, sizeof(int));
+        EXPECT_EQ(snapshot.Total.EvictableBytes, sizeof(int));
+        EXPECT_EQ(snapshot.Total.HighWaterBytes, sizeof(int));
+        NTest::ExpectError(NCommon::EError::OUT_OF_MEMORY,
+                           [&] { static_cast<void>(resources.ReserveDecode("test", 1)); });
+        auto lease = resources.TryAcquire(handle);
+        ASSERT_TRUE(lease);
+        EXPECT_EQ(**lease, 42);
+        resources.RequestUnload(handle);
+        resources.CompleteUnload(handle);
+        EXPECT_EQ(resources.GetMemorySnapshot().Total.PinnedBytes, sizeof(int));
+        EXPECT_EQ(weakGpu.expired(), !upload);
+        lease.reset();
+        EXPECT_EQ(resources.GetMemorySnapshot().Total.DecodedBytes, 0U);
+        EXPECT_TRUE(weakGpu.expired());
+    }
+}
+
 } // namespace
