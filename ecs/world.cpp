@@ -45,10 +45,18 @@ World::QueryReadGuard::~QueryReadGuard() {
 
 World::StructuralWriteGuard::StructuralWriteGuard(World& world)
     : m_world(world) {
+    std::scoped_lock lock{world.m_queryAdmissionMutex};
+    if (world.m_activeRanges.load() != 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Structural mutation requires retired Query ranges");
+    }
     m_world.m_topology->BeginWrite();
+    ++world.m_structuralWriters;
+    world.m_queryEpoch.fetch_add(1);
 }
 World::StructuralWriteGuard::~StructuralWriteGuard() {
     m_world.m_topology->EndWrite();
+    std::scoped_lock lock{m_world.m_queryAdmissionMutex};
+    --m_world.m_structuralWriters;
 }
 EntityReference World::GetEntityReference(Entity entity) const noexcept {
     return {m_topology->WorldId, entity};
@@ -103,6 +111,7 @@ struct World::SystemInvocation {
     World* Owner = nullptr;
     std::size_t SystemIndex = 0;
     std::shared_ptr<NInternal::EntityAccessScope> EntityScope;
+    std::vector<std::weak_ptr<QueryLease>> QueryLeases;
     std::optional<std::uint32_t> StructuralOrder;
     std::uint64_t Id = 0;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
@@ -364,9 +373,12 @@ NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
     }
     {
         std::scoped_lock lock{owner->DeferredStructuralMutex_};
-        if (owner->IsRunningSystems_.exchange(true)) {
+        std::scoped_lock admissionLock{owner->m_queryAdmissionMutex};
+        if (owner->m_activeRanges.load() != 0 || owner->m_structuralWriters != 0 ||
+            owner->IsRunningSystems_.exchange(true)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
         }
+        owner->m_queryEpoch.fetch_add(1);
     }
     try {
         if (owner->ExecutionPoisoned_) {
@@ -1223,11 +1235,21 @@ void World::ExecuteSystem(std::size_t index, SystemInvocation& invocation) {
         }
     } catch (...) {
         invocation.Error = std::current_exception();
+        for (auto& weak: invocation.QueryLeases) {
+            if (const auto lease = weak.lock()) {
+                lease->Retire();
+            }
+        }
         if (invocation.EntityScope) {
             invocation.EntityScope->Active.store(false);
         }
         CurrentSystemInvocation_ = previous;
         throw;
+    }
+    for (auto& weak: invocation.QueryLeases) {
+        if (const auto lease = weak.lock()) {
+            lease->Retire();
+        }
     }
     if (invocation.EntityScope) {
         invocation.EntityScope->Active.store(false);
@@ -1303,9 +1325,11 @@ void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
 void World::RunSystemsImpl() {
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
-        if (IsRunningSystems_.exchange(true)) {
+        std::scoped_lock admissionLock{m_queryAdmissionMutex};
+        if (m_activeRanges.load() != 0 || m_structuralWriters != 0 || IsRunningSystems_.exchange(true)) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "ECS systems are already running");
         }
+        m_queryEpoch.fetch_add(1);
     }
     std::vector<SystemInvocation> invocations;
     try {
@@ -1965,15 +1989,78 @@ std::uint64_t World::CaptureQueryInvocation() const {
         (NCommon::TaskSystem::IsCurrentThreadWorker() && invocation == nullptr)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query requires an owner phase or active invocation");
     }
-    ValidateUnscopedAccess();
     return invocation != nullptr ? invocation->Id : 0;
 }
 
 void World::ValidateQueryInvocation(std::uint64_t invocation) const {
     const auto current = CaptureQueryInvocation();
-    if (invocation != 0 && invocation != current) {
+    if (invocation != current) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query invocation capability has expired");
     }
+}
+
+World::QueryLease::QueryLease(World& owner)
+    : Owner(&owner)
+    , Lifetime(owner.LifetimeToken_) {
+    owner.m_activeRanges.fetch_add(1);
+    owner.m_activeQueries.fetch_add(1);
+}
+World::QueryLease::~QueryLease() {
+    Retire();
+}
+void World::QueryLease::Retire() noexcept {
+    if (Active.exchange(false) && !Lifetime.expired()) {
+        Owner->m_activeQueries.fetch_sub(1);
+        Owner->m_activeRanges.fetch_sub(1);
+    }
+}
+
+std::shared_ptr<World::QueryLease> World::AcquireQueryLease(std::uint64_t invocation, std::uint64_t epoch) const {
+    std::scoped_lock lock{DeferredStructuralMutex_};
+    std::scoped_lock admissionLock{m_queryAdmissionMutex};
+    ValidateQueryInvocation(invocation);
+    if (m_structuralWriters != 0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query cannot enter structural mutation");
+    }
+    if (epoch != m_queryEpoch.load()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query crossed a structural/phase boundary");
+    }
+    auto lease = std::make_shared<QueryLease>(*const_cast<World*>(this));
+    if (auto* current = GetCurrentSystemInvocation()) {
+        current->QueryLeases.push_back(lease);
+    }
+    return lease;
+}
+
+void World::ValidateQueryType(std::type_index type, bool write) const {
+    if (const auto* invocation = GetCurrentSystemInvocation()) {
+        const auto& access = Systems_[invocation->SystemIndex].Access;
+        if (!std::ranges::any_of(access, [=](const auto& declaration) {
+                return declaration.Component == type && (!write || declaration.Mode == ESystemAccessMode::WRITE);
+            })) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Query requires declared component access");
+        }
+    }
+}
+
+void* World::ResolveScopedQueryValue(Entity entity, std::type_index type, bool write, bool& scoped) const {
+    const auto* invocation = GetCurrentSystemInvocation();
+    scoped = invocation && invocation->Batch;
+    if (!scoped) {
+        return nullptr;
+    }
+    for (const auto& entry: invocation->Batch->Entries) {
+        if (entry.Type == type && entry.Entity.Identity == entity && (!write || entry.Writable)) {
+            return entry.Component;
+        }
+    }
+    return nullptr;
+}
+
+EntityRef World::MakeQueryEntityRef(EntityReference entity, bool readOnly) const {
+    auto result = const_cast<World*>(this)->GetEntityRef(entity);
+    result.m_readOnly = readOnly;
+    return result;
 }
 
 bool World::ValidateEntityRefComponentAccess(EntityReference entity, std::type_index type, bool write) const {

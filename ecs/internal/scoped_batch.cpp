@@ -8,10 +8,13 @@ ScopedBatchContext::ScopedBatchContext(World& world, std::shared_ptr<ResolvedBat
     : m_world(world)
     , m_batch(std::move(batch)) {
 }
-void ScopedBatchContext::Validate(std::type_index type, bool write) const {
+void ScopedBatchContext::ValidateActive() const {
     if (!m_batch->Active.load() || m_batch->Thread != std::this_thread::get_id()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Scoped context is outside its invocation");
     }
+}
+void ScopedBatchContext::Validate(std::type_index type, bool write) const {
+    ValidateActive();
     if (!std::ranges::any_of(m_batch->Declarations, [&](const SystemAccess& access) {
             return access.Component == type && (!write || access.Mode == ESystemAccessMode::WRITE);
         })) {

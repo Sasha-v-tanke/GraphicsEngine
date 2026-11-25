@@ -153,7 +153,7 @@ TEST(EcsStructuralCommit, EnabledMetadataPublishesAndDefaultQuerySkipsDisabled) 
     EXPECT_TRUE(world.HasComponent<Value>(entity.Identity));
     world.Query<Value>([](auto, auto&) { FAIL() << "Disabled metadata must filter default Query"; });
     unsigned included = 0;
-    world.Query<Value>().IncludeDisabled().ForEach([&](auto, auto&) { ++included; });
+    world.Query<Value>().IncludeDisabled().ForEach([&](const auto&, auto&) { ++included; });
     EXPECT_EQ(included, 1U);
     world.QueueSetEnabled(entity, true);
     world.QueueSetComponentEnabled<Value>(entity, true);

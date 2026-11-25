@@ -87,7 +87,7 @@ Query/Get и topology extraction отвергаются. Это не успеш�
 
 Legacy immediate `CreateEntity/AddComponent` и `Defer*` сохраняют прежнюю семантику совместимости, включая
 replace/partial apply в чисто legacy пакете. При смешивании с Queue-командами весь commit проходит preflight.
-Enabled metadata публикуется здесь; фильтрация Query реализована в FEATURE-0083, range iteration и World::ForEach относятся к FEATURE-0084. EntityRef реализован в FEATURE-0082.
+Enabled metadata публикуется здесь; фильтрация Query реализована в FEATURE-0083, range iteration и World::ForEach — в FEATURE-0084. EntityRef реализован в FEATURE-0082.
 Имена и fluent Scene-фасад реализованы в FEATURE-0082, runtime Scene capability integration относится к FEATURE-0087.
 
 Пользовательский фасад `EntityRef` и его scope/lifetime описаны в [docs/about/entity_ref.md](../docs/about/entity_ref.md); пример — [создание сущности](../docs/how_to/create_entity.md).
@@ -328,20 +328,44 @@ scene.CommitPending(); // Только quiescent host: runtime использу�
 Текущий callback `Query<T...>(callback)` использует `SkipDisabled` по умолчанию.
 Отбор проверяет флаг сущности и всех required T; выключенный нерелевантный компонент не исключает сущность.
 Явный второй параметр — `EQueryEnabledPolicy::SKIP_DISABLED` либо `INCLUDE_DISABLED`.
-Для fluent выбора политики доступен callback descriptor:
+Range и `World::ForEach` используют общий обход и поддерживают fluent выбор политики:
 
 ```cpp
-world.Query<Position, Velocity>().SkipDisabled().ForEach(
-    [](NEcs::Entity entity, Position& position, Velocity& velocity) { /* ... */ });
-std::as_const(world).Query<Position>().IncludeDisabled().ForEach(
-    [](NEcs::Entity entity, const Position& position) { /* ... */ });
+for (auto [entity, position, velocity] : world.Query<Position, const Velocity>()) {
+    // EntityRef, Position&, const Velocity&; компоненты не копируются.
+    position.Value += velocity.Value;
+}
+world.ForEach<Position, const Velocity>(
+    [](NEcs::EntityRef entity, Position& position, const Velocity& velocity) { /* ... */ });
+std::as_const(world).ForEach<Position>(
+    [](const NEcs::EntityRef& entity, const Position& position) { /* ... */ },
+    NEcs::EQueryEnabledPolicy::INCLUDE_DISABLED);
 ```
 
-Descriptor не является range и не удерживает ссылки на компоненты: membership выбирается при
-`ForEach`, через тот же callback Query. Он не удерживает World, отвергает вызов после его уничтожения,
-с постороннего потока (включая обычный std::thread и TaskSystem worker) или после завершения invocation, в которой был создан. Callback получает прежний
-`Entity`, а не новый tuple с EntityRef. Range API и публичный `World::ForEach` с EntityRef — FEATURE-0084.
-Существующие ограничения доступа callback Query сохраняются; scoped systems используют свои views.
+Первый `begin()` фиксирует membership и адреса компонентов; повторный `begin()` использует тот же snapshot.
+`World::ForEach` проходит этот же input range и передаёт EntityRef. Второй параметр позволяет
+явно выбрать IncludeDisabled. Legacy `Query<T...>(callback)` и descriptor `Query<T...>().ForEach`
+сохраняют Entity для всех callbacks, включая generic lambdas с `entity.Index` и overload sets.
+Выбор контракта задаётся методом API, а не попыткой вывести намерение callback через is_invocable.
+На текущем unordered_map backend snapshot сканирует entity slots и проверяет required types:
+storage lookup в среднем O(1), disabled set lookup O(log N), scoped lookup O(resolved batch entries).
+Выделяемая ёмкость snapshot — O(entity slots × required types), шаг итератора — O(1).
+Нет копий компонентов и обещания порядка итерации.
+Baseline и новый API сравниваются в `benchmarks/traversal/query.cpp` (legacy/ForEach/range, workers 1/2/8).
+
+Range не удерживает World. Descriptor/итератор отвергают использование после уничтожения World,
+смены structural/phase epoch, завершения invocation или с постороннего потока. Итератор не продлевает
+жизнь range. Активный snapshot запрещает физические structural writes, commit и начало нового run;
+queued Create/Add/Remove/Destroy/Enable по-прежнему допустимы и не меняют текущий membership.
+Перед commit на owner нужно уничтожить активные ranges; не начатый descriptor будет инвалидирован commit.
+На выходе invocation её readers автоматически снимаются, даже при исключении или сохранённом range.
+Ссылки из tuple нельзя сохранять за эту границу: C++ `T&` сам по себе не является проверяемым handle.
+
+В system `Query<const T>` требует Read или Write, `Query<T>` требует Write; const World всегда выдаёт const T&.
+EntityRef из const World сохраняет read-only capability даже при копировании. Обход на owner разрешён
+только в quiescent phase. Внутренний `ScopedBatchContext::Query/ForEach` использует тот же core:
+пересекает resolved entity scopes required типов, Read указывается через const T, Write через T.
+AccessCoordinator и scheduler не меняются; query не добавляет dependencies или worker waits.
 
 Внутренний `ScopedView::ForEach` тоже использует SkipDisabled, а `.IncludeDisabled()` включает оба вида
 отключения. Enabled bits фиксируются вместе с resolved batch до worker execution; `Get` не фильтруется.
