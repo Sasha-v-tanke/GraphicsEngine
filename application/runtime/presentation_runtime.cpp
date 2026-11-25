@@ -18,10 +18,20 @@ PresentationRuntime::PresentationRuntime(std::unique_ptr<NGraphics::Graphics> gr
     }
 }
 
+PresentationRuntime::PresentationRuntime(std::unique_ptr<IGameOutput> output)
+    : m_gameOutput(std::move(output)) {
+    if (!m_gameOutput) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Game output is null");
+    }
+}
+
 void PresentationRuntime::Start() {
     std::lock_guard lock{m_mutex};
     if (m_failure) {
         std::rethrow_exception(m_failure);
+    }
+    if (m_gameOutput) {
+        m_gameOutput->Start();
     }
     m_stopping = false;
     m_nextFrameIndex = 0;
@@ -29,7 +39,21 @@ void PresentationRuntime::Start() {
 }
 
 void PresentationRuntime::Draw(const NEngine::NRuntime::FrameContext& frame) {
+    Enqueue(frame, nullptr, nullptr);
+}
+
+void PresentationRuntime::Consume(const NEngine::NRuntime::FrameContext& frame,
+                                  const NRenderer::RenderWorld& world,
+                                  const NRenderer::RenderPlan& plan) {
+    Enqueue(frame, &world, &plan);
+}
+
+void PresentationRuntime::Enqueue(const NEngine::NRuntime::FrameContext& frame,
+                                  const NRenderer::RenderWorld* world,
+                                  const NRenderer::RenderPlan* plan) {
     auto pending = std::make_unique<PendingFrame>();
+    pending->World = world;
+    pending->Plan = plan;
     pending->Submission.FrameIndex = frame.GetFrame().GetFrameIndex();
     pending->Submission.FrameSlotIndex = frame.GetFrame().GetSlotIndex();
     const auto future = pending->Promise.get_future().share();
@@ -50,7 +74,7 @@ void PresentationRuntime::Draw(const NEngine::NRuntime::FrameContext& frame) {
 void PresentationRuntime::CompletePending() {
     while (!m_submitted.empty()) {
         PendingFrame& frame = *m_submitted.front();
-        if (!m_graphics->IsCompleted(frame.Completion)) {
+        if (!(m_gameOutput ? m_gameOutput->IsCompleted(frame.Completion) : m_graphics->IsCompleted(frame.Completion))) {
             return;
         }
         if (frame.Failure) {
@@ -70,7 +94,11 @@ void PresentationRuntime::Pump(int width, int height) {
         if (m_stopping) {
             return;
         }
-        m_graphics->SetPresentationSize(width, height);
+        if (m_gameOutput) {
+            m_gameOutput->SetPresentationSize(width, height);
+        } else {
+            m_graphics->SetPresentationSize(width, height);
+        }
         const auto it = m_queued.find(m_nextFrameIndex);
         if (it == m_queued.end()) {
             return;
@@ -79,7 +107,8 @@ void PresentationRuntime::Pump(int width, int height) {
         m_submitted.push_back(nullptr);
         NGraphics::FrameSubmissionResult result;
         try {
-            result = m_graphics->TrySubmitFrame(it->second->Submission);
+            result = m_gameOutput ? m_gameOutput->TrySubmit(*it->second->World, *it->second->Plan)
+                                  : m_graphics->TrySubmitFrame(it->second->Submission);
         } catch (...) {
             m_submitted.pop_back();
             throw;
@@ -147,6 +176,9 @@ void PresentationRuntime::Drain() noexcept {
     } catch (...) {
         m_failure = std::current_exception();
         FailAll(m_failure);
+    }
+    if (m_gameOutput) {
+        m_gameOutput->Stop();
     }
 }
 } // namespace NApplication::NRuntime

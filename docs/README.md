@@ -18,9 +18,11 @@
 
 Здесь описываются назначение и публичные возможности отдельных модулей: когда ими пользоваться, как настроить, какие классы и методы доступны, что они возвращают и какие ограничения должен учитывать вызывающий код. Сведения о внутренней реализации здесь не дублируются.
 
+- [Application: Game config, Scene и сервисы](about/application.md).
+
 **Запланированные описания** (пока не опубликованы):
 
-- Application, Engine, Window и TaskSystem.
+- Engine, Window и TaskSystem.
 - ECS, Scene, Resources и Math.
 - Renderer, RenderGraph и Graphics.
 

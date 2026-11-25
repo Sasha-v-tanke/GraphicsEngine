@@ -183,6 +183,12 @@ public:
         glfwSetWindowShouldClose(m_window.get(), GLFW_TRUE);
     }
 
+    [[nodiscard]] bool ResetCloseRequest() override {
+        m_runtime->ValidateThread();
+        glfwSetWindowShouldClose(m_window.get(), GLFW_FALSE);
+        return true;
+    }
+
     void ProcessEvents() override {
         m_runtime->ValidateThread();
 

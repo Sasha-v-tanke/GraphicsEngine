@@ -17,7 +17,8 @@ class IWindowEngine;
 
 namespace NInternal {
 [[nodiscard]] NEngine::IWindowEngine& GetWindowEngine(Window& window);
-}
+void ResetCloseRequest(Window& window);
+} // namespace NInternal
 
 // Framework-independent window facade. The object has thread affinity to the thread that constructs it.
 class Window: public NCommon::NonTransferable {
@@ -56,6 +57,7 @@ protected:
 
 private:
     friend NEngine::IWindowEngine& NInternal::GetWindowEngine(Window& window);
+    friend void NInternal::ResetCloseRequest(Window& window);
 
     class Impl;
 

@@ -3,6 +3,8 @@
 #include <memory>
 #include <string_view>
 
+#include <lib/common/error/error.h>
+#include <lib/common/error/exception.h>
 #include <window/engine/engine.h>
 #include <window/engine/event_sink.h>
 #include <window/engine/factory.h>
@@ -52,6 +54,13 @@ public:
 
     void ProcessEvents() {
         m_engine->ProcessEvents();
+    }
+
+    void ResetCloseRequest() {
+        if (!m_engine->ResetCloseRequest()) {
+            GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Window backend cannot resume a closed window");
+        }
+        m_closeNotified = false;
     }
 
     [[nodiscard]] NEngine::IWindowEngine& GetEngine() const noexcept {
@@ -134,6 +143,10 @@ void Window::OnClose() {
 
 NEngine::IWindowEngine& NInternal::GetWindowEngine(Window& window) {
     return window.m_impl->GetEngine();
+}
+
+void NInternal::ResetCloseRequest(Window& window) {
+    window.m_impl->ResetCloseRequest();
 }
 
 } // namespace NWindow

@@ -201,6 +201,7 @@ set(
     expectedPublicHeaders
     "GraphicsEngine/application/application.h"
     "GraphicsEngine/application/application_config.h"
+    "GraphicsEngine/application/game_config.h"
     "GraphicsEngine/application/frame_diagnostics.h"
     "GraphicsEngine/application/view_registry.h"
     "GraphicsEngine/application/service_manager.h"

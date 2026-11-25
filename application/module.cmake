@@ -4,6 +4,7 @@ API(
     view_registry.h
     application.h
     application_config.h
+    game_config.h
     frame_diagnostics.h
     service_manager.h
 )
