@@ -33,6 +33,12 @@ option(
 )
 
 option(
+    GRAPHICS_ENGINE_BUILD_PERFORMANCE_HUB
+    "Build the optional Performance Hub host tool"
+    ${PROJECT_IS_TOP_LEVEL}
+)
+
+option(
     GRAPHICS_ENGINE_BUILD_GLFW
     "Build GraphicsEngine GLFW support"
     ON
@@ -83,4 +89,8 @@ endif ()
 
 if (GRAPHICS_ENGINE_BUILD_SAMPLES)
     include(samples/samples.cmake)
+endif ()
+
+if (GRAPHICS_ENGINE_BUILD_PERFORMANCE_HUB)
+    include(tools/performance_hub/performance_hub.cmake)
 endif ()
