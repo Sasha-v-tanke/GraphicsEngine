@@ -510,6 +510,25 @@ TEST(ShaderArtifactLoader, LoadsValidSpirVArtifact) {
     std::filesystem::remove(path);
 }
 
+TEST(ShaderArtifactLoader, ReusesReadyArtifactWithoutReadingSourceAgain) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-cached-shader.spv");
+    WriteWords(path, {0x07230203, 0x00010000, 0, 1, 0});
+
+    ResourceManager resources;
+    const ResourceIdentity identity{"shader", "cached"};
+    const auto first = NResources::LoadShaderArtifact(resources, identity, path, EShaderStage::VERTEX);
+    const std::shared_ptr<const ShaderArtifact> firstArtifact = resources.GetCpuResource(first);
+    ASSERT_TRUE(firstArtifact);
+    std::filesystem::remove(path);
+
+    const auto second = NResources::LoadShaderArtifact(resources, identity, path, EShaderStage::FRAGMENT);
+
+    EXPECT_EQ(second, first);
+    EXPECT_EQ(resources.GetState(second), EResourceState::READY);
+    EXPECT_EQ(resources.GetCpuResource(second), firstArtifact);
+    EXPECT_EQ(resources.GetCpuResource(second)->GetStage(), EShaderStage::VERTEX);
+}
+
 TEST(ShaderArtifactLoader, FailsInvalidArtifact) {
     const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-invalid-shader.spv");
     WriteWords(path, {0xDEADBEEF, 0x00010000, 0, 1, 0});
@@ -583,6 +602,24 @@ TEST(ShaderArtifactLoader, FailsMissingArtifact) {
     EXPECT_FALSE(resources.GetCpuResource(shader));
 }
 
+TEST(ShaderArtifactLoader, RetriesFailedArtifactWithSameHandle) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-retry-shader.spv");
+    std::filesystem::remove(path);
+
+    ResourceManager resources;
+    const ResourceIdentity identity{"shader", "retry"};
+    const auto failed = NResources::LoadShaderArtifact(resources, identity, path, EShaderStage::COMPUTE);
+    ASSERT_EQ(resources.GetState(failed), EResourceState::FAILED);
+
+    WriteWords(path, {0x07230203, 0x00010000, 0, 1, 0});
+    const auto retried = NResources::LoadShaderArtifact(resources, identity, path, EShaderStage::COMPUTE);
+
+    EXPECT_EQ(retried, failed);
+    EXPECT_EQ(resources.GetState(retried), EResourceState::READY);
+    EXPECT_TRUE(resources.GetCpuResource(retried));
+    std::filesystem::remove(path);
+}
+
 TEST(ImageLoader, LoadsValidRgbImageAsRgba8) {
     const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-valid-image.ppm");
     const std::vector<std::uint8_t> bytes = {
@@ -629,6 +666,24 @@ TEST(ImageLoader, LoadsValidRgbImageAsRgba8) {
               }));
 
     std::filesystem::remove(path);
+}
+
+TEST(ImageLoader, ReusesReadyImageWithoutReadingSourceAgain) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-cached-image.ppm");
+    WriteBytes(path, {'P', '6', '\n', '1', '\n', '1', '\n', '2', '5', '5', '\n', 255U, 0U, 0U});
+
+    ResourceManager resources;
+    const ResourceIdentity identity{"image", "cached"};
+    const auto first = NResources::LoadImage(resources, identity, path);
+    const std::shared_ptr<const ImageData> firstData = resources.GetCpuResource(first);
+    ASSERT_TRUE(firstData);
+    std::filesystem::remove(path);
+
+    const auto second = NResources::LoadImage(resources, identity, path);
+
+    EXPECT_EQ(second, first);
+    EXPECT_EQ(resources.GetState(second), EResourceState::READY);
+    EXPECT_EQ(resources.GetCpuResource(second), firstData);
 }
 
 TEST(ImageLoader, ConvertsGrayscaleImageToRgba8) {
@@ -749,6 +804,24 @@ TEST(ImageLoader, FailsMissingImageData) {
     ASSERT_TRUE(failure.has_value());
     EXPECT_NE(failure->Message.find("missing or unreadable image data"), std::string::npos);
     EXPECT_FALSE(resources.GetCpuResource(image));
+}
+
+TEST(ImageLoader, RetriesFailedImageWithSameHandle) {
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-retry-image.ppm");
+    std::filesystem::remove(path);
+
+    ResourceManager resources;
+    const ResourceIdentity identity{"image", "retry"};
+    const auto failed = NResources::LoadImage(resources, identity, path);
+    ASSERT_EQ(resources.GetState(failed), EResourceState::FAILED);
+
+    WriteBytes(path, {'P', '6', '\n', '1', '\n', '1', '\n', '2', '5', '5', '\n', 255U, 0U, 0U});
+    const auto retried = NResources::LoadImage(resources, identity, path);
+
+    EXPECT_EQ(retried, failed);
+    EXPECT_EQ(resources.GetState(retried), EResourceState::READY);
+    EXPECT_TRUE(resources.GetCpuResource(retried));
+    std::filesystem::remove(path);
 }
 
 TEST(ImageLoader, RejectsOversizedImageBeforeReading) {
