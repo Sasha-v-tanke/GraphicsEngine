@@ -1,7 +1,12 @@
+#include "image_data.h"
+#include "mesh_data.h"
 #include "resource_manager.h"
+#include "shader_artifact.h"
 
+#include <algorithm>
 #include <atomic>
 #include <limits>
+#include <map>
 #include <type_traits>
 #include <utility>
 
@@ -17,8 +22,27 @@ std::size_t ResourceIdentityHash::operator()(const ResourceIdentity& identity) c
     return resourceClass ^ (key + 0x9e3779b97f4a7c15ULL + (resourceClass << 6U) + (resourceClass >> 2U));
 }
 
+std::size_t ResourceMemorySize<ImageData>::GetBytes(const ImageData& data) {
+    return AddResourceMemory(sizeof(data), data.GetPixels().capacity(), sizeof(std::uint8_t));
+}
+
+std::size_t ResourceMemorySize<MeshData>::GetBytes(const MeshData& data) {
+    auto bytes = AddResourceMemory(sizeof(data), data.GetVertices().capacity(), sizeof(MeshVertex));
+    bytes = AddResourceMemory(bytes, data.GetIndices().capacity(), sizeof(std::uint32_t));
+    return AddResourceMemory(bytes, data.GetAttributeMasks().capacity(), sizeof(std::uint8_t));
+}
+
+std::size_t ResourceMemorySize<ShaderArtifact>::GetBytes(const ShaderArtifact& data) {
+    return AddResourceMemory(sizeof(data), data.GetWords().capacity(), sizeof(std::uint32_t));
+}
+
 ResourceManager::ResourceManager()
-    : m_ownerId(AcquireOwnerId()) {
+    : ResourceManager(ResourceMemoryBudget{}) {
+}
+
+ResourceManager::ResourceManager(ResourceMemoryBudget budget)
+    : m_memoryBudget(budget)
+    , m_ownerId(AcquireOwnerId()) {
 }
 
 std::uint64_t ResourceManager::AcquireOwnerId() {
@@ -119,7 +143,9 @@ std::uint64_t ResourceManager::BeginLoading(Entry& entry, RetiredPayload& retire
 
 void ResourceManager::PublishReady(Entry& entry,
                                    std::uint64_t operationGeneration,
-                                   std::shared_ptr<const void>& resource) {
+                                   std::shared_ptr<const void>& resource,
+                                   std::size_t bytes,
+                                   ResourceMemoryReservation* reservation) {
     if (!resource) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Ready resource payload must not be null");
     }
@@ -136,10 +162,12 @@ void ResourceManager::PublishReady(Entry& entry,
                               entry.Identity.GetKey());
     }
 
+    resource = TrackPayload(entry, resource, bytes, reservation);
     ++entry.PublishedVersion;
     entry.CpuResource.swap(resource);
     entry.Failure.reset();
     entry.State = EResourceState::READY;
+    entry.Memory->Ready = true;
 }
 
 void ResourceManager::Fail(Entry& entry,
@@ -270,6 +298,144 @@ const ResourceManager::Entry& ResourceManager::ValidateType(const Entry& entry, 
     }
 
     return entry;
+}
+
+void ResourceManager::SetMemoryBudget(ResourceMemoryBudget budget) {
+    std::unique_lock lock{m_mutex};
+    m_memoryBudget = budget;
+}
+
+ResourceMemorySnapshot ResourceManager::MemorySnapshot(const void* excluded) const {
+    ResourceMemorySnapshot snapshot;
+    snapshot.Budget = m_memoryBudget;
+    snapshot.Total.HighWaterBytes = m_memoryTotalHighWater;
+    std::map<std::string, ResourceMemoryCounters> classes;
+    for (const auto& [name, highWater]: m_memoryHighWater) {
+        classes[name].HighWaterBytes = highWater;
+    }
+    for (const auto& record: m_memoryRecords) {
+        if (record->Lifetime.expired()) {
+            continue;
+        }
+        // Reservations have an internal trivial token; locking it cannot run user destructors.
+        if (record->Pending && record->Lifetime.lock().get() == excluded) {
+            continue;
+        }
+        auto& counters = classes[record->ResourceClass];
+        for (auto* target: {&counters, &snapshot.Total}) {
+            if (record->Pending) {
+                target->PendingDecodeBytes += record->Bytes;
+            } else {
+                target->DecodedBytes += record->Bytes;
+                if (record->Cached) {
+                    target->CacheBytes += record->Bytes;
+                }
+                if (!record->Cached || !record->Ready || record->Lifetime.use_count() > 1 ||
+                    record->CachedPayload.use_count() > 1) {
+                    target->PinnedBytes += record->Bytes;
+                } else {
+                    target->EvictableBytes += record->Bytes;
+                }
+            }
+        }
+    }
+    for (auto& [name, counters]: classes) {
+        snapshot.Classes.push_back({name, counters});
+    }
+    const auto used = snapshot.Total.DecodedBytes + snapshot.Total.PendingDecodeBytes;
+    snapshot.AtCapacity = used >= snapshot.Budget.MaxCpuBytes;
+    return snapshot;
+}
+
+ResourceMemorySnapshot ResourceManager::GetMemorySnapshot() const {
+    std::shared_lock lock{m_mutex};
+    return MemorySnapshot();
+}
+
+void ResourceManager::CheckMemoryAdmission(std::size_t bytes, const void* excluded) const {
+    const auto snapshot = MemorySnapshot(excluded);
+    const auto used = snapshot.Total.DecodedBytes + snapshot.Total.PendingDecodeBytes;
+    if (used > m_memoryBudget.MaxCpuBytes || bytes > m_memoryBudget.MaxCpuBytes - used) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::OUT_OF_MEMORY,
+                              "CPU resource budget exceeded: used={}, requested={}, limit={}",
+                              used,
+                              bytes,
+                              m_memoryBudget.MaxCpuBytes);
+    }
+}
+
+void ResourceManager::RecordMemory(const std::shared_ptr<MemoryRecord>& record, const void* excluded) {
+    // Prepare every throwing operation before publishing a charge or changing a high-water value.
+    const auto snapshot = MemorySnapshot(excluded);
+    std::size_t classUsed = record->Bytes;
+    for (const auto& item: snapshot.Classes) {
+        if (item.ResourceClass == record->ResourceClass) {
+            classUsed += item.Counters.DecodedBytes + item.Counters.PendingDecodeBytes;
+        }
+    }
+    auto [highWater, inserted] = m_memoryHighWater.try_emplace(record->ResourceClass, 0);
+    try {
+        std::erase_if(m_memoryRecords, [](const auto& item) { return item->Lifetime.expired(); });
+        m_memoryRecords.push_back(record);
+    } catch (...) {
+        if (inserted) {
+            m_memoryHighWater.erase(highWater);
+        }
+        throw;
+    }
+    highWater->second = std::max(highWater->second, classUsed);
+    m_memoryTotalHighWater = std::max(m_memoryTotalHighWater,
+                                      snapshot.Total.DecodedBytes + snapshot.Total.PendingDecodeBytes + record->Bytes);
+}
+
+ResourceMemoryReservation ResourceManager::ReserveDecode(std::string resourceClass, std::size_t bytes) {
+    if (resourceClass.empty()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Decode reservation needs a resource class");
+    }
+    ResourceMemoryReservation reservation;
+    reservation.m_class = std::move(resourceClass);
+    reservation.m_owner = m_ownerId;
+    reservation.m_token = std::make_shared<int>(0);
+    auto record = std::make_shared<MemoryRecord>();
+    record->ResourceClass = reservation.m_class;
+    record->Bytes = bytes;
+    record->Pending = true;
+    record->Lifetime = reservation.m_token;
+    std::unique_lock lock{m_mutex};
+    CheckMemoryAdmission(bytes, nullptr);
+    RecordMemory(record);
+    return reservation;
+}
+
+std::shared_ptr<const void> ResourceManager::TrackPayload(Entry& entry,
+                                                          const std::shared_ptr<const void>& payload,
+                                                          std::size_t bytes,
+                                                          ResourceMemoryReservation* reservation) {
+    if (reservation && (!reservation->IsValid() || reservation->m_owner != m_ownerId ||
+                        reservation->m_class != entry.Identity.GetResourceClass())) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Foreign, consumed or wrong-class decode reservation");
+    }
+    const void* excluded = reservation ? reservation->m_token.get() : nullptr;
+    CheckMemoryAdmission(bytes, excluded);
+    // The original caller keeps payload alive across all throwing allocations under this lock.
+    auto owner = std::make_shared<std::shared_ptr<const void>>(payload);
+    std::shared_ptr<const void> tracked{std::move(owner), payload.get()};
+    auto record = std::make_shared<MemoryRecord>();
+    record->ResourceClass = entry.Identity.GetResourceClass();
+    record->Bytes = bytes;
+    record->Cached = true;
+    record->Lifetime = tracked;
+    record->CachedPayload = tracked;
+    // Reservation conversion is atomic; RecordMemory must also exclude it from high-water sums.
+    RecordMemory(record, excluded);
+    if (reservation) {
+        reservation->m_token.reset();
+    }
+    if (entry.Memory) {
+        entry.Memory->Cached = false;
+    }
+    entry.Memory = std::move(record);
+    return tracked;
 }
 
 } // namespace NResources
