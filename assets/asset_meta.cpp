@@ -1,8 +1,11 @@
 #include "asset_meta.h"
 
+#include <atomic>
+#include <cerrno>
 #include <charconv>
+#include <fcntl.h>
 #include <fstream>
-#include <sstream>
+#include <unistd.h>
 
 namespace NAssets {
 namespace {
@@ -13,6 +16,25 @@ namespace {
         return std::unexpected("metadata lines must be non-empty key=value pairs");
     }
     return std::pair{line.substr(0, separator), line.substr(separator + 1)};
+}
+
+[[nodiscard]] bool IsSingleLineField(const std::string& value) {
+    return !value.empty() && value.find_first_of("\r\n") == std::string::npos;
+}
+
+[[nodiscard]] bool IsSettingKey(const std::string& value) {
+    return IsSingleLineField(value) && value.find('=') == std::string::npos;
+}
+
+[[nodiscard]] std::expected<void, std::string> WriteAll(int descriptor, const std::string& data) {
+    std::size_t offset = 0;
+    while (offset < data.size()) {
+        const auto written = ::write(descriptor, data.data() + offset, data.size() - offset);
+        if (written <= 0)
+            return std::unexpected("cannot write asset metadata");
+        offset += static_cast<std::size_t>(written);
+    }
+    return {};
 }
 
 } // namespace
@@ -72,33 +94,42 @@ std::expected<AssetMeta, std::string> ReadMeta(const std::filesystem::path& sour
 }
 
 std::expected<void, std::string> CreateMeta(const std::filesystem::path& source, const AssetMeta& meta) {
-    if (meta.Importer.empty() || meta.SchemaVersion == 0)
+    if (!IsSingleLineField(meta.Importer) || meta.SchemaVersion == 0)
         return std::unexpected("metadata importer and schema version are required");
-    const auto target = MetaPathFor(source);
-    if (std::filesystem::exists(target))
-        return std::unexpected("asset metadata already exists");
-    const auto temporary = target.string() + ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output)
-            return std::unexpected("cannot create asset metadata");
-        output << "asset_id=" << meta.Id.ToString() << '\n'
-               << "importer=" << meta.Importer << '\n'
-               << "schema_version=" << meta.SchemaVersion << '\n';
-        for (const auto& [key, value]: meta.Settings)
-            output << "setting." << key << '=' << value << '\n';
-        output.flush();
-        if (!output) {
-            std::filesystem::remove(temporary);
-            return std::unexpected("cannot write asset metadata");
-        }
+    for (const auto& [key, value]: meta.Settings) {
+        if (!IsSettingKey(key) || !IsSingleLineField(value))
+            return std::unexpected("metadata settings must be non-empty single-line key=value fields");
     }
-    std::error_code error;
-    std::filesystem::rename(temporary, target, error);
-    if (error) {
-        std::filesystem::remove(temporary);
+    const auto target = MetaPathFor(source);
+    static std::atomic_uint64_t sequence{};
+    const auto temporary =
+            target.string() + ".tmp." + std::to_string(::getpid()) + "." + std::to_string(sequence.fetch_add(1));
+    const int descriptor = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (descriptor < 0)
+        return std::unexpected("cannot create unique asset metadata temporary file");
+    const auto cleanup = [&] {
+        ::close(descriptor);
+        ::unlink(temporary.c_str());
+    };
+    std::string serialized = "asset_id=" + meta.Id.ToString() + "\nimporter=" + meta.Importer +
+                             "\nschema_version=" + std::to_string(meta.SchemaVersion) + "\n";
+    for (const auto& [key, value]: meta.Settings)
+        serialized += "setting." + key + '=' + value + '\n';
+    if (const auto write = WriteAll(descriptor, serialized); !write || ::fsync(descriptor) != 0) {
+        cleanup();
+        return std::unexpected(write ? "cannot sync asset metadata" : write.error());
+    }
+    if (::close(descriptor) != 0) {
+        ::unlink(temporary.c_str());
+        return std::unexpected("cannot close asset metadata");
+    }
+    if (::link(temporary.c_str(), target.c_str()) != 0) {
+        ::unlink(temporary.c_str());
+        if (errno == EEXIST)
+            return std::unexpected("asset metadata already exists");
         return std::unexpected("cannot publish asset metadata");
     }
+    ::unlink(temporary.c_str());
     return {};
 }
 
