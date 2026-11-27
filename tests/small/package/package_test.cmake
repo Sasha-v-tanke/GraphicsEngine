@@ -237,6 +237,7 @@ set(
     "GraphicsEngine/lib/common/type_registry.h"
     "GraphicsEngine/lib/common/wrapper/non_copyable.h"
     "GraphicsEngine/lib/common/wrapper/non_transferable.h"
+    "GraphicsEngine/lib/logging/logger.h"
     "GraphicsEngine/lib/thread/job.h"
     "GraphicsEngine/lib/thread/job_control.h"
     "GraphicsEngine/lib/thread/task/frame_origin.h"

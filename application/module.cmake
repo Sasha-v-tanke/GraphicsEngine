@@ -20,6 +20,7 @@ PUBLIC_DEPENDS(
     Resources
     Graphics
     Common
+    Logging
     Thread
     Math
     Ecs
