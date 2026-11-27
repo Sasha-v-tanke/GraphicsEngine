@@ -35,7 +35,7 @@ option(
 option(
     GRAPHICS_ENGINE_BUILD_PERFORMANCE_HUB
     "Build the optional Performance Hub host tool"
-    ${PROJECT_IS_TOP_LEVEL}
+    OFF
 )
 
 option(

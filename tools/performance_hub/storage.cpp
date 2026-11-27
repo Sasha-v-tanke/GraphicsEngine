@@ -5,16 +5,19 @@
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <random>
 #include <sqlite3.h>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 
 namespace graphics_engine::performance_hub {
 namespace {
 
 constexpr std::uintmax_t kMaxArtifactBytes = 64U * 1024U * 1024U;
+constexpr int kSchemaVersion = 1;
 
 Error MakeError(const ErrorCode code, std::string message) {
     return {code, std::move(message)};
@@ -23,8 +26,13 @@ Error MakeError(const ErrorCode code, std::string message) {
 std::string NowUtc() {
     const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
     const std::time_t time = std::chrono::system_clock::to_time_t(now);
-    std::tm utc{};
-    gmtime_r(&time, &utc);
+    static std::mutex utc_mutex;
+    std::lock_guard lock(utc_mutex);
+    const std::tm* utc_source = std::gmtime(&time);
+    if (utc_source == nullptr) {
+        return {};
+    }
+    const std::tm utc = *utc_source;
     std::ostringstream output;
     output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
     return output.str();
@@ -59,6 +67,10 @@ bool IsSafeRelative(const std::filesystem::path& value) {
         }
     }
     return true;
+}
+
+std::filesystem::path CanonicalRelative(const std::filesystem::path& value) {
+    return value.lexically_normal();
 }
 
 Result<void> Sql(sqlite3* database, const int result, std::string_view operation) {
@@ -132,7 +144,8 @@ Result<void> CopyArtifact(const ArtifactInput& artifact, const std::filesystem::
     if (error || size > kMaxArtifactBytes) {
         return std::unexpected(MakeError(ErrorCode::io, "artifact is missing or exceeds the storage limit"));
     }
-    const auto target = staging / artifact.relative_path;
+    const auto canonical_path = CanonicalRelative(artifact.relative_path);
+    const auto target = staging / canonical_path;
     std::filesystem::create_directories(target.parent_path(), error);
     if (error) {
         return std::unexpected(MakeError(ErrorCode::io, "cannot create artifact directory"));
@@ -160,7 +173,7 @@ Result<void> CopyArtifact(const ArtifactInput& artifact, const std::filesystem::
     result = Artifact{.content_hash = encoded.str(),
                       .size = size,
                       .type = artifact.type,
-                      .relative_path = artifact.relative_path.generic_string()};
+                      .relative_path = canonical_path.generic_string()};
     return {};
 }
 
@@ -214,9 +227,36 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
         delete impl;
         return std::unexpected(MakeError(ErrorCode::database, message));
     }
-    const char* migration =
-            "PRAGMA foreign_keys = ON; BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER "
-            "PRIMARY KEY, applied_at_utc TEXT NOT NULL); CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, "
+    if (auto result = Sql(impl->database,
+                          sqlite3_exec(impl->database,
+                                       "PRAGMA foreign_keys = ON; CREATE TABLE IF NOT EXISTS schema_migrations(version "
+                                       "INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL)",
+                                       nullptr,
+                                       nullptr,
+                                       nullptr),
+                          "initialize migration ledger");
+        !result) {
+        sqlite3_close(impl->database);
+        delete impl;
+        return std::unexpected(result.error());
+    }
+    int version = 0;
+    Statement version_query(impl->database, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
+    if (auto result = version_query.ready(); !result || sqlite3_step(version_query.get()) != SQLITE_ROW) {
+        const Error error_value =
+                result ? MakeError(ErrorCode::migration, "cannot read schema version") : result.error();
+        sqlite3_close(impl->database);
+        delete impl;
+        return std::unexpected(error_value);
+    }
+    version = sqlite3_column_int(version_query.get(), 0);
+    if (version > kSchemaVersion) {
+        sqlite3_close(impl->database);
+        delete impl;
+        return std::unexpected(MakeError(ErrorCode::migration, "database schema is newer than this binary"));
+    }
+    const char* migration_v1 =
+            "CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, "
             "status TEXT NOT NULL CHECK(status IN ('staged','completed','failed')), source TEXT NOT NULL, "
             "started_at_utc TEXT NOT NULL, ended_at_utc TEXT, job_id TEXT NOT NULL, git_revision TEXT NOT NULL, "
             "environment_fingerprint TEXT NOT NULL, build_fingerprint TEXT NOT NULL, run_config_json TEXT NOT NULL, "
@@ -236,17 +276,39 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
             "KEY(run_id, relative_path)); CREATE TABLE IF NOT EXISTS job_metadata(job_id TEXT PRIMARY KEY, "
             "metadata_json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS runs_started_at_idx ON runs(started_at_utc DESC, "
             "run_id DESC); CREATE INDEX IF NOT EXISTS run_cases_lookup_idx ON run_cases(run_id, case_key); CREATE "
-            "INDEX IF NOT EXISTS metric_samples_lookup_idx ON metric_samples(run_id, case_key, metric_id); INSERT OR "
-            "IGNORE INTO schema_migrations(version, applied_at_utc) VALUES(1, strftime('%Y-%m-%dT%H:%M:%SZ','now')); "
-            "COMMIT;";
-    if (const auto result = Sql(impl->database,
-                                sqlite3_exec(impl->database, migration, nullptr, nullptr, nullptr),
-                                "apply migration");
-        !result) {
-        sqlite3_exec(impl->database, "ROLLBACK", nullptr, nullptr, nullptr);
-        sqlite3_close(impl->database);
-        delete impl;
-        return std::unexpected(result.error());
+            "INDEX IF NOT EXISTS metric_samples_lookup_idx ON metric_samples(run_id, case_key, metric_id);";
+    if (version < 1) {
+        auto fail = [&](const Error& migration_error) {
+            sqlite3_exec(impl->database, "ROLLBACK", nullptr, nullptr, nullptr);
+            sqlite3_close(impl->database);
+            delete impl;
+            return std::unexpected(migration_error);
+        };
+        if (auto result = Sql(impl->database,
+                              sqlite3_exec(impl->database, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr),
+                              "begin migration");
+            !result)
+            return fail(result.error());
+        if (auto result = Sql(impl->database,
+                              sqlite3_exec(impl->database, migration_v1, nullptr, nullptr, nullptr),
+                              "apply migration v1");
+            !result)
+            return fail(result.error());
+        if (auto result = Sql(impl->database,
+                              sqlite3_exec(impl->database,
+                                           "INSERT INTO schema_migrations(version, applied_at_utc) VALUES(1, "
+                                           "strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+                                           nullptr,
+                                           nullptr,
+                                           nullptr),
+                              "record migration v1");
+            !result)
+            return fail(result.error());
+        if (auto result = Sql(impl->database,
+                              sqlite3_exec(impl->database, "COMMIT", nullptr, nullptr, nullptr),
+                              "commit migration v1");
+            !result)
+            return fail(result.error());
     }
     return Storage(impl);
 }
@@ -296,29 +358,37 @@ Result<void> Storage::Complete(const std::string& run_id, const std::vector<Arti
         return std::unexpected(MakeError(ErrorCode::io, "cannot create staging directory"));
     std::vector<Artifact> artifacts;
     artifacts.reserve(inputs.size());
+    std::unordered_set<std::string> artifact_paths;
     for (const auto& input: inputs) {
         Artifact artifact{};
         if (auto result = CopyArtifact(input, staging, artifact); !result) {
             std::filesystem::remove_all(staging, filesystem_error);
             return std::unexpected(result.error());
         }
+        if (!artifact_paths.insert(artifact.relative_path.generic_string()).second) {
+            std::filesystem::remove_all(staging, filesystem_error);
+            return std::unexpected(MakeError(ErrorCode::invalid_argument, "duplicate canonical artifact path"));
+        }
         artifacts.push_back(std::move(artifact));
+    }
+    auto rollback = [&] {
+        sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
+        std::filesystem::remove_all(impl_->root / "runs" / run_id, filesystem_error);
+    };
+    if (auto result = Sql(impl_->database,
+                          sqlite3_exec(impl_->database, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr),
+                          "begin completion");
+        !result) {
+        std::filesystem::remove_all(staging, filesystem_error);
+        return std::unexpected(result.error());
     }
     const auto published = impl_->root / "runs" / run_id;
     std::filesystem::rename(staging, published, filesystem_error);
     if (filesystem_error) {
         std::filesystem::remove_all(staging, filesystem_error);
+        sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
         return std::unexpected(MakeError(ErrorCode::io, "cannot atomically publish artifacts"));
     }
-    auto rollback = [&] {
-        sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
-        std::filesystem::remove_all(published, filesystem_error);
-    };
-    if (auto result = Sql(impl_->database,
-                          sqlite3_exec(impl_->database, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr),
-                          "begin completion");
-        !result)
-        return std::unexpected(result.error());
     Statement insert(impl_->database,
                      "INSERT INTO artifacts(run_id,relative_path,content_hash,byte_size,type) VALUES(?,?,?,?,?)");
     if (auto result = insert.ready(); !result) {

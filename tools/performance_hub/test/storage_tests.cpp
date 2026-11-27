@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sqlite3.h>
 
 namespace ph = graphics_engine::performance_hub;
 
@@ -83,22 +84,41 @@ void RejectsUnsafeArtifacts(const std::filesystem::path& root) {
                    .has_value());
     CHECK(!storage->Complete(run->id, {{.source_file = root / "missing", .relative_path = "log.txt", .type = "log"}})
                    .has_value());
+    CHECK(!storage->Complete(run->id,
+                             {{.source_file = source, .relative_path = "report.json", .type = "log"},
+                              {.source_file = source, .relative_path = "./report.json", .type = "log"}})
+                   .has_value());
     auto unchanged = storage->Read(run->id);
     CHECK(unchanged.has_value());
     CHECK(unchanged->status == ph::RunStatus::staged);
 }
 
 void OldSchemaMigrationAndForeignKeys(const std::filesystem::path& root) {
+    std::error_code filesystem_error;
+    std::filesystem::create_directories(root, filesystem_error);
+    CHECK(!filesystem_error);
     const auto database = root / "performance-hub.sqlite3";
-    {
-        std::ofstream file(database);
-    }
+    sqlite3* raw = nullptr;
+    CHECK(sqlite3_open(database.c_str(), &raw) == SQLITE_OK);
+    CHECK(sqlite3_exec(raw,
+                       "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL)",
+                       nullptr,
+                       nullptr,
+                       nullptr) == SQLITE_OK);
+    CHECK(sqlite3_exec(raw, "INSERT INTO schema_migrations VALUES(0, 'old')", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(raw);
     auto storage = ph::Storage::Open(root);
     CHECK(storage.has_value());
     auto page = storage->List(10);
     CHECK(page.has_value());
     CHECK(page->runs.empty());
     CHECK(!storage->List(0).has_value());
+    sqlite3* newer = nullptr;
+    CHECK(sqlite3_open(database.c_str(), &newer) == SQLITE_OK);
+    CHECK(sqlite3_exec(newer, "INSERT INTO schema_migrations VALUES(2, 'future')", nullptr, nullptr, nullptr) ==
+          SQLITE_OK);
+    sqlite3_close(newer);
+    CHECK(!ph::Storage::Open(root).has_value());
 }
 } // namespace
 
