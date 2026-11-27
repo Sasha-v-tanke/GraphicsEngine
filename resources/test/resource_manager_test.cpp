@@ -529,6 +529,43 @@ TEST(ShaderArtifactLoader, ReusesReadyArtifactWithoutReadingSourceAgain) {
     EXPECT_EQ(resources.GetCpuResource(second)->GetStage(), EShaderStage::VERTEX);
 }
 
+TEST(ShaderArtifactLoader, CoalescesConcurrentLoads) {
+    constexpr std::size_t LOAD_COUNT = 8;
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-concurrent-shader.spv");
+    WriteWords(path, {0x07230203, 0x00010000, 0, 1, 0});
+
+    ResourceManager resources;
+    std::barrier start{static_cast<std::ptrdiff_t>(LOAD_COUNT + 1)};
+    std::array<NResources::ResourceHandle<ShaderArtifact>, LOAD_COUNT> handles;
+    std::array<std::exception_ptr, LOAD_COUNT> errors;
+    std::array<std::thread, LOAD_COUNT> threads;
+    for (std::size_t index = 0; index < LOAD_COUNT; ++index) {
+        threads[index] = std::thread{[&, index] {
+            start.arrive_and_wait();
+            try {
+                handles[index] = NResources::LoadShaderArtifact(resources,
+                                                                ResourceIdentity{"shader", "concurrent"},
+                                                                path,
+                                                                EShaderStage::VERTEX);
+            } catch (...) {
+                errors[index] = std::current_exception();
+            }
+        }};
+    }
+    start.arrive_and_wait();
+    for (std::thread& thread: threads) {
+        thread.join();
+    }
+
+    for (std::size_t index = 0; index < LOAD_COUNT; ++index) {
+        EXPECT_FALSE(errors[index]);
+        EXPECT_EQ(handles[index], handles[0]);
+    }
+    EXPECT_EQ(resources.GetState(handles[0]), EResourceState::READY);
+    EXPECT_TRUE(resources.GetCpuResource(handles[0]));
+    std::filesystem::remove(path);
+}
+
 TEST(ShaderArtifactLoader, FailsInvalidArtifact) {
     const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-invalid-shader.spv");
     WriteWords(path, {0xDEADBEEF, 0x00010000, 0, 1, 0});
@@ -684,6 +721,40 @@ TEST(ImageLoader, ReusesReadyImageWithoutReadingSourceAgain) {
     EXPECT_EQ(second, first);
     EXPECT_EQ(resources.GetState(second), EResourceState::READY);
     EXPECT_EQ(resources.GetCpuResource(second), firstData);
+}
+
+TEST(ImageLoader, CoalescesConcurrentLoads) {
+    constexpr std::size_t LOAD_COUNT = 8;
+    const std::filesystem::path path = MakeTempArtifactPath("graphics-engine-concurrent-image.ppm");
+    WriteBytes(path, {'P', '6', '\n', '1', '\n', '1', '\n', '2', '5', '5', '\n', 255U, 0U, 0U});
+
+    ResourceManager resources;
+    std::barrier start{static_cast<std::ptrdiff_t>(LOAD_COUNT + 1)};
+    std::array<NResources::ResourceHandle<ImageData>, LOAD_COUNT> handles;
+    std::array<std::exception_ptr, LOAD_COUNT> errors;
+    std::array<std::thread, LOAD_COUNT> threads;
+    for (std::size_t index = 0; index < LOAD_COUNT; ++index) {
+        threads[index] = std::thread{[&, index] {
+            start.arrive_and_wait();
+            try {
+                handles[index] = NResources::LoadImage(resources, ResourceIdentity{"image", "concurrent"}, path);
+            } catch (...) {
+                errors[index] = std::current_exception();
+            }
+        }};
+    }
+    start.arrive_and_wait();
+    for (std::thread& thread: threads) {
+        thread.join();
+    }
+
+    for (std::size_t index = 0; index < LOAD_COUNT; ++index) {
+        EXPECT_FALSE(errors[index]);
+        EXPECT_EQ(handles[index], handles[0]);
+    }
+    EXPECT_EQ(resources.GetState(handles[0]), EResourceState::READY);
+    EXPECT_TRUE(resources.GetCpuResource(handles[0]));
+    std::filesystem::remove(path);
 }
 
 TEST(ImageLoader, ConvertsGrayscaleImageToRgba8) {
