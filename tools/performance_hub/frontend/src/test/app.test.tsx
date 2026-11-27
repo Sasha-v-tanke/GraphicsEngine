@@ -51,10 +51,16 @@ describe('Performance Hub shell', () => {
     expect(host.querySelector('[aria-disabled="true"]')?.textContent).toContain('Compare')
   })
 
-  it('redirects disabled and unknown direct links to benchmarks', () => {
+  it('redirects disabled and unknown direct links to benchmarks', async () => {
     expect(normalizeRoute('/compare')).toBe('/benchmarks')
     expect(normalizeRoute('/profiler')).toBe('/benchmarks')
     expect(normalizeRoute('/unknown')).toBe('/benchmarks')
     expect(normalizeRoute('/runs')).toBe('/runs')
+    window.history.replaceState({}, '', '/compare')
+    const api: PerformanceHubApi = { health: vi.fn().mockResolvedValue({ status: 'ok' }) }
+    const { host } = render(<App api={api} />)
+    await act(async () => {})
+    expect(window.location.pathname).toBe('/benchmarks')
+    expect(host.querySelector('main h2')?.textContent).toBe('Benchmarks')
   })
 })
