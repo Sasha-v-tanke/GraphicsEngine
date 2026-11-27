@@ -95,6 +95,7 @@ private:
     void ValidateCompletionOwner(CompletionPoint completion) const;
 
     std::unique_ptr<NBackend::IGraphicsBackend> m_backend;
+    GraphicsCapabilities m_capabilities;
     std::uint64_t m_ownerId = 0;
     std::uint64_t m_nextBufferGeneration = 1;
     std::uint64_t m_nextGraphicsPipelineGeneration = 1;

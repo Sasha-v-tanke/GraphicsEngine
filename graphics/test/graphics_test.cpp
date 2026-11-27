@@ -240,9 +240,60 @@ TEST_F(GraphicsTest, CreatesBackendAndPublishesImmutableCapabilities) {
         EXPECT_TRUE(graphics.GetCapabilities().Presentation);
         EXPECT_TRUE(graphics.GetCapabilities().TimelineCompletion);
         EXPECT_EQ(graphics.GetCapabilities().MaxFramesInFlight, 2U);
+        m_state.Capabilities.Presentation = false;
+        EXPECT_TRUE(graphics.GetCapabilities().Presentation);
     }
 
     EXPECT_EQ(m_state.DestroyedCount, 1);
+}
+
+TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
+    NGraphics::GraphicsCapabilities capabilities{
+            .Formats = {.MaxColorAttachmentSamples = 4, .MaxDepthStencilAttachmentSamples = 4},
+            .ShaderCompute = {.Compute = true, .MaxComputeWorkGroupInvocations = 256},
+            .DrawIndirect = {.DrawIndirect = true, .DrawIndirectCount = true, .MaxDrawIndirectCount = 1024},
+            .Bindings = {.StorageBuffers = true,
+                         .DescriptorIndexing = true,
+                         .MaxBoundDescriptorSets = 4,
+                         .MaxPerStageStorageBuffers = 4},
+            .Profiling = {.TimestampQueries = true},
+            .Presentation = true,
+            .TimelineCompletion = true,
+            .MaxFramesInFlight = 2,
+    };
+
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::BASE)));
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::ADVANCED)));
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::HIGH_END)));
+
+    capabilities.Bindings.DescriptorIndexing = false;
+    EXPECT_FALSE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::HIGH_END)));
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::ADVANCED)));
+}
+
+TEST(GraphicsCapabilities, RejectsInvalidLimitsAndMissingRequestedFeature) {
+    NGraphics::GraphicsCapabilities capabilities{
+            .Formats = {.MaxColorAttachmentSamples = 1, .MaxDepthStencilAttachmentSamples = 1},
+            .Bindings = {.MaxBoundDescriptorSets = 3},
+            .Presentation = true,
+    };
+    NGraphics::RequiredGraphicsCapabilities requirements{
+            .Compute = true,
+            .MinColorAttachmentSamples = 4,
+            .MinBoundDescriptorSets = 4,
+    };
+
+    EXPECT_FALSE(NGraphics::SatisfiesRequirements(capabilities, requirements));
 }
 
 TEST_F(GraphicsTest, RejectsBackendThatDoesNotSatisfyRequiredCapabilities) {

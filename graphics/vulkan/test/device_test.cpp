@@ -325,6 +325,8 @@ TEST(VulkanDevicePlan, MapsGraphicsCapabilities) {
     EXPECT_TRUE(plan.GraphicsCapabilities.Presentation);
     EXPECT_TRUE(plan.GraphicsCapabilities.TimelineCompletion);
     EXPECT_EQ(plan.GraphicsCapabilities.MaxFramesInFlight, 2U);
+    EXPECT_EQ(plan.GraphicsCapabilities.DeviceEpoch, 1U);
+    EXPECT_TRUE(plan.GraphicsCapabilities.PresentationSupport.Presentation);
 }
 
 TEST(VulkanDevicePlan, RejectsNullPhysicalDevice) {

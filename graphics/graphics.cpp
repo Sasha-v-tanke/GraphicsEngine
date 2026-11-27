@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -203,7 +204,8 @@ Graphics::Graphics(std::unique_ptr<NBackend::IGraphicsBackend> backend,
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Graphics backend is null");
     }
 
-    if (!SatisfiesRequirements(m_backend->GetCapabilities(), requiredCapabilities)) {
+    m_capabilities = m_backend->GetCapabilities();
+    if (!SatisfiesRequirements(m_capabilities, requiredCapabilities)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Graphics backend does not satisfy required capabilities");
     }
 }
@@ -211,19 +213,19 @@ Graphics::Graphics(std::unique_ptr<NBackend::IGraphicsBackend> backend,
 Graphics::~Graphics() = default;
 
 const GraphicsCapabilities& Graphics::GetCapabilities() const noexcept {
-    return m_backend->GetCapabilities();
+    return m_capabilities;
 }
 
 CompletionPoint Graphics::SubmitFrame(FrameSubmission submission) {
-    if (submission.RequiresPresentation && !m_backend->GetCapabilities().Presentation) {
+    if (submission.RequiresPresentation && !m_capabilities.Presentation) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::UNSUPPORTED, "Graphics backend does not support presentation");
     }
 
-    if (submission.FrameSlotIndex >= m_backend->GetCapabilities().MaxFramesInFlight) {
+    if (submission.FrameSlotIndex >= m_capabilities.MaxFramesInFlight) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT,
                               "Frame submission slot {} is out of range [0, {})",
                               submission.FrameSlotIndex,
-                              m_backend->GetCapabilities().MaxFramesInFlight);
+                              m_capabilities.MaxFramesInFlight);
     }
 
     const std::uint64_t value = m_backend->SubmitFrame(std::move(submission));
@@ -236,8 +238,8 @@ CompletionPoint Graphics::SubmitFrame(FrameSubmission submission) {
 }
 
 FrameSubmissionResult Graphics::TrySubmitFrame(FrameSubmission submission) {
-    if (submission.FrameSlotIndex >= m_backend->GetCapabilities().MaxFramesInFlight ||
-        (submission.RequiresPresentation && !m_backend->GetCapabilities().Presentation)) {
+    if (submission.FrameSlotIndex >= m_capabilities.MaxFramesInFlight ||
+        (submission.RequiresPresentation && !m_capabilities.Presentation)) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Invalid presentation frame submission");
     }
     const auto result = m_backend->TrySubmitFrame(std::move(submission));
@@ -746,15 +748,69 @@ std::uint64_t Graphics::AcquireOwnerId() {
 
 bool SatisfiesRequirements(const GraphicsCapabilities& capabilities,
                            const RequiredGraphicsCapabilities& requirements) noexcept {
-    if (requirements.Presentation && !capabilities.Presentation) {
+    const RequiredGraphicsCapabilities profile = MakeRequiredGraphicsCapabilities(requirements.Profile);
+    if ((requirements.Presentation || profile.Presentation) && !capabilities.Presentation) {
         return false;
     }
 
-    if (requirements.TimelineCompletion && !capabilities.TimelineCompletion) {
+    if ((requirements.TimelineCompletion || profile.TimelineCompletion) && !capabilities.TimelineCompletion) {
         return false;
     }
 
-    return capabilities.MaxFramesInFlight >= requirements.MaxFramesInFlight;
+    return capabilities.MaxFramesInFlight >= std::max(requirements.MaxFramesInFlight, profile.MaxFramesInFlight) &&
+           capabilities.Formats.MaxColorAttachmentSamples >=
+                   std::max(requirements.MinColorAttachmentSamples, profile.MinColorAttachmentSamples) &&
+           capabilities.Formats.MaxDepthStencilAttachmentSamples >=
+                   std::max(requirements.MinDepthStencilAttachmentSamples, profile.MinDepthStencilAttachmentSamples) &&
+           capabilities.ShaderCompute.MaxComputeWorkGroupInvocations >=
+                   std::max(requirements.MinComputeWorkGroupInvocations, profile.MinComputeWorkGroupInvocations) &&
+           capabilities.DrawIndirect.MaxDrawIndirectCount >=
+                   std::max(requirements.MinDrawIndirectCount, profile.MinDrawIndirectCount) &&
+           capabilities.Bindings.MaxBoundDescriptorSets >=
+                   std::max(requirements.MinBoundDescriptorSets, profile.MinBoundDescriptorSets) &&
+           capabilities.Bindings.MaxPerStageStorageBuffers >=
+                   std::max(requirements.MinPerStageStorageBuffers, profile.MinPerStageStorageBuffers) &&
+           capabilities.Memory.DeviceLocalMemoryBytes >=
+                   std::max(requirements.MinDeviceLocalMemoryBytes, profile.MinDeviceLocalMemoryBytes) &&
+           (!(requirements.Compute || profile.Compute) || capabilities.ShaderCompute.Compute) &&
+           (!(requirements.DrawIndirect || profile.DrawIndirect) || capabilities.DrawIndirect.DrawIndirect) &&
+           (!(requirements.DrawIndirectCount || profile.DrawIndirectCount) ||
+            capabilities.DrawIndirect.DrawIndirectCount) &&
+           (!(requirements.StorageBuffers || profile.StorageBuffers) || capabilities.Bindings.StorageBuffers) &&
+           (!(requirements.DescriptorIndexing || profile.DescriptorIndexing) ||
+            capabilities.Bindings.DescriptorIndexing) &&
+           (!(requirements.TimestampQueries || profile.TimestampQueries) || capabilities.Profiling.TimestampQueries);
+}
+
+RequiredGraphicsCapabilities MakeRequiredGraphicsCapabilities(EGraphicsCapabilityProfile profile) noexcept {
+    switch (profile) {
+    case EGraphicsCapabilityProfile::BASE:
+        return {.Presentation = false};
+    case EGraphicsCapabilityProfile::ADVANCED:
+        return {.Profile = EGraphicsCapabilityProfile::BASE,
+                .Presentation = false,
+                .Compute = true,
+                .DrawIndirect = true,
+                .StorageBuffers = true,
+                .MinComputeWorkGroupInvocations = 128,
+                .MinBoundDescriptorSets = 4};
+    case EGraphicsCapabilityProfile::HIGH_END:
+        return {.Profile = EGraphicsCapabilityProfile::BASE,
+                .Presentation = false,
+                .Compute = true,
+                .DrawIndirect = true,
+                .DrawIndirectCount = true,
+                .StorageBuffers = true,
+                .DescriptorIndexing = true,
+                .TimestampQueries = true,
+                .MinColorAttachmentSamples = 4,
+                .MinDepthStencilAttachmentSamples = 4,
+                .MinComputeWorkGroupInvocations = 256,
+                .MinDrawIndirectCount = 1,
+                .MinBoundDescriptorSets = 4,
+                .MinPerStageStorageBuffers = 4};
+    }
+    return {};
 }
 
 } // namespace NGraphics

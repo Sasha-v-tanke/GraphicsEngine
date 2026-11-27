@@ -99,6 +99,51 @@ std::vector<VkDeviceQueueCreateInfo> MakeQueueCreateInfos(const std::vector<Vulk
 
 NGraphics::GraphicsCapabilities MakeGraphicsCapabilities(const VulkanPhysicalDeviceCapabilities& capabilities) {
     return {
+            .DeviceEpoch = 1,
+            .QueueTopology =
+                    {
+                            .Graphics = std::ranges::any_of(capabilities.QueueFamilies,
+                                                            [](const auto& queue) { return queue.Graphics; }),
+                            .Compute = std::ranges::any_of(capabilities.QueueFamilies,
+                                                           [](const auto& queue) { return queue.Compute; }),
+                            .Transfer = std::ranges::any_of(capabilities.QueueFamilies,
+                                                            [](const auto& queue) { return queue.Transfer; }),
+                            .DedicatedCompute = std::ranges::any_of(
+                                    capabilities.QueueFamilies,
+                                    [](const auto& queue) { return queue.Compute && !queue.Graphics; }),
+                            .DedicatedTransfer = std::ranges::any_of(capabilities.QueueFamilies,
+                                                                     [](const auto& queue) {
+                                                                         return queue.Transfer && !queue.Graphics &&
+                                                                                !queue.Compute;
+                                                                     }),
+                    },
+            .Formats = {.Rgba8Unorm = capabilities.Rgba8UnormSupported,
+                        .D32Float = capabilities.D32FloatSupported,
+                        .MaxColorAttachmentSamples = capabilities.MaxColorAttachmentSamples,
+                        .MaxDepthStencilAttachmentSamples = capabilities.MaxDepthStencilAttachmentSamples},
+            .ShaderCompute = {.Compute = std::ranges::any_of(capabilities.QueueFamilies,
+                                                             [](const auto& queue) { return queue.Compute; }),
+                              .MaxComputeWorkGroupInvocations = capabilities.MaxComputeWorkGroupInvocations,
+                              .MaxComputeWorkGroupSizeX = capabilities.MaxComputeWorkGroupSize[0],
+                              .MaxComputeWorkGroupSizeY = capabilities.MaxComputeWorkGroupSize[1],
+                              .MaxComputeWorkGroupSizeZ = capabilities.MaxComputeWorkGroupSize[2]},
+            .DrawIndirect = {.DrawIndirect = capabilities.MaxDrawIndirectCount != 0,
+                             .DrawIndirectCount = capabilities.Features.DrawIndirectCount,
+                             .MaxDrawIndirectCount = capabilities.MaxDrawIndirectCount},
+            .Bindings = {.StorageBuffers = capabilities.MaxPerStageStorageBuffers != 0,
+                         .DescriptorIndexing = capabilities.Features.DescriptorIndexing,
+                         .MaxBoundDescriptorSets = capabilities.MaxBoundDescriptorSets,
+                         .MaxPerStageStorageBuffers = capabilities.MaxPerStageStorageBuffers},
+            .Memory = {.DeviceLocalMemoryBytes = capabilities.DeviceLocalMemoryBytes,
+                       .MinUniformBufferOffsetAlignment = capabilities.DescriptorLimits.MinUniformBufferOffsetAlignment,
+                       .MinStorageBufferOffsetAlignment =
+                               capabilities.DescriptorLimits.MinStorageBufferOffsetAlignment},
+            .PresentationSupport = {.Presentation = capabilities.SurfaceSupported &&
+                                                    capabilities.SwapchainFormatsSupported &&
+                                                    capabilities.SwapchainPresentModesSupported,
+                                    .SrgbColorSpace = capabilities.SrgbColorSpaceSupported},
+            .Profiling = {.TimestampQueries = capabilities.TimestampQueries,
+                          .TimestampPeriodNanoseconds = capabilities.TimestampPeriodNanoseconds},
             .Presentation = capabilities.SurfaceSupported && capabilities.SwapchainFormatsSupported &&
                             capabilities.SwapchainPresentModesSupported,
             .TimelineCompletion = capabilities.Features.TimelineSemaphore,
