@@ -2,6 +2,7 @@ BENCHMARK_SUITE(Main)
 
 RECURSE(
     main_executor
+    logging
     smoke
     task
     renderer
