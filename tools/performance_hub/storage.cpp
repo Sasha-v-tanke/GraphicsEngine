@@ -132,6 +132,45 @@ Run ReadRow(sqlite3_stmt* statement) {
     return run;
 }
 
+Result<void> ValidateV1Schema(sqlite3* database) {
+    Statement statement(database,
+                        "SELECT run_id,status,source,started_at_utc,ended_at_utc,job_id,git_revision,"
+                        "environment_fingerprint,build_fingerprint,run_config_json,failure_reason FROM runs LIMIT 0");
+    if (auto result = statement.ready(); !result) {
+        return std::unexpected(
+                MakeError(ErrorCode::migration, "incompatible v1 runs schema: " + result.error().message));
+    }
+    return {};
+}
+
+Result<void> RecoverPublishedDirectories(sqlite3* database, const std::filesystem::path& runs_directory) {
+    std::error_code error;
+    for (const auto& entry: std::filesystem::directory_iterator(runs_directory, error)) {
+        if (error)
+            break;
+        if (!entry.is_directory(error) || error)
+            continue;
+        Statement status(database, "SELECT status FROM runs WHERE run_id=?");
+        if (auto result = status.ready(); !result)
+            return std::unexpected(result.error());
+        const auto run_id = entry.path().filename().string();
+        if (auto result = Bind(database, status.get(), 1, run_id); !result)
+            return std::unexpected(result.error());
+        const int step = sqlite3_step(status.get());
+        const bool keep =
+                step == SQLITE_ROW &&
+                std::string_view(reinterpret_cast<const char*>(sqlite3_column_text(status.get(), 0))) == "completed";
+        if (!keep) {
+            std::filesystem::remove_all(entry.path(), error);
+            if (error)
+                return std::unexpected(MakeError(ErrorCode::io, "cannot recover unpublished artifact directory"));
+        }
+    }
+    if (error)
+        return std::unexpected(MakeError(ErrorCode::io, "cannot enumerate published artifact directories"));
+    return {};
+}
+
 Result<void> CopyArtifact(const ArtifactInput& artifact, const std::filesystem::path& staging, Artifact& result) {
     if (!IsSafeRelative(artifact.relative_path) || artifact.type.empty()) {
         return std::unexpected(MakeError(ErrorCode::invalid_argument, "artifact path or type is invalid"));
@@ -294,6 +333,8 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
                               "apply migration v1");
             !result)
             return fail(result.error());
+        if (auto result = ValidateV1Schema(impl->database); !result)
+            return fail(result.error());
         if (auto result = Sql(impl->database,
                               sqlite3_exec(impl->database,
                                            "INSERT INTO schema_migrations(version, applied_at_utc) VALUES(1, "
@@ -309,6 +350,11 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
                               "commit migration v1");
             !result)
             return fail(result.error());
+    }
+    if (auto result = RecoverPublishedDirectories(impl->database, impl->root / "runs"); !result) {
+        sqlite3_close(impl->database);
+        delete impl;
+        return std::unexpected(result.error());
     }
     return Storage(impl);
 }

@@ -120,6 +120,44 @@ void OldSchemaMigrationAndForeignKeys(const std::filesystem::path& root) {
     sqlite3_close(newer);
     CHECK(!ph::Storage::Open(root).has_value());
 }
+
+void RecoversPublishedDirectoryAfterInterruptedCompletion(const std::filesystem::path& root) {
+    std::string run_id;
+    {
+        auto storage = ph::Storage::Open(root);
+        CHECK(storage.has_value());
+        auto run = storage->CreateStage(Draft());
+        CHECK(run.has_value());
+        run_id = run->id;
+        std::error_code error;
+        std::filesystem::create_directories(root / "runs" / run_id, error);
+        CHECK(!error);
+    }
+    auto recovered = ph::Storage::Open(root);
+    CHECK(recovered.has_value());
+    CHECK(!std::filesystem::exists(root / "runs" / run_id));
+    const auto source = root / "result.log";
+    {
+        std::ofstream file(source);
+        file << "result";
+    }
+    CHECK(recovered->Complete(run_id, {{.source_file = source, .relative_path = "result.log", .type = "log"}})
+                  .has_value());
+}
+
+void RejectsIncompatibleLegacySchema(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    sqlite3* raw = nullptr;
+    CHECK(sqlite3_open((root / "performance-hub.sqlite3").c_str(), &raw) == SQLITE_OK);
+    CHECK(sqlite3_exec(raw,
+                       "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL); "
+                       "INSERT INTO schema_migrations VALUES(0, 'old'); CREATE TABLE runs(unrelated TEXT)",
+                       nullptr,
+                       nullptr,
+                       nullptr) == SQLITE_OK);
+    sqlite3_close(raw);
+    CHECK(!ph::Storage::Open(root).has_value());
+}
 } // namespace
 
 int main() {
@@ -127,6 +165,8 @@ int main() {
     PersistenceAndTerminalStates(root / "persistence");
     RejectsUnsafeArtifacts(root / "unsafe");
     OldSchemaMigrationAndForeignKeys(root / "migration");
+    RecoversPublishedDirectoryAfterInterruptedCompletion(root / "recovery");
+    RejectsIncompatibleLegacySchema(root / "incompatible");
     std::error_code error;
     std::filesystem::remove_all(root, error);
     return failures == 0 ? 0 : 1;
