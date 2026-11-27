@@ -6,7 +6,7 @@
 
 ## Возможности устройства
 
-`GraphicsCapabilities` — неизменяемый снимок успешно созданного устройства с устойчивым `DeviceEpoch`. Он разделяет topology очередей, форматы/образцы, compute и shader limits, indirect draw, bindings, память, presentation и profiling. Публичные поля не содержат Vulkan-типы. `BASE`, `ADVANCED` и `HIGH_END` — наборы минимальных конкретных требований, а не сохранённый в снимке «tier»: `SatisfiesRequirements` всегда дополнительно проверяет запрошенные флаги и пределы. Optional возможности, отсутствующие в MoltenVK или ином backend, публикуются как `false`/нулевой предел; вызывающий код обязан выбрать fallback до создания native resources.
+`GraphicsCapabilities` — неизменяемый снимок успешно созданного устройства с устойчивым `DeviceEpoch`. Он разделяет topology очередей, форматы/образцы, compute и shader limits, indirect draw, bindings, память, presentation и profiling. Публичные поля не содержат Vulkan-типы и сообщают только возможности, включённые в logical device и созданные очереди, а не полный набор physical device. `BASE`, `ADVANCED` и `HIGH_END` — наборы минимальных конкретных требований, а не сохранённый в снимке «tier»: `SatisfiesRequirements` всегда дополнительно проверяет запрошенные флаги и пределы. Optional возможности, отсутствующие в MoltenVK или ином backend, публикуются как `false`/нулевой предел; вызывающий код обязан выбрать fallback до создания native resources.
 
 ## Графические конвейеры
 

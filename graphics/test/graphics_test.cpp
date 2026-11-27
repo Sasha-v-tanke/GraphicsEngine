@@ -249,6 +249,9 @@ TEST_F(GraphicsTest, CreatesBackendAndPublishesImmutableCapabilities) {
 
 TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
     NGraphics::GraphicsCapabilities capabilities{
+            .Presentation = true,
+            .TimelineCompletion = true,
+            .MaxFramesInFlight = 2,
             .Formats = {.MaxColorAttachmentSamples = 4, .MaxDepthStencilAttachmentSamples = 4},
             .ShaderCompute = {.Compute = true, .MaxComputeWorkGroupInvocations = 256},
             .DrawIndirect = {.DrawIndirect = true, .DrawIndirectCount = true, .MaxDrawIndirectCount = 1024},
@@ -257,9 +260,6 @@ TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
                          .MaxBoundDescriptorSets = 4,
                          .MaxPerStageStorageBuffers = 4},
             .Profiling = {.TimestampQueries = true},
-            .Presentation = true,
-            .TimelineCompletion = true,
-            .MaxFramesInFlight = 2,
     };
 
     EXPECT_TRUE(NGraphics::SatisfiesRequirements(
@@ -283,9 +283,9 @@ TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
 
 TEST(GraphicsCapabilities, RejectsInvalidLimitsAndMissingRequestedFeature) {
     NGraphics::GraphicsCapabilities capabilities{
+            .Presentation = true,
             .Formats = {.MaxColorAttachmentSamples = 1, .MaxDepthStencilAttachmentSamples = 1},
             .Bindings = {.MaxBoundDescriptorSets = 3},
-            .Presentation = true,
     };
     NGraphics::RequiredGraphicsCapabilities requirements{
             .Compute = true,

@@ -757,29 +757,43 @@ bool SatisfiesRequirements(const GraphicsCapabilities& capabilities,
         return false;
     }
 
-    return capabilities.MaxFramesInFlight >= std::max(requirements.MaxFramesInFlight, profile.MaxFramesInFlight) &&
-           capabilities.Formats.MaxColorAttachmentSamples >=
-                   std::max(requirements.MinColorAttachmentSamples, profile.MinColorAttachmentSamples) &&
-           capabilities.Formats.MaxDepthStencilAttachmentSamples >=
-                   std::max(requirements.MinDepthStencilAttachmentSamples, profile.MinDepthStencilAttachmentSamples) &&
-           capabilities.ShaderCompute.MaxComputeWorkGroupInvocations >=
-                   std::max(requirements.MinComputeWorkGroupInvocations, profile.MinComputeWorkGroupInvocations) &&
-           capabilities.DrawIndirect.MaxDrawIndirectCount >=
-                   std::max(requirements.MinDrawIndirectCount, profile.MinDrawIndirectCount) &&
-           capabilities.Bindings.MaxBoundDescriptorSets >=
-                   std::max(requirements.MinBoundDescriptorSets, profile.MinBoundDescriptorSets) &&
-           capabilities.Bindings.MaxPerStageStorageBuffers >=
-                   std::max(requirements.MinPerStageStorageBuffers, profile.MinPerStageStorageBuffers) &&
-           capabilities.Memory.DeviceLocalMemoryBytes >=
-                   std::max(requirements.MinDeviceLocalMemoryBytes, profile.MinDeviceLocalMemoryBytes) &&
-           (!(requirements.Compute || profile.Compute) || capabilities.ShaderCompute.Compute) &&
-           (!(requirements.DrawIndirect || profile.DrawIndirect) || capabilities.DrawIndirect.DrawIndirect) &&
-           (!(requirements.DrawIndirectCount || profile.DrawIndirectCount) ||
-            capabilities.DrawIndirect.DrawIndirectCount) &&
-           (!(requirements.StorageBuffers || profile.StorageBuffers) || capabilities.Bindings.StorageBuffers) &&
-           (!(requirements.DescriptorIndexing || profile.DescriptorIndexing) ||
-            capabilities.Bindings.DescriptorIndexing) &&
-           (!(requirements.TimestampQueries || profile.TimestampQueries) || capabilities.Profiling.TimestampQueries);
+    if (capabilities.MaxFramesInFlight < std::max(requirements.MaxFramesInFlight, profile.MaxFramesInFlight))
+        return false;
+    if (capabilities.Formats.MaxColorAttachmentSamples <
+        std::max(requirements.MinColorAttachmentSamples, profile.MinColorAttachmentSamples))
+        return false;
+    if (capabilities.Formats.MaxDepthStencilAttachmentSamples <
+        std::max(requirements.MinDepthStencilAttachmentSamples, profile.MinDepthStencilAttachmentSamples))
+        return false;
+    if (capabilities.ShaderCompute.MaxComputeWorkGroupInvocations <
+        std::max(requirements.MinComputeWorkGroupInvocations, profile.MinComputeWorkGroupInvocations))
+        return false;
+    if (capabilities.DrawIndirect.MaxDrawIndirectCount <
+        std::max(requirements.MinDrawIndirectCount, profile.MinDrawIndirectCount))
+        return false;
+    if (capabilities.Bindings.MaxBoundDescriptorSets <
+        std::max(requirements.MinBoundDescriptorSets, profile.MinBoundDescriptorSets))
+        return false;
+    if (capabilities.Bindings.MaxPerStageStorageBuffers <
+        std::max(requirements.MinPerStageStorageBuffers, profile.MinPerStageStorageBuffers))
+        return false;
+    if (capabilities.Memory.DeviceLocalMemoryBytes <
+        std::max(requirements.MinDeviceLocalMemoryBytes, profile.MinDeviceLocalMemoryBytes))
+        return false;
+
+    if ((requirements.Compute || profile.Compute) && !capabilities.ShaderCompute.Compute)
+        return false;
+    if ((requirements.DrawIndirect || profile.DrawIndirect) && !capabilities.DrawIndirect.DrawIndirect)
+        return false;
+    if ((requirements.DrawIndirectCount || profile.DrawIndirectCount) && !capabilities.DrawIndirect.DrawIndirectCount)
+        return false;
+    if ((requirements.StorageBuffers || profile.StorageBuffers) && !capabilities.Bindings.StorageBuffers)
+        return false;
+    if ((requirements.DescriptorIndexing || profile.DescriptorIndexing) && !capabilities.Bindings.DescriptorIndexing)
+        return false;
+    if ((requirements.TimestampQueries || profile.TimestampQueries) && !capabilities.Profiling.TimestampQueries)
+        return false;
+    return true;
 }
 
 RequiredGraphicsCapabilities MakeRequiredGraphicsCapabilities(EGraphicsCapabilityProfile profile) noexcept {
@@ -787,16 +801,16 @@ RequiredGraphicsCapabilities MakeRequiredGraphicsCapabilities(EGraphicsCapabilit
     case EGraphicsCapabilityProfile::BASE:
         return {.Presentation = false};
     case EGraphicsCapabilityProfile::ADVANCED:
-        return {.Profile = EGraphicsCapabilityProfile::BASE,
-                .Presentation = false,
+        return {.Presentation = false,
+                .Profile = EGraphicsCapabilityProfile::BASE,
                 .Compute = true,
                 .DrawIndirect = true,
                 .StorageBuffers = true,
                 .MinComputeWorkGroupInvocations = 128,
                 .MinBoundDescriptorSets = 4};
     case EGraphicsCapabilityProfile::HIGH_END:
-        return {.Profile = EGraphicsCapabilityProfile::BASE,
-                .Presentation = false,
+        return {.Presentation = false,
+                .Profile = EGraphicsCapabilityProfile::BASE,
                 .Compute = true,
                 .DrawIndirect = true,
                 .DrawIndirectCount = true,

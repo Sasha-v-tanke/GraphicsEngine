@@ -56,6 +56,11 @@ struct GraphicsProfilingCapabilities {
 };
 
 struct GraphicsCapabilities {
+    // Compatibility fields stay first for positional aggregate initialization.
+    bool Presentation = false;
+    bool TimelineCompletion = false;
+    std::uint32_t MaxFramesInFlight = 1;
+
     // Stable for the lifetime of a successfully initialized Graphics instance.
     std::uint64_t DeviceEpoch = 0;
     GraphicsQueueTopologyCapabilities QueueTopology;
@@ -66,18 +71,15 @@ struct GraphicsCapabilities {
     GraphicsMemoryCapabilities Memory;
     GraphicsPresentationCapabilities PresentationSupport;
     GraphicsProfilingCapabilities Profiling;
-
-    // Compatibility aliases for the pre-FEATURE-0178 contract.
-    bool Presentation = false;
-    bool TimelineCompletion = false;
-    std::uint32_t MaxFramesInFlight = 1;
 };
 
 struct RequiredGraphicsCapabilities {
-    EGraphicsCapabilityProfile Profile = EGraphicsCapabilityProfile::BASE;
+    // Compatibility fields stay first for positional aggregate initialization.
     bool Presentation = true;
     bool TimelineCompletion = false;
     std::uint32_t MaxFramesInFlight = 1;
+
+    EGraphicsCapabilityProfile Profile = EGraphicsCapabilityProfile::BASE;
     bool Compute = false;
     bool DrawIndirect = false;
     bool DrawIndirectCount = false;
