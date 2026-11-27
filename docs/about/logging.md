@@ -10,6 +10,6 @@ logger.Log(NLogging::ESeverity::INFO, "game.load", "Scene loaded", {{"scene", "a
 logger.Shutdown();
 ```
 
-`LogRecord` владеет всеми строками до возврата из sink. Категория, severity, поля, timestamp, sequence и необязательные thread/task-trace contexts доступны sink. Runtime config задаёт minimum severity и полное отключение; отключённая запись не доставляется. Sink может бросить исключение: оно изолируется, а счётчик доступен через `GetSinkFailureCount()`.
+`LogRecord` владеет всеми строками до возврата из sink. Категория, severity, поля, timestamp, sequence и необязательные thread/task-trace contexts доступны sink. Runtime config задаёт minimum severity, полное отключение и `DisabledCategories`; отключённая категория отбрасывается до создания owned record в `Log()`. Sink может бросить исключение: оно изолируется, а счётчик доступен через `GetSinkFailureCount()`.
 
-Не вызывайте logger из real-time audio callback: формирование owned record может выделять память. `Shutdown()` прекращает публикацию, flushes sinks и допускает последующий `Start()`.
+Не вызывайте logger из real-time audio callback: формирование owned record может выделять память. `Shutdown()` закрывает публикацию, дожидается уже принятых записей, затем final-flushes sinks и допускает последующий `Start()`. Не вызывайте `Shutdown()` из callback sink этого же logger: он ожидает завершения текущей публикации.

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -36,6 +37,47 @@ public:
     }
 };
 
+class ReentrantDestructorSink final: public ILogSink {
+public:
+    explicit ReentrantDestructorSink(Logger& logger)
+        : LoggerRef(logger) {
+    }
+    ~ReentrantDestructorSink() override {
+        static_cast<void>(LoggerRef.GetState());
+    }
+    void Consume(const LogRecord&) override {
+    }
+
+private:
+    Logger& LoggerRef;
+};
+
+class BlockingSink final: public ILogSink {
+public:
+    void Consume(const LogRecord&) override {
+        std::unique_lock lock(Mutex);
+        Entered = true;
+        EnteredCv.notify_all();
+        ReleaseCv.wait(lock, [this] { return Released; });
+    }
+    void Release() {
+        std::scoped_lock lock(Mutex);
+        Released = true;
+        ReleaseCv.notify_all();
+    }
+    void WaitUntilEntered() {
+        std::unique_lock lock(Mutex);
+        EnteredCv.wait(lock, [this] { return Entered; });
+    }
+
+private:
+    std::mutex Mutex;
+    std::condition_variable EnteredCv;
+    std::condition_variable ReleaseCv;
+    bool Entered = false;
+    bool Released = false;
+};
+
 TEST(Logger, OwnsRecordAndSupportsUnicodeFields) {
     Logger logger;
     auto sink = std::make_shared<CollectingSink>();
@@ -65,12 +107,13 @@ TEST(Logger, EmptyAndThrowingSinksDoNotBreakPublication) {
 }
 
 TEST(Logger, RuntimeFilteringShutdownAndRestart) {
-    Logger logger({.MinimumSeverity = ESeverity::WARNING});
+    Logger logger({.MinimumSeverity = ESeverity::WARNING, .DisabledCategories = {"disabled"}});
     auto sink = std::make_shared<CollectingSink>();
     logger.AddSink(sink);
     EXPECT_FALSE(logger.Log(ESeverity::FATAL, "core", "before start"));
     logger.Start();
     EXPECT_FALSE(logger.Log(ESeverity::INFO, "core", "filtered"));
+    EXPECT_FALSE(logger.Log(ESeverity::FATAL, "disabled", "filtered category"));
     EXPECT_TRUE(logger.Log(ESeverity::WARNING, "core", "kept"));
     logger.Shutdown();
     EXPECT_EQ(logger.GetState(), ELoggerState::SHUTDOWN);
@@ -80,6 +123,43 @@ TEST(Logger, RuntimeFilteringShutdownAndRestart) {
     std::scoped_lock lock(sink->Mutex);
     ASSERT_EQ(sink->Records.size(), 2U);
     EXPECT_LT(sink->Records[0].Sequence, sink->Records[1].Sequence);
+}
+
+TEST(Logger, DisabledCategoryRejectsBeforeSinkDelivery) {
+    Logger logger({.DisabledCategories = {"disabled"}});
+    auto sink = std::make_shared<CollectingSink>();
+    logger.AddSink(sink);
+    logger.Start();
+    EXPECT_FALSE(logger.Log(ESeverity::INFO, "disabled", "ignored"));
+    std::scoped_lock lock(sink->Mutex);
+    EXPECT_TRUE(sink->Records.empty());
+}
+
+TEST(Logger, SinkDestructionDoesNotHoldLoggerMutex) {
+    Logger logger;
+    logger.AddSink(std::make_shared<ReentrantDestructorSink>(logger));
+    logger.ClearSinks();
+}
+
+TEST(Logger, ShutdownDrainsAdmittedPublicationBeforeFinalFlush) {
+    Logger logger;
+    auto sink = std::make_shared<BlockingSink>();
+    logger.AddSink(sink);
+    logger.Start();
+    std::jthread publisher([&] { EXPECT_TRUE(logger.Log(ESeverity::INFO, "core", "in flight")); });
+    sink->WaitUntilEntered();
+    std::atomic_bool shutdownReturned = false;
+    std::jthread shutdown([&] {
+        logger.Shutdown();
+        shutdownReturned.store(true);
+    });
+    std::this_thread::yield();
+    EXPECT_FALSE(shutdownReturned.load());
+    sink->Release();
+    shutdown.join();
+    publisher.join();
+    EXPECT_TRUE(shutdownReturned.load());
+    EXPECT_FALSE(logger.Log(ESeverity::INFO, "core", "after shutdown"));
 }
 
 TEST(Logger, ConcurrentPublishersKeepUniqueSequences) {

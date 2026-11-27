@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -27,7 +28,7 @@ struct LogField final {
 
 // Values are owned by the record and remain valid for the whole sink invocation.
 struct LogRecord final {
-    std::chrono::system_clock::time_point Timestamp;
+    std::chrono::system_clock::time_point Timestamp{};
     std::uint64_t Sequence = 0;
     ESeverity Severity = ESeverity::INFO;
     std::string Category;
@@ -48,12 +49,14 @@ public:
 enum class ELoggerState : std::uint8_t {
     CREATED,
     RUNNING,
+    STOPPING,
     SHUTDOWN,
 };
 
 struct LoggerConfig final {
     ESeverity MinimumSeverity = ESeverity::TRACE;
     bool Enabled = true;
+    std::vector<std::string> DisabledCategories;
 };
 
 // Synchronous, application-owned logger. It has no global instance and never invokes a sink while holding its mutex.
@@ -69,8 +72,8 @@ public:
     void Shutdown() noexcept;
     void Flush() noexcept;
 
-    void SetConfig(LoggerConfig config) noexcept;
-    [[nodiscard]] LoggerConfig GetConfig() const noexcept;
+    void SetConfig(LoggerConfig config);
+    [[nodiscard]] LoggerConfig GetConfig() const;
     [[nodiscard]] ELoggerState GetState() const noexcept;
     [[nodiscard]] std::uint64_t GetSinkFailureCount() const noexcept;
 
@@ -88,14 +91,31 @@ public:
              std::string_view taskTraceContext = {});
 
 private:
-    [[nodiscard]] bool IsEnabledLocked(ESeverity severity) const noexcept;
+    using SinkList = std::vector<std::shared_ptr<ILogSink>>;
+
+    [[nodiscard]] bool IsEnabledLocked(ESeverity severity, std::string_view category) const noexcept;
+    void ReleasePublication() noexcept;
 
     mutable std::mutex m_mutex;
+    std::condition_variable m_drained;
     LoggerConfig m_config;
     ELoggerState m_state = ELoggerState::CREATED;
-    std::vector<std::shared_ptr<ILogSink>> m_sinks;
+    std::size_t m_activePublications = 0;
+    std::shared_ptr<const SinkList> m_sinks;
     std::atomic_uint64_t m_sequence = 0;
     std::atomic_uint64_t m_sinkFailures = 0;
 };
 
 } // namespace NLogging
+
+#ifndef GRAPHICS_ENGINE_LOG_COMPILED_MINIMUM_SEVERITY
+    #define GRAPHICS_ENGINE_LOG_COMPILED_MINIMUM_SEVERITY 0
+#endif
+
+// The category/message expressions are not evaluated when the selected severity is compiled out.
+#define GRAPHICS_ENGINE_LOG(logger, severity, category, message, ...)                                                  \
+    do {                                                                                                               \
+        if constexpr (static_cast<unsigned>(severity) >= GRAPHICS_ENGINE_LOG_COMPILED_MINIMUM_SEVERITY) {              \
+            static_cast<void>((logger).Log((severity), (category), (message)__VA_OPT__(, ) __VA_ARGS__));              \
+        }                                                                                                              \
+    } while (false)
