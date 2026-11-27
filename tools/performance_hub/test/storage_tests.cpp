@@ -158,6 +158,20 @@ void RejectsIncompatibleLegacySchema(const std::filesystem::path& root) {
     sqlite3_close(raw);
     CHECK(!ph::Storage::Open(root).has_value());
 }
+
+void RejectsCorruptedCurrentSchema(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    sqlite3* raw = nullptr;
+    CHECK(sqlite3_open((root / "performance-hub.sqlite3").c_str(), &raw) == SQLITE_OK);
+    CHECK(sqlite3_exec(raw,
+                       "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at_utc TEXT NOT NULL); "
+                       "INSERT INTO schema_migrations VALUES(1, 'current')",
+                       nullptr,
+                       nullptr,
+                       nullptr) == SQLITE_OK);
+    sqlite3_close(raw);
+    CHECK(!ph::Storage::Open(root).has_value());
+}
 } // namespace
 
 int main() {
@@ -167,6 +181,7 @@ int main() {
     OldSchemaMigrationAndForeignKeys(root / "migration");
     RecoversPublishedDirectoryAfterInterruptedCompletion(root / "recovery");
     RejectsIncompatibleLegacySchema(root / "incompatible");
+    RejectsCorruptedCurrentSchema(root / "corrupted-current");
     std::error_code error;
     std::filesystem::remove_all(root, error);
     return failures == 0 ? 0 : 1;

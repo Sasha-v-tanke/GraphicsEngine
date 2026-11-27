@@ -133,12 +133,22 @@ Run ReadRow(sqlite3_stmt* statement) {
 }
 
 Result<void> ValidateV1Schema(sqlite3* database) {
-    Statement statement(database,
-                        "SELECT run_id,status,source,started_at_utc,ended_at_utc,job_id,git_revision,"
-                        "environment_fingerprint,build_fingerprint,run_config_json,failure_reason FROM runs LIMIT 0");
-    if (auto result = statement.ready(); !result) {
-        return std::unexpected(
-                MakeError(ErrorCode::migration, "incompatible v1 runs schema: " + result.error().message));
+    constexpr std::array queries{
+            "SELECT "
+            "run_id,status,source,started_at_utc,ended_at_utc,job_id,git_revision,environment_fingerprint,build_"
+            "fingerprint,run_config_json,failure_reason FROM runs LIMIT 0",
+            "SELECT run_id,case_key,outcome FROM run_cases LIMIT 0",
+            "SELECT metric_id,group_path,unit,optimization,allowed_aggregates FROM metric_descriptors LIMIT 0",
+            "SELECT run_id,case_key,metric_id,repetition,value FROM metric_samples LIMIT 0",
+            "SELECT run_id,case_key,metric_id,aggregate_name,value FROM metric_aggregates LIMIT 0",
+            "SELECT run_id,relative_path,content_hash,byte_size,type FROM artifacts LIMIT 0",
+            "SELECT job_id,metadata_json FROM job_metadata LIMIT 0"};
+    for (const char* query: queries) {
+        Statement statement(database, query);
+        if (auto result = statement.ready(); !result) {
+            return std::unexpected(
+                    MakeError(ErrorCode::migration, "incompatible v1 schema: " + result.error().message));
+        }
     }
     return {};
 }
@@ -350,6 +360,11 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
                               "commit migration v1");
             !result)
             return fail(result.error());
+    }
+    if (auto result = ValidateV1Schema(impl->database); !result) {
+        sqlite3_close(impl->database);
+        delete impl;
+        return std::unexpected(result.error());
     }
     if (auto result = RecoverPublishedDirectories(impl->database, impl->root / "runs"); !result) {
         sqlite3_close(impl->database);
