@@ -50,6 +50,12 @@ def _file_fingerprint(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _platform() -> dict:
+    system = platform.system()
+    machine = platform.machine()
+    return {"system": system, "machine": machine, "supported": system in {"Darwin", "Linux", "Windows"} and bool(machine)}
+
+
 def _load_preset_document(repo: Path) -> dict:
     path = repo / "CMakePresets.json"
     try:
@@ -78,26 +84,32 @@ def discover_profiles(repo: Path) -> list[dict]:
     ]
 
 
-def _configure_preset(repo: Path, name: str) -> dict | None:
+def _configure_preset(repo: Path, name: str, resolving: frozenset[str] = frozenset()) -> dict | None:
     presets = {
         preset["name"]: preset
         for preset in _load_preset_document(repo).get("configurePresets", [])
         if isinstance(preset, dict) and isinstance(preset.get("name"), str)
     }
     preset = presets.get(name)
-    if preset is None:
+    if preset is None or name in resolving:
         return None
     inherited = preset.get("inherits", [])
     if isinstance(inherited, str):
         inherited = [inherited]
-    resolved: dict = {}
+    resolved: dict = {"cacheVariables": {}}
     for parent in inherited:
         if not isinstance(parent, str):
             continue
-        inherited_preset = _configure_preset(repo, parent)
+        inherited_preset = _configure_preset(repo, parent, resolving | {name})
         if inherited_preset is not None:
             resolved.update(inherited_preset)
-    resolved.update(preset)
+            resolved["cacheVariables"].update(inherited_preset.get("cacheVariables", {}))
+    cache_variables = preset.get("cacheVariables", {})
+    if not isinstance(cache_variables, dict):
+        cache_variables = {}
+    resolved.update({key: value for key, value in preset.items() if key != "cacheVariables"})
+    resolved["cacheVariables"] = dict(resolved.get("cacheVariables", {}))
+    resolved["cacheVariables"].update(cache_variables)
     return resolved
 
 
@@ -114,6 +126,17 @@ def _profile(repo: Path, build_preset: str) -> tuple[dict | None, CatalogStatus 
     if not isinstance(configure_preset, str):
         return None, CatalogStatus(
             "unsupported", Diagnostic("missing_configure_preset", f"Build preset '{build_preset}' has no configure preset."),
+        )
+    configure = _configure_preset(repo, configure_preset)
+    if configure is None:
+        return None, CatalogStatus("unsupported", Diagnostic("configure_preset_unresolvable", configure_preset))
+    enabled = configure.get("cacheVariables", {}).get("GRAPHICS_ENGINE_BUILD_BENCHMARKS")
+    if isinstance(enabled, dict):
+        enabled = enabled.get("value")
+    if str(enabled).upper() not in {"ON", "TRUE", "1", "YES"}:
+        return None, CatalogStatus(
+            "unsupported",
+            Diagnostic("benchmarks_disabled", f"Build preset '{build_preset}' does not enable GRAPHICS_ENGINE_BUILD_BENCHMARKS."),
         )
     return {"buildPreset": build_preset, "configurePreset": configure_preset}, None
 
@@ -141,10 +164,13 @@ def _case(name: str) -> dict:
     }
 
 
-def _list_cases(binary: Path, timeout_seconds: float) -> tuple[list[str] | None, CatalogStatus | None]:
+def _list_cases(binary: Path, timeout_seconds: float, benchmark_filter: str | None = None) -> tuple[list[str] | None, CatalogStatus | None]:
+    command = [str(binary), "--benchmark_list_tests"]
+    if benchmark_filter is not None:
+        command.append("--benchmark_filter=" + benchmark_filter)
     try:
         completed = subprocess.run(
-            [str(binary), "--benchmark_list_tests"],
+            command,
             check=False,
             capture_output=True,
             text=True,
@@ -163,21 +189,40 @@ def _list_cases(binary: Path, timeout_seconds: float) -> tuple[list[str] | None,
     return [line.strip() for line in completed.stdout.splitlines() if line.strip()], None
 
 
+def _benchmark_inputs(repo: Path) -> Iterable[Path]:
+    yield repo / "CMakeLists.txt"
+    yield repo / "CMakePresets.json"
+    yield repo / "cmake" / "utils" / "benchmarks.cmake"
+    benchmarks = repo / "benchmarks"
+    if benchmarks.is_dir():
+        yield from (path for path in benchmarks.rglob("*") if path.is_file() and path.suffix in {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".cmake"})
+
+
+def _stale_input(repo: Path, binary: Path) -> Path | None:
+    binary_time = binary.stat().st_mtime
+    inputs = [binary.parent / "CMakeCache.txt", *_benchmark_inputs(repo)]
+    return next((path for path in inputs if path.is_file() and path.stat().st_mtime > binary_time), None)
+
+
 def build_catalog(repo: Path, build_preset: str, timeout_seconds: float = 10.0) -> dict:
     """Create a versioned immutable snapshot of a selected build profile."""
     repo = repo.resolve()
     profile, status = _profile(repo, build_preset)
     generated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    host_platform = _platform()
     base = {
         "schemaVersion": SCHEMA_VERSION,
         "generatedAt": generated_at,
-        "platform": {"system": platform.system(), "machine": platform.machine(), "supported": True},
+        "platform": host_platform,
         "profile": profile or {"buildPreset": build_preset},
         "status": asdict(status) if status else None,
         "binary": None,
         "cases": [],
     }
     if status:
+        return _version(base)
+    if not host_platform["supported"]:
+        base["status"] = asdict(CatalogStatus("unsupported", Diagnostic("unsupported_platform", host_platform["system"])))
         return _version(base)
 
     binary = _binary_path(repo, profile["configurePreset"])
@@ -188,9 +233,9 @@ def build_catalog(repo: Path, build_preset: str, timeout_seconds: float = 10.0) 
         base["status"] = asdict(CatalogStatus("not_built", Diagnostic("benchmark_binary_missing", str(binary))))
         return _version(base)
 
-    cache = binary.parent / "CMakeCache.txt"
-    if cache.is_file() and cache.stat().st_mtime > binary.stat().st_mtime:
-        base["status"] = asdict(CatalogStatus("stale", Diagnostic("binary_older_than_configuration", str(cache))))
+    stale_input = _stale_input(repo, binary)
+    if stale_input is not None:
+        base["status"] = asdict(CatalogStatus("stale", Diagnostic("benchmark_input_newer_than_binary", str(stale_input))))
         return _version(base)
 
     names, status = _list_cases(binary, timeout_seconds)
@@ -213,11 +258,11 @@ def _version(catalog: dict) -> dict:
 
 
 def exact_filter(case_names: Iterable[str]) -> str:
-    """Build a Google Benchmark regex matching exactly the supplied full names."""
+    """Build a POSIX ERE accepted by Google Benchmark for exact full-name matches."""
     names = list(case_names)
     if not names or len(names) != len(set(names)) or any(not name for name in names):
         raise ValueError("selection must contain one or more distinct non-empty benchmark names")
-    expression = "^(?:" + "|".join(re.escape(name) for name in names) + ")$"
+    expression = "^(" + "|".join(re.escape(name) for name in names) + ")$"
     compiled = re.compile(expression)
     if any(not compiled.fullmatch(name) for name in names):
         raise ValueError("selection cannot be represented as an exact filter")
@@ -235,6 +280,17 @@ def validate_selection(catalog: dict, names: Iterable[str]) -> str:
     return exact_filter(selected)
 
 
+def verify_exact_selection(catalog: dict, names: Iterable[str], timeout_seconds: float) -> str:
+    selected = list(names)
+    expression = validate_selection(catalog, selected)
+    listed, status = _list_cases(Path(catalog["binary"]["path"]), timeout_seconds, expression)
+    if status is not None:
+        raise ValueError(status.diagnostic.message)
+    if len(listed) != len(selected) or set(listed) != set(selected):
+        raise ValueError("Google Benchmark filter did not resolve to exactly the selected cases")
+    return expression
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
@@ -250,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.select:
             if arguments.list_profiles:
                 raise ValueError("--select cannot be used with --list-profiles")
-            output["exactFilter"] = validate_selection(output, arguments.select)
+            output["exactFilter"] = verify_exact_selection(output, arguments.select, arguments.timeout_seconds)
     except (OSError, ValueError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         return 2

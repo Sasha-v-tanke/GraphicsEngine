@@ -5,6 +5,7 @@ import stat
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from tools.performance_hub.benchmark_catalog import build_catalog, exact_filter, validate_selection
 
@@ -14,7 +15,7 @@ class BenchmarkCatalogTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.repo = Path(self.directory.name)
         (self.repo / "CMakePresets.json").write_text(json.dumps({
-            "configurePresets": [{"name": "benchmark", "binaryDir": "${sourceDir}/cmake-build-${presetName}"}],
+            "configurePresets": [{"name": "base", "binaryDir": "${sourceDir}/cmake-build-${presetName}", "cacheVariables": {"GRAPHICS_ENGINE_BUILD_BENCHMARKS": "OFF"}}, {"name": "benchmark", "inherits": "base", "cacheVariables": {"GRAPHICS_ENGINE_BUILD_BENCHMARKS": "ON"}}],
             "buildPresets": [{"name": "benchmark", "configurePreset": "benchmark"}],
         }))
         self.binary = self.repo / "cmake-build-benchmark" / "GraphicsEngineBenchmarks"
@@ -32,6 +33,21 @@ class BenchmarkCatalogTests(unittest.TestCase):
         unsupported = build_catalog(self.repo, "other")
         self.assertEqual("not_built", missing["status"]["state"])
         self.assertEqual("unsupported", unsupported["status"]["state"])
+
+    def test_rejects_a_profile_with_benchmarks_disabled_by_its_configure_preset(self):
+        document = json.loads((self.repo / "CMakePresets.json").read_text())
+        document["buildPresets"].append({"name": "ci-lite", "configurePreset": "base"})
+        (self.repo / "CMakePresets.json").write_text(json.dumps(document))
+        catalog = build_catalog(self.repo, "ci-lite")
+        self.assertEqual("unsupported", catalog["status"]["state"])
+        self.assertEqual("benchmarks_disabled", catalog["status"]["diagnostic"]["code"])
+
+    @patch("tools.performance_hub.benchmark_catalog.platform.machine", return_value="unknown")
+    @patch("tools.performance_hub.benchmark_catalog.platform.system", return_value="UnknownOS")
+    def test_reports_an_unsupported_host_platform(self, _system, _machine):
+        catalog = build_catalog(self.repo, "benchmark")
+        self.assertFalse(catalog["platform"]["supported"])
+        self.assertEqual("unsupported_platform", catalog["status"]["diagnostic"]["code"])
 
     def test_catalogues_parameterized_fixture_and_escapes_exact_selection(self):
         names = ["BM_Renderer/64/2", "BM_Task[fast]+/1", "BM_Other/0"]
@@ -55,6 +71,16 @@ class BenchmarkCatalogTests(unittest.TestCase):
         stale = build_catalog(self.repo, "benchmark")
         self.assertEqual("stale", stale["status"]["state"])
 
+    def test_reports_stale_when_a_benchmark_source_changes_without_reconfiguring(self):
+        self.write_fixture("echo BM_Ready")
+        source = self.repo / "benchmarks" / "case.cpp"
+        source.parent.mkdir()
+        time.sleep(0.01)
+        source.write_text("// newer than the binary\n")
+        stale = build_catalog(self.repo, "benchmark")
+        self.assertEqual("stale", stale["status"]["state"])
+        self.assertEqual("benchmark_input_newer_than_binary", stale["status"]["diagnostic"]["code"])
+
     def test_rebuilt_binary_changes_snapshot_identity(self):
         self.write_fixture("echo BM_First")
         first = build_catalog(self.repo, "benchmark")
@@ -67,7 +93,7 @@ class BenchmarkCatalogTests(unittest.TestCase):
     def test_selection_rejects_names_absent_from_the_catalog(self):
         self.write_fixture("echo 'BM_Only/1'")
         catalog = build_catalog(self.repo, "benchmark")
-        self.assertEqual("^(?:BM_Only/1)$", validate_selection(catalog, ["BM_Only/1"]))
+        self.assertEqual("^(BM_Only/1)$", validate_selection(catalog, ["BM_Only/1"]))
         with self.assertRaisesRegex(ValueError, "unknown benchmark case"):
             validate_selection(catalog, ["BM_Outside"])
 
