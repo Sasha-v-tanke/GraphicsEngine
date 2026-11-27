@@ -219,6 +219,15 @@ _GRAPHICS_ENGINE_RUN(
     "${GRAPHICS_ENGINE_SOURCE_DIR}/cmake/public_api_lint.cmake"
 )
 
+_GRAPHICS_ENGINE_RUN(
+    "Public API lint negative fixtures"
+    "${CMAKE_COMMAND}"
+    "-DGRAPHICS_ENGINE_SOURCE_DIR=${GRAPHICS_ENGINE_SOURCE_DIR}"
+    "-DGRAPHICS_ENGINE_BINARY_DIR=${GRAPHICS_ENGINE_BINARY_DIR}"
+    -P
+    "${GRAPHICS_ENGINE_SOURCE_DIR}/tests/small/package/public_api_lint_test.cmake"
+)
+
 include("${publicHeaderManifest}")
 
 

@@ -50,7 +50,7 @@ foreach (header IN LISTS GRAPHICS_ENGINE_PUBLIC_HEADERS)
 
     file(READ "${path}" content)
     if (content MATCHES "#[ \t]*include[ \t]*[<\"](vulkan/|vulkan\\.h|GLFW/|vk_mem_alloc\\.h|imgui)"
-        OR content MATCHES "\\b(Vk[A-Za-z0-9_]*|Vma[A-Za-z0-9_]*|ImGui[A-Za-z0-9_]*|GLFWwindow)\\b")
+        OR content MATCHES "(^|[^A-Za-z0-9_])(Vk[A-Za-z0-9_]*|Vma[A-Za-z0-9_]*|ImGui[A-Za-z0-9_]*|GLFWwindow)($|[^A-Za-z0-9_])")
         message(FATAL_ERROR "Public header '${header}' exposes a backend-native type or include")
     endif ()
 endforeach ()
