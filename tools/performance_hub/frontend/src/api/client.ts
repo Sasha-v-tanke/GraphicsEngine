@@ -17,7 +17,10 @@ export interface PerformanceHubApi {
 
 function isHealth(value: unknown): value is ServiceHealth {
   if (typeof value !== 'object' || value === null || !('status' in value)) return false
-  return ['ok', 'degraded', 'unavailable'].includes(String(value.status))
+  return typeof value.status === 'string'
+    && ['ok', 'degraded', 'unavailable'].includes(value.status)
+    && (!('version' in value) || typeof value.version === 'string')
+    && (!('detail' in value) || typeof value.detail === 'string')
 }
 
 export function createApi(baseUrl = ''): PerformanceHubApi {

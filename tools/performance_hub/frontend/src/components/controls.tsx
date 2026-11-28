@@ -18,8 +18,9 @@ export type TreeItem = { id: string; label: string; children?: TreeItem[] }
 
 export function CheckboxTree({ items, selected, onChange }: { items: TreeItem[]; selected: Set<string>; onChange(selected: Set<string>): void }) {
   const allLeaves = useMemo(() => items.flatMap(leaves), [items])
-  const toggleAll = () => onChange(selected.size === allLeaves.length ? new Set() : new Set(allLeaves.map((item) => item.id)))
-  return <section aria-label="Selectable tree" className="tree"><button type="button" onClick={toggleAll}>{selected.size === allLeaves.length ? 'Select none' : 'Select all'}</button><ul>{items.map((item) => <TreeNode item={item} key={item.id} selected={selected} onChange={onChange} />)}</ul></section>
+  const allSelected = allLeaves.length > 0 && allLeaves.every((item) => selected.has(item.id))
+  const toggleAll = () => onChange(allSelected ? new Set() : new Set(allLeaves.map((item) => item.id)))
+  return <section aria-label="Selectable tree" className="tree"><button type="button" disabled={allLeaves.length === 0} onClick={toggleAll}>{allSelected ? 'Select none' : 'Select all'}</button><ul>{items.map((item) => <TreeNode item={item} key={item.id} selected={selected} onChange={onChange} />)}</ul></section>
 }
 
 function leaves(item: TreeItem): TreeItem[] { return item.children ? item.children.flatMap(leaves) : [item] }

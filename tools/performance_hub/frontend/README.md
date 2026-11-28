@@ -18,3 +18,7 @@ Production code calls only `src/api/client.ts`; it does not contain demo data. F
 ## Components
 
 `components/states.tsx` supplies loading, empty, and API error states. `components/controls.tsx` supplies keyboard-native search, select, checkbox-tree, and pagination controls. Navigation, date filters, and search state are encoded in the URL so direct links and reloads preserve them.
+
+`components/DataTable.tsx` renders typed columns and stable row keys, an accessible caption and column headers, an empty row, horizontal scrolling, and client-side pagination. Pass `rows`, `columns: TableColumn<Row>[]`, `rowKey`, and optional positive `pageSize` (default 20). Pages are clamped when rows shrink. Fixtures belong in tests; the component does not fetch or fabricate records.
+
+Health responses validate every declared field at runtime. Each refresh aborts the previous request and ignores its completion even if an adapter ignores cancellation. Changing clients or unmounting also cancels outstanding work. Supported URL ranges are `7d`, `30d`, and `all`; invalid values normalize to `7d` while preserving other query parameters.

@@ -1,6 +1,7 @@
 import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createApi, type PerformanceHubApi, type ServiceHealth } from './api/client'
+import { createApi, type PerformanceHubApi } from './api/client'
+import { useHealth } from './useHealth'
 import { DateRangePicker, Pagination, SearchField } from './components/controls'
 import { EmptyState, ErrorState, LoadingState, Notice } from './components/states'
 import { normalizeRoute, routes } from './routes'
@@ -16,23 +17,18 @@ function App({ api }: { api?: PerformanceHubApi }) {
   const activeApi = api ?? defaultApi
   const [route, setRoute] = useState(() => normalizeRoute(window.location.pathname))
   const [urlSearch, setUrlSearch] = useState(() => window.location.search)
-  const [health, setHealth] = useState<ServiceHealth>()
-  const [healthError, setHealthError] = useState<Error>()
-  const [loading, setLoading] = useState(true)
-
-  const loadHealth = useCallback(() => {
-    setLoading(true)
-    setHealthError(undefined)
-    activeApi.health()
-      .then(setHealth)
-      .catch((error: unknown) => setHealthError(error instanceof Error ? error : new Error('Health request failed')))
-      .finally(() => setLoading(false))
-  }, [activeApi])
+  const { health, error: healthError, loading, refresh: loadHealth } = useHealth(activeApi)
 
   useEffect(() => {
     const canonicalize = () => {
       const normalized = normalizeRoute(window.location.pathname)
       if (normalized !== window.location.pathname) window.history.replaceState({}, '', normalized)
+      const params = new URLSearchParams(window.location.search)
+      const range = params.get('range')
+      if (normalized === '/runs' && range !== null && !['7d', '30d', 'all'].includes(range)) {
+        params.set('range', '7d')
+        window.history.replaceState({}, '', `${normalized}?${params}`)
+      }
       return normalized
     }
     const listener = () => {
@@ -43,15 +39,6 @@ function App({ api }: { api?: PerformanceHubApi }) {
     window.addEventListener('popstate', listener)
     return () => window.removeEventListener('popstate', listener)
   }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    activeApi.health()
-      .then((value) => { if (!cancelled) setHealth(value) })
-      .catch((error: unknown) => { if (!cancelled) setHealthError(error instanceof Error ? error : new Error('Health request failed')) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [activeApi])
 
   const replaceSearch = useCallback((params: URLSearchParams) => {
     window.history.replaceState({}, '', `${window.location.pathname}${params.size ? `?${params}` : ''}`)
@@ -98,6 +85,7 @@ function Benchmarks({ query, onQueryChange }: { query: string; onQueryChange(que
 function RunPresets() { return <section><Notice>Preset editing is not available until the versioned Run Presets API is integrated.</Notice><EmptyState title="No presets yet" detail="Create presets after the backend contract is available." /></section> }
 
 function Runs({ range, onRangeChange }: { range: string; onRangeChange(range: string): void }) {
+  range = ['7d', '30d', 'all'].includes(range) ? range : '7d'
   const [page, setPage] = useState(1)
   const title = range === 'all' ? 'No recorded runs' : 'No runs in this range'
   return <section><DateRangePicker value={range} onChange={onRangeChange} /><EmptyState title={title} detail="Completed benchmark runs will appear here." /><Pagination page={page} pageCount={1} onPage={setPage} /></section>
