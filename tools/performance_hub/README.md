@@ -19,6 +19,16 @@ Every open compares the v1 table and index definitions with an in-memory referen
 primary keys, foreign keys and CHECK constraints; incompatible definitions are rejected rather than repaired.
 The copy loop enforces 64 MiB against bytes actually read and records bytes actually written.
 
+`CreateStage`, `Read` and `List` return the saved job ID, git revision, environment/build fingerprints
+and immutable configuration; terminal failures also expose their saved reason. `Read` verifies each
+completed run's recorded artifact against the actual byte count and stored content hash, rejecting
+missing files/directories with `artifact_missing` and mismatches or unsafe file types/paths with
+`artifact_corrupt`. Verification streams at most 64 MiB per file without buffering the file in memory.
+It reports the observed filesystem state and does not modify completed data or repair files.
+`List` deliberately returns metadata only, so unavailable artifacts do not remove runs from history;
+consumers requiring integrity verification must use `Read`. Staged/failed runs are returned without
+completed-artifact verification. External modification after a successful read is not prevented.
+
 The `Small / Linux` CI job explicitly enables this optional module and runs
 `GraphicsEnginePerformanceHubStorageTests`. Locally:
 

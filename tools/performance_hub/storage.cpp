@@ -126,11 +126,84 @@ Run ReadRow(sqlite3_stmt* statement) {
             .source = reinterpret_cast<const char*>(sqlite3_column_text(statement, 2)),
             .started_at_utc = reinterpret_cast<const char*>(sqlite3_column_text(statement, 3)),
             .ended_at_utc = std::nullopt,
-            .run_config_json = reinterpret_cast<const char*>(sqlite3_column_text(statement, 5))};
+            .run_config_json = reinterpret_cast<const char*>(sqlite3_column_text(statement, 5)),
+            .job_id = reinterpret_cast<const char*>(sqlite3_column_text(statement, 6)),
+            .git_revision = reinterpret_cast<const char*>(sqlite3_column_text(statement, 7)),
+            .environment_fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(statement, 8)),
+            .build_fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(statement, 9)),
+            .failure_reason = std::nullopt};
     if (sqlite3_column_type(statement, 4) != SQLITE_NULL) {
         run.ended_at_utc = reinterpret_cast<const char*>(sqlite3_column_text(statement, 4));
     }
+    if (sqlite3_column_type(statement, 10) != SQLITE_NULL) {
+        run.failure_reason = reinterpret_cast<const char*>(sqlite3_column_text(statement, 10));
+    }
     return run;
+}
+
+class DiscardBuffer final: public std::streambuf {
+    std::streamsize xsputn(const char*, std::streamsize count) override {
+        return count;
+    }
+    int_type overflow(int_type value) override {
+        return traits_type::not_eof(value);
+    }
+};
+
+Result<void> VerifyArtifacts(sqlite3* database, const std::filesystem::path& root, const Run& run) {
+    // Completed metadata is immutable. Validate paths before opening files and stream hashes without buffering
+    // artifacts.
+    if (!IsSafeRelative(run.id) || std::filesystem::path(run.id).has_parent_path())
+        return std::unexpected(MakeError(ErrorCode::artifact_corrupt, "invalid stored run directory"));
+    const auto directory = root / "runs" / run.id;
+    std::error_code error;
+    const auto directory_status = std::filesystem::symlink_status(directory, error);
+    if (error || !std::filesystem::exists(directory_status))
+        return std::unexpected(MakeError(ErrorCode::artifact_missing, "published run directory unavailable"));
+    if (!std::filesystem::is_directory(directory_status))
+        return std::unexpected(
+                MakeError(ErrorCode::artifact_corrupt, "published run directory is not a regular directory"));
+    Statement artifacts(database, "SELECT relative_path,content_hash,byte_size FROM artifacts WHERE run_id=?");
+    if (auto result = artifacts.ready(); !result)
+        return std::unexpected(result.error());
+    if (auto result = Bind(database, artifacts.get(), 1, run.id); !result)
+        return std::unexpected(result.error());
+    int step = SQLITE_DONE;
+    while ((step = sqlite3_step(artifacts.get())) == SQLITE_ROW) {
+        const std::filesystem::path relative(reinterpret_cast<const char*>(sqlite3_column_text(artifacts.get(), 0)));
+        if (!IsSafeRelative(relative) || relative != CanonicalRelative(relative))
+            return std::unexpected(MakeError(ErrorCode::artifact_corrupt, "invalid stored artifact path"));
+        auto file_path = directory;
+        for (const auto& component: relative) {
+            file_path /= component;
+            const auto status = std::filesystem::symlink_status(file_path, error);
+            if (error || !std::filesystem::exists(status))
+                return std::unexpected(
+                        MakeError(ErrorCode::artifact_missing, "artifact unavailable: " + relative.generic_string()));
+            if (std::filesystem::is_symlink(status))
+                return std::unexpected(MakeError(ErrorCode::artifact_corrupt, "artifact symlink rejected"));
+        }
+        if (!std::filesystem::is_regular_file(file_path, error) || error)
+            return std::unexpected(MakeError(ErrorCode::artifact_corrupt, "artifact is not a regular file"));
+        std::ifstream input(file_path, std::ios::binary);
+        if (!input)
+            return std::unexpected(MakeError(ErrorCode::io, "cannot read published artifact"));
+        DiscardBuffer discard;
+        std::ostream output(&discard);
+        auto copied = detail::CopyArtifactBytes(input, output, kMaxArtifactBytes);
+        if (!copied)
+            return std::unexpected(MakeError(ErrorCode::artifact_corrupt, copied.error().message));
+        std::ostringstream hash;
+        hash << "fnv1a64:" << std::hex << copied->hash;
+        const auto expected_size = sqlite3_column_int64(artifacts.get(), 2);
+        if (expected_size < 0 || copied->bytes != static_cast<std::uintmax_t>(expected_size) ||
+            hash.str() != reinterpret_cast<const char*>(sqlite3_column_text(artifacts.get(), 1)))
+            return std::unexpected(MakeError(ErrorCode::artifact_corrupt,
+                                             "artifact size/hash mismatch: " + relative.generic_string()));
+    }
+    if (auto result = Sql(database, step, "verify artifact records"); !result)
+        return std::unexpected(result.error());
+    return {};
 }
 
 Result<void> ValidateV1Schema(sqlite3* database, const char* schema) {
@@ -334,6 +407,7 @@ const std::filesystem::path& Storage::root() const noexcept {
 }
 
 Result<Storage> Storage::Open(const std::filesystem::path& root) {
+    // Establish the owned layout and connection before inspecting the version ledger.
     std::error_code error;
     std::filesystem::create_directories(root / "staging", error);
     std::filesystem::create_directories(root / "runs", error);
@@ -405,6 +479,7 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
             "run_id DESC); CREATE INDEX IF NOT EXISTS run_cases_lookup_idx ON run_cases(run_id, case_key); CREATE "
             "INDEX IF NOT EXISTS metric_samples_lookup_idx ON metric_samples(run_id, case_key, metric_id);";
     if (version < 1) {
+        // Schema creation, validation and the version record commit together; failure preserves the old version.
         auto fail = [&](const Error& migration_error) {
             sqlite3_exec(impl->database, "ROLLBACK", nullptr, nullptr, nullptr);
             sqlite3_close(impl->database);
@@ -439,6 +514,7 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
             !result)
             return fail(result.error());
     }
+    // Validate existing databases as well, then reconcile interrupted publications under the writer lock.
     if (auto result = ValidateV1Schema(impl->database, migration_v1); !result) {
         sqlite3_close(impl->database);
         delete impl;
@@ -460,7 +536,12 @@ Result<Run> Storage::CreateStage(const RunDraft& draft) {
                   .source = draft.source,
                   .started_at_utc = NowUtc(),
                   .ended_at_utc = std::nullopt,
-                  .run_config_json = draft.run_config_json};
+                  .run_config_json = draft.run_config_json,
+                  .job_id = draft.job_id,
+                  .git_revision = draft.git_revision,
+                  .environment_fingerprint = draft.environment_fingerprint,
+                  .build_fingerprint = draft.build_fingerprint,
+                  .failure_reason = std::nullopt};
     Statement statement(impl_->database,
                         "INSERT INTO "
                         "runs(run_id,status,source,started_at_utc,job_id,git_revision,environment_fingerprint,build_"
@@ -485,6 +566,7 @@ Result<Run> Storage::CreateStage(const RunDraft& draft) {
 }
 
 Result<void> Storage::Complete(const std::string& run_id, const std::vector<ArtifactInput>& inputs) {
+    // Prepare bounded private copies without holding the writer lock; no published files change in this phase.
     auto current = Read(run_id);
     if (!current)
         return std::unexpected(current.error());
@@ -511,6 +593,7 @@ Result<void> Storage::Complete(const std::string& run_id, const std::vector<Arti
         artifacts.push_back(std::move(artifact));
     }
     auto rollback = [&] {
+        // Remove only this attempt's publication while writers and recovery are still excluded.
         std::filesystem::remove_all(impl_->root / "runs" / run_id, filesystem_error);
         sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
     };
@@ -522,6 +605,7 @@ Result<void> Storage::Complete(const std::string& run_id, const std::vector<Arti
         return std::unexpected(result.error());
     }
     const auto published = impl_->root / "runs" / run_id;
+    // Another writer may have finished while we copied. Recheck before touching its directory.
     current = Read(run_id);
     if (!current || current->status != RunStatus::staged) {
         std::filesystem::remove_all(staging, filesystem_error);
@@ -618,9 +702,10 @@ Result<void> Storage::Fail(const std::string& run_id, std::string_view reason) {
 }
 
 Result<Run> Storage::Read(std::string_view run_id) const {
-    Statement statement(
-            impl_->database,
-            "SELECT run_id,status,source,started_at_utc,ended_at_utc,run_config_json FROM runs WHERE run_id=?");
+    Statement statement(impl_->database,
+                        "SELECT "
+                        "run_id,status,source,started_at_utc,ended_at_utc,run_config_json,job_id,git_revision,"
+                        "environment_fingerprint,build_fingerprint,failure_reason FROM runs WHERE run_id=?");
     if (auto result = statement.ready(); !result)
         return std::unexpected(result.error());
     if (auto result = Bind(impl_->database, statement.get(), 1, run_id); !result)
@@ -630,14 +715,21 @@ Result<Run> Storage::Read(std::string_view run_id) const {
         return std::unexpected(MakeError(ErrorCode::not_found, "run does not exist"));
     if (auto result = Sql(impl_->database, step, "read run"); !result)
         return std::unexpected(result.error());
-    return ReadRow(statement.get());
+    auto run = ReadRow(statement.get());
+    if (run.status == RunStatus::completed) {
+        if (auto result = VerifyArtifacts(impl_->database, impl_->root, run); !result)
+            return std::unexpected(result.error());
+    }
+    return run;
 }
 
 Result<RunPage> Storage::List(const std::size_t limit, const std::optional<std::string_view> after_id) const {
     if (limit == 0U || limit > 1000U)
         return std::unexpected(MakeError(ErrorCode::invalid_argument, "page limit must be 1..1000"));
     Statement statement(impl_->database,
-                        "SELECT run_id,status,source,started_at_utc,ended_at_utc,run_config_json FROM runs WHERE "
+                        "SELECT "
+                        "run_id,status,source,started_at_utc,ended_at_utc,run_config_json,job_id,git_revision,"
+                        "environment_fingerprint,build_fingerprint,failure_reason FROM runs WHERE "
                         "(?1='' OR run_id>?1) ORDER BY run_id LIMIT ?2");
     if (auto result = statement.ready(); !result)
         return std::unexpected(result.error());

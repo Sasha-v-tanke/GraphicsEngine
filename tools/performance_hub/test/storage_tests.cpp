@@ -38,6 +38,16 @@ ph::RunDraft Draft() {
             .run_config_json = "{\"repetitions\":3}"};
 }
 
+void CheckMetadata(const ph::Run& run) {
+    const auto draft = Draft();
+    CHECK(run.source == draft.source);
+    CHECK(run.job_id == draft.job_id);
+    CHECK(run.git_revision == draft.git_revision);
+    CHECK(run.environment_fingerprint == draft.environment_fingerprint);
+    CHECK(run.build_fingerprint == draft.build_fingerprint);
+    CHECK(run.run_config_json == draft.run_config_json);
+}
+
 void PersistenceAndTerminalStates(const std::filesystem::path& root) {
     std::string first_id;
     {
@@ -49,6 +59,7 @@ void PersistenceAndTerminalStates(const std::filesystem::path& root) {
         CHECK(second.has_value());
         CHECK(first->id != second->id);
         first_id = first->id;
+        CheckMetadata(*first);
         const auto source = root / "report.json";
         {
             std::ofstream file(source);
@@ -60,18 +71,94 @@ void PersistenceAndTerminalStates(const std::filesystem::path& root) {
         auto completed = storage->Read(first->id);
         CHECK(completed.has_value());
         CHECK(completed->status == ph::RunStatus::completed);
+        CheckMetadata(*completed);
         CHECK(std::filesystem::exists(root / "runs" / first->id / "reports/report.json"));
         CHECK(!storage->Complete(first->id, artifacts).has_value());
         CHECK(storage->Fail(second->id, "process crashed").has_value());
         auto failed = storage->Read(second->id);
         CHECK(failed.has_value());
         CHECK(failed->status == ph::RunStatus::failed);
+        CHECK(failed->failure_reason == "process crashed");
     }
     auto reopened = ph::Storage::Open(root);
     CHECK(reopened.has_value());
     auto persisted = reopened->Read(first_id);
     CHECK(persisted.has_value());
     CHECK(persisted->status == ph::RunStatus::completed);
+    CheckMetadata(*persisted);
+    const auto page = reopened->List(10);
+    CHECK(page.has_value());
+    if (page)
+        for (const auto& run: page->runs)
+            CheckMetadata(run);
+}
+
+void PublishedArtifactIntegrity(const std::filesystem::path& root) {
+    std::string run_id;
+    const auto original = root / "original.json";
+    {
+        auto storage = ph::Storage::Open(root);
+        CHECK(storage.has_value());
+        if (!storage)
+            return;
+        auto staged = storage->CreateStage(Draft());
+        CHECK(staged.has_value());
+        if (!staged)
+            return;
+        run_id = staged->id;
+        {
+            std::ofstream file(original);
+            file << "good";
+        }
+        CHECK(storage->Complete(run_id, {{.source_file = original, .relative_path = "report.json", .type = "json"}})
+                      .has_value());
+    }
+    auto storage = ph::Storage::Open(root);
+    CHECK(storage.has_value());
+    if (!storage)
+        return;
+    CHECK(storage->Read(run_id).has_value());
+    const auto published = root / "runs" / run_id / "report.json";
+    // Same size but different bytes must fail the hash check after restart.
+    {
+        std::ofstream file(published);
+        file << "evil";
+    }
+    auto changed = storage->Read(run_id);
+    CHECK(!changed.has_value());
+    if (!changed)
+        CHECK(changed.error().code == ph::ErrorCode::artifact_corrupt);
+    {
+        std::ofstream file(published);
+        file << "g";
+    }
+    auto truncated = storage->Read(run_id);
+    CHECK(!truncated.has_value());
+    if (!truncated)
+        CHECK(truncated.error().code == ph::ErrorCode::artifact_corrupt);
+    {
+        std::ofstream file(published);
+        file << "good";
+    }
+    CHECK(storage->Read(run_id).has_value());
+    std::filesystem::remove(published);
+    auto missing = storage->Read(run_id);
+    CHECK(!missing.has_value());
+    if (!missing)
+        CHECK(missing.error().code == ph::ErrorCode::artifact_missing);
+    // Integrity failures must neither alter the immutable record nor hide it from metadata history.
+    const auto page = storage->List(10);
+    CHECK(page.has_value());
+    if (page) {
+        CHECK(page->runs.size() == 1);
+        if (!page->runs.empty())
+            CHECK(page->runs.front().status == ph::RunStatus::completed);
+    }
+    {
+        std::ofstream file(published);
+        file << "good";
+    }
+    CHECK(storage->Read(run_id).has_value());
 }
 
 void RejectsUnsafeArtifacts(const std::filesystem::path& root) {
@@ -268,6 +355,7 @@ void StreamingBoundsAndErrors() {
 int main() {
     const auto root = TemporaryRoot();
     PersistenceAndTerminalStates(root / "persistence");
+    PublishedArtifactIntegrity(root / "artifact-integrity");
     RejectsUnsafeArtifacts(root / "unsafe");
     OldSchemaMigrationAndForeignKeys(root / "migration");
     RecoversPublishedDirectoryAfterInterruptedCompletion(root / "recovery");

@@ -17,7 +17,9 @@ enum class ErrorCode {
     conflict,
     io,
     database,
-    migration
+    migration,
+    artifact_missing,
+    artifact_corrupt
 };
 struct Error {
     ErrorCode code;
@@ -46,6 +48,11 @@ struct Run {
     std::string started_at_utc;
     std::optional<std::string> ended_at_utc;
     std::string run_config_json;
+    std::string job_id;
+    std::string git_revision;
+    std::string environment_fingerprint;
+    std::string build_fingerprint;
+    std::optional<std::string> failure_reason;
 };
 struct ArtifactInput {
     std::filesystem::path source_file;
@@ -75,7 +82,9 @@ public:
     Result<Run> CreateStage(const RunDraft& draft);
     Result<void> Complete(const std::string& run_id, const std::vector<ArtifactInput>& artifacts);
     Result<void> Fail(const std::string& run_id, std::string_view reason);
+    // Completed runs are returned only after all recorded files pass size/hash verification.
     Result<Run> Read(std::string_view run_id) const;
+    // Metadata-only pagination; use Read for artifact integrity verification.
     Result<RunPage> List(std::size_t limit, std::optional<std::string_view> after_id = std::nullopt) const;
     [[nodiscard]] const std::filesystem::path& root() const noexcept;
 
