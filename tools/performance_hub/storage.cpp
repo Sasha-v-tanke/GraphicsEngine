@@ -154,6 +154,11 @@ Result<void> ValidateV1Schema(sqlite3* database) {
 }
 
 Result<void> RecoverPublishedDirectories(sqlite3* database, const std::filesystem::path& runs_directory) {
+    if (auto result =
+                Sql(database, sqlite3_exec(database, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr), "lock recovery");
+        !result)
+        return std::unexpected(result.error());
+    const auto rollback = [&] { sqlite3_exec(database, "ROLLBACK", nullptr, nullptr, nullptr); };
     std::error_code error;
     for (const auto& entry: std::filesystem::directory_iterator(runs_directory, error)) {
         if (error)
@@ -161,24 +166,32 @@ Result<void> RecoverPublishedDirectories(sqlite3* database, const std::filesyste
         if (!entry.is_directory(error) || error)
             continue;
         Statement status(database, "SELECT status FROM runs WHERE run_id=?");
-        if (auto result = status.ready(); !result)
+        if (auto result = status.ready(); !result) {
+            rollback();
             return std::unexpected(result.error());
+        }
         const auto run_id = entry.path().filename().string();
-        if (auto result = Bind(database, status.get(), 1, run_id); !result)
+        if (auto result = Bind(database, status.get(), 1, run_id); !result) {
+            rollback();
             return std::unexpected(result.error());
+        }
         const int step = sqlite3_step(status.get());
         const bool keep =
                 step == SQLITE_ROW &&
                 std::string_view(reinterpret_cast<const char*>(sqlite3_column_text(status.get(), 0))) == "completed";
         if (!keep) {
             std::filesystem::remove_all(entry.path(), error);
-            if (error)
+            if (error) {
+                rollback();
                 return std::unexpected(MakeError(ErrorCode::io, "cannot recover unpublished artifact directory"));
+            }
         }
     }
-    if (error)
+    if (error) {
+        rollback();
         return std::unexpected(MakeError(ErrorCode::io, "cannot enumerate published artifact directories"));
-    return {};
+    }
+    return Sql(database, sqlite3_exec(database, "COMMIT", nullptr, nullptr, nullptr), "commit recovery");
 }
 
 Result<void> CopyArtifact(const ArtifactInput& artifact, const std::filesystem::path& staging, Artifact& result) {
@@ -290,15 +303,17 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
         return std::unexpected(result.error());
     }
     int version = 0;
-    Statement version_query(impl->database, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
-    if (auto result = version_query.ready(); !result || sqlite3_step(version_query.get()) != SQLITE_ROW) {
-        const Error error_value =
-                result ? MakeError(ErrorCode::migration, "cannot read schema version") : result.error();
-        sqlite3_close(impl->database);
-        delete impl;
-        return std::unexpected(error_value);
+    {
+        Statement version_query(impl->database, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
+        if (auto result = version_query.ready(); !result || sqlite3_step(version_query.get()) != SQLITE_ROW) {
+            const Error error_value =
+                    result ? MakeError(ErrorCode::migration, "cannot read schema version") : result.error();
+            sqlite3_close(impl->database);
+            delete impl;
+            return std::unexpected(error_value);
+        }
+        version = sqlite3_column_int(version_query.get(), 0);
     }
-    version = sqlite3_column_int(version_query.get(), 0);
     if (version > kSchemaVersion) {
         sqlite3_close(impl->database);
         delete impl;
