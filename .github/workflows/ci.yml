@@ -102,6 +102,46 @@ jobs:
             cat tests/result/sanitizers.log
           fi
 
+  benchmark-catalog-linux:
+    name: Benchmark catalog / Linux
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch'
+
+    env:
+      CC: clang-23
+      CXX: clang++-23
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+
+          sudo apt-get update
+          sudo apt-get install -y clang-23 libglm-dev
+
+      - name: Run catalog unit tests
+        run: python3 -m unittest tools.performance_hub.tests.test_benchmark_catalog -v
+
+      - name: Build CPU benchmark target
+        run: |
+          cmake --preset benchmark
+          cmake --build --preset benchmark
+
+      - name: Verify real benchmark catalog and exact selection
+        run: |
+          python3 tools/performance_hub/benchmark_catalog.py \
+            --repo . \
+            --build-preset benchmark \
+            --select 'BM_TaskSystemDependencyValidation/0' \
+            --select 'BM_RendererPreparation/1024/0/real_time'
+
   medium-macos:
     name: Medium / MacOS
     runs-on: macos-26
