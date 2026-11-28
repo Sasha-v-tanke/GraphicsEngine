@@ -6,6 +6,7 @@ SOURCES(
     bvh_fixture.h
     spatial_bounds.cpp
     entity_ref.cpp
+    typed_systems.cpp
     scene_test.cpp
 )
 
