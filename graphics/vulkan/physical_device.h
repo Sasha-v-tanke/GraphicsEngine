@@ -25,12 +25,17 @@ struct VulkanPhysicalDeviceFeatures {
     bool TimelineSemaphore = false;
     bool Synchronization2 = false;
     bool DynamicRendering = false;
+    bool MultiDrawIndirect = false;
+    bool DrawIndirectCount = false;
+    bool DescriptorIndexing = false;
 };
 
 struct VulkanQueueFamilyCapabilities {
     std::uint32_t Index = 0;
     std::uint32_t QueueCount = 0;
     bool Graphics = false;
+    bool Compute = false;
+    bool Transfer = false;
     bool Present = false;
 };
 
@@ -42,12 +47,25 @@ struct VulkanPhysicalDeviceCapabilities {
     std::array<std::uint8_t, VK_UUID_SIZE> DeviceUuid{};
     EVulkanPhysicalDeviceType Type = EVulkanPhysicalDeviceType::OTHER;
     std::uint32_t MaxImageDimension2D = 0;
+    bool Rgba8UnormSupported = false;
+    bool D32FloatSupported = false;
+    std::uint32_t MaxColorAttachmentSamples = 1;
+    std::uint32_t MaxDepthStencilAttachmentSamples = 1;
+    std::uint32_t MaxComputeWorkGroupInvocations = 0;
+    std::array<std::uint32_t, 3> MaxComputeWorkGroupSize{};
+    std::uint32_t MaxDrawIndirectCount = 0;
+    std::uint32_t MaxBoundDescriptorSets = 0;
+    std::uint32_t MaxPerStageStorageBuffers = 0;
+    std::uint64_t DeviceLocalMemoryBytes = 0;
+    bool TimestampQueries = false;
+    float TimestampPeriodNanoseconds = 0.0F;
     VulkanDescriptorLimits DescriptorLimits;
     std::vector<std::string> Extensions;
     VulkanPhysicalDeviceFeatures Features;
     std::vector<VulkanQueueFamilyCapabilities> QueueFamilies;
     bool SurfaceSupported = false;
     bool SwapchainFormatsSupported = false;
+    bool SrgbColorSpaceSupported = false;
     bool SwapchainPresentModesSupported = false;
 };
 

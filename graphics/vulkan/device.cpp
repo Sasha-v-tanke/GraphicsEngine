@@ -97,12 +97,67 @@ std::vector<VkDeviceQueueCreateInfo> MakeQueueCreateInfos(const std::vector<Vulk
     return queueCreateInfos;
 }
 
-NGraphics::GraphicsCapabilities MakeGraphicsCapabilities(const VulkanPhysicalDeviceCapabilities& capabilities) {
+const VulkanQueueFamilyCapabilities&
+GetCreatedGraphicsQueueFamily(const VulkanPhysicalDeviceSelection& physicalDevice) {
+    const auto queue = std::ranges::find_if(physicalDevice.Capabilities.QueueFamilies,
+                                            [&](const VulkanQueueFamilyCapabilities& candidate) {
+                                                return candidate.Index == physicalDevice.GraphicsQueueFamilyIndex;
+                                            });
+    if (queue == physicalDevice.Capabilities.QueueFamilies.end()) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Selected graphics queue family is not available");
+    }
+    return *queue;
+}
+
+VulkanPhysicalDeviceFeatures MakeEnabledDeviceFeatures(const VulkanPhysicalDeviceCapabilities& capabilities) {
+    return {
+            .TimelineSemaphore = capabilities.Features.TimelineSemaphore,
+            .Synchronization2 = capabilities.Features.Synchronization2,
+            .DynamicRendering = capabilities.Features.DynamicRendering,
+    };
+}
+
+NGraphics::GraphicsCapabilities MakeGraphicsCapabilities(const VulkanPhysicalDeviceSelection& physicalDevice) {
+    const VulkanPhysicalDeviceCapabilities& capabilities = physicalDevice.Capabilities;
+    const VulkanQueueFamilyCapabilities& graphicsQueue = GetCreatedGraphicsQueueFamily(physicalDevice);
     return {
             .Presentation = capabilities.SurfaceSupported && capabilities.SwapchainFormatsSupported &&
                             capabilities.SwapchainPresentModesSupported,
             .TimelineCompletion = capabilities.Features.TimelineSemaphore,
             .MaxFramesInFlight = VulkanMaxFramesInFlight,
+            .DeviceEpoch = 1,
+            .QueueTopology =
+                    {
+                            .Graphics = graphicsQueue.Graphics,
+                            .Compute = graphicsQueue.Compute,
+                            .Transfer = graphicsQueue.Transfer,
+                    },
+            .Formats = {.Rgba8Unorm = capabilities.Rgba8UnormSupported,
+                        .D32Float = capabilities.D32FloatSupported,
+                        .MaxColorAttachmentSamples = capabilities.MaxColorAttachmentSamples,
+                        .MaxDepthStencilAttachmentSamples = capabilities.MaxDepthStencilAttachmentSamples},
+            .ShaderCompute = {.Compute = graphicsQueue.Compute,
+                              .MaxComputeWorkGroupInvocations = capabilities.MaxComputeWorkGroupInvocations,
+                              .MaxComputeWorkGroupSizeX = capabilities.MaxComputeWorkGroupSize[0],
+                              .MaxComputeWorkGroupSizeY = capabilities.MaxComputeWorkGroupSize[1],
+                              .MaxComputeWorkGroupSizeZ = capabilities.MaxComputeWorkGroupSize[2]},
+            .DrawIndirect = {.DrawIndirect = capabilities.MaxDrawIndirectCount != 0,
+                             .DrawIndirectCount = false,
+                             .MaxDrawIndirectCount = capabilities.MaxDrawIndirectCount},
+            .Bindings = {.StorageBuffers = capabilities.MaxPerStageStorageBuffers != 0,
+                         .DescriptorIndexing = false,
+                         .MaxBoundDescriptorSets = capabilities.MaxBoundDescriptorSets,
+                         .MaxPerStageStorageBuffers = capabilities.MaxPerStageStorageBuffers},
+            .Memory = {.DeviceLocalMemoryBytes = capabilities.DeviceLocalMemoryBytes,
+                       .MinUniformBufferOffsetAlignment = capabilities.DescriptorLimits.MinUniformBufferOffsetAlignment,
+                       .MinStorageBufferOffsetAlignment =
+                               capabilities.DescriptorLimits.MinStorageBufferOffsetAlignment},
+            .PresentationSupport = {.Presentation = capabilities.SurfaceSupported &&
+                                                    capabilities.SwapchainFormatsSupported &&
+                                                    capabilities.SwapchainPresentModesSupported,
+                                    .SrgbColorSpace = capabilities.SrgbColorSpaceSupported},
+            .Profiling = {.TimestampQueries = capabilities.TimestampQueries,
+                          .TimestampPeriodNanoseconds = capabilities.TimestampPeriodNanoseconds},
     };
 }
 
@@ -148,8 +203,8 @@ VulkanDevicePlan MakeVulkanDevicePlan(const VulkanPhysicalDeviceSelection& physi
     return {
             .QueueFamilies = std::move(queueFamilies),
             .Extensions = MakeDeviceExtensions(physicalDevice.Capabilities),
-            .Features = physicalDevice.Capabilities.Features,
-            .GraphicsCapabilities = MakeGraphicsCapabilities(physicalDevice.Capabilities),
+            .Features = MakeEnabledDeviceFeatures(physicalDevice.Capabilities),
+            .GraphicsCapabilities = MakeGraphicsCapabilities(physicalDevice),
     };
 }
 
