@@ -17,6 +17,7 @@ SOURCES(
 
 PUBLIC_DEPENDS(
     Window
+    Assets
     Resources
     Graphics
     Common
