@@ -26,9 +26,9 @@ using NSpatialQueryDetail::Union;
 constexpr std::size_t NO_NODE = std::numeric_limits<std::size_t>::max();
 
 struct Node {
-    SpatialAabb Fat;
-    SpatialAabb Tight;
-    SpatialIdentity Identity;
+    SpatialAabb Fat = {};
+    SpatialAabb Tight = {};
+    SpatialIdentity Identity = {};
     std::size_t Parent = NO_NODE;
     std::size_t Left = NO_NODE;
     std::size_t Right = NO_NODE;
@@ -264,7 +264,9 @@ DynamicAabbTree DynamicAabbTree::Refresh(std::uint64_t version, std::span<const 
             "Invalid dynamic AABB tree version or input budget");
     // All admission uses copied values supplied by the committed record producer.
     // The map below borrows records only during this call, never in the snapshot.
-    std::map<std::uint32_t, const SpatialRecord*> incoming;
+    std::vector<const SpatialRecord*> incoming;
+    incoming.reserve(records.size());
+    const auto slotOf = [](const SpatialRecord* record) { return record->Identity.Entity.Identity.Index; };
     auto worldId = m_data->WorldId;
     for (const auto& record: records) {
         if (record.Validity != ESpatialValidity::VALID || record.Mobility != ESpatialMobility::DYNAMIC) {
@@ -276,17 +278,28 @@ DynamicAabbTree DynamicAabbTree::Refresh(std::uint64_t version, std::span<const 
                 "Malformed dynamic spatial record");
         Require(worldId == 0 || worldId == record.Identity.Entity.WorldId, "Mixed Worlds in dynamic AABB tree");
         worldId = record.Identity.Entity.WorldId;
-        Require(incoming.emplace(record.Identity.Entity.Identity.Index, &record).second,
-                "Duplicate dynamic spatial slot");
+        incoming.push_back(&record);
+    }
+    // Captured records normally arrive in entity order. Normalize arbitrary input
+    // once, then merge both sorted sequences rather than looking up every record.
+    if (!std::ranges::is_sorted(incoming, {}, slotOf)) {
+        std::ranges::sort(incoming, {}, slotOf);
+    }
+    for (std::size_t index = 1; index < incoming.size(); ++index) {
+        Require(slotOf(incoming[index - 1]) != slotOf(incoming[index]), "Duplicate dynamic spatial slot");
     }
 
     auto data = std::make_shared<Data>(*m_data);
     data->WorldId = worldId;
     data->Statistics = {};
     data->Statistics.Version = version;
+    auto current = incoming.begin();
     for (auto it = data->Leaves.begin(); it != data->Leaves.end();) {
-        const auto found = incoming.find(it->first);
-        if (found == incoming.end() || data->Nodes[it->second].Identity != found->second->Identity) {
+        while (current != incoming.end() && slotOf(*current) < it->first) {
+            ++current;
+        }
+        if (current == incoming.end() || slotOf(*current) != it->first ||
+            data->Nodes[it->second].Identity != (*current)->Identity) {
             Remove(*data, it->second);
             it = data->Leaves.erase(it);
             ++data->Statistics.Removed;
@@ -294,11 +307,15 @@ DynamicAabbTree DynamicAabbTree::Refresh(std::uint64_t version, std::span<const 
             ++it;
         }
     }
-    for (const auto& [slot, record]: incoming) {
+    auto found = data->Leaves.begin();
+    for (const auto* record: incoming) {
+        const auto slot = slotOf(record);
         const auto tight = record->Bounds->Aabb;
-        const auto found = data->Leaves.find(slot);
-        if (found == data->Leaves.end()) {
-            data->Leaves.emplace(slot, Insert(*data, record->Identity, tight));
+        while (found != data->Leaves.end() && found->first < slot) {
+            ++found;
+        }
+        if (found == data->Leaves.end() || found->first != slot) {
+            data->Leaves.emplace_hint(found, slot, Insert(*data, record->Identity, tight));
             ++data->Statistics.Inserted;
         } else if (!Contains(data->Nodes[found->second].Fat, tight)) {
             Remove(*data, found->second);

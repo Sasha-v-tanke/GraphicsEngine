@@ -1,16 +1,14 @@
 #include "static_bvh.h"
 
-#include "spatial_query_detail.h"
-
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
-#include <tuple>
 #include <utility>
 
-#include <GraphicsEngine/lib/common/error/error.h>
-#include <GraphicsEngine/lib/common/error/exception.h>
 #include <GraphicsEngine/scene/scene_manager.h>
+
+#include "spatial_query_detail.h"
 
 namespace NScene {
 namespace {
@@ -143,7 +141,6 @@ SpatialQueryResult Query(const auto& data, const auto& matches) {
     result.Statistics.MatchedItems = result.Candidates.size();
     return result;
 }
-
 
 } // namespace
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <tuple>
 
@@ -44,8 +45,8 @@ inline bool Overlaps(SpatialAabb left, SpatialAabb right) {
     return left.Min.X <= right.Max.X && right.Min.X <= left.Max.X && left.Min.Y <= right.Max.Y &&
            right.Min.Y <= left.Max.Y && left.Min.Z <= right.Max.Z && right.Min.Z <= left.Max.Z;
 }
-constexpr double DOWN = -std::numeric_limits<double>::infinity();
-constexpr double UP = std::numeric_limits<double>::infinity();
+inline constexpr double DOWN = -std::numeric_limits<double>::infinity();
+inline constexpr double UP = std::numeric_limits<double>::infinity();
 inline SpatialAabb GlobalBox(SpatialAabb relative, SpatialVector origin) {
     const auto lo = Values(relative.Min);
     const auto hi = Values(relative.Max);
