@@ -4,14 +4,14 @@
 #include <memory>
 #include <unordered_map>
 
-#include <graphics/buffer.h>
-#include <graphics/completion_point.h>
-#include <graphics/frame_submission.h>
-#include <graphics/graphics_capabilities.h>
-#include <graphics/graphics_config.h>
-#include <graphics/graphics_pipeline.h>
-#include <graphics/image.h>
-#include <lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/graphics/buffer.h>
+#include <GraphicsEngine/graphics/completion_point.h>
+#include <GraphicsEngine/graphics/frame_submission.h>
+#include <GraphicsEngine/graphics/graphics_capabilities.h>
+#include <GraphicsEngine/graphics/graphics_config.h>
+#include <GraphicsEngine/graphics/graphics_pipeline.h>
+#include <GraphicsEngine/graphics/image.h>
+#include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 
 namespace NGraphics {
 
@@ -95,6 +95,7 @@ private:
     void ValidateCompletionOwner(CompletionPoint completion) const;
 
     std::unique_ptr<NBackend::IGraphicsBackend> m_backend;
+    GraphicsCapabilities m_capabilities;
     std::uint64_t m_ownerId = 0;
     std::uint64_t m_nextBufferGeneration = 1;
     std::uint64_t m_nextGraphicsPipelineGeneration = 1;

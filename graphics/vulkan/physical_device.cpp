@@ -46,6 +46,28 @@ bool Contains(const std::vector<std::string>& values, std::string_view value) {
     return std::ranges::find(values, value) != values.end();
 }
 
+std::uint32_t MaxSampleCount(VkSampleCountFlags flags) {
+    if ((flags & VK_SAMPLE_COUNT_64_BIT) != 0)
+        return 64;
+    if ((flags & VK_SAMPLE_COUNT_32_BIT) != 0)
+        return 32;
+    if ((flags & VK_SAMPLE_COUNT_16_BIT) != 0)
+        return 16;
+    if ((flags & VK_SAMPLE_COUNT_8_BIT) != 0)
+        return 8;
+    if ((flags & VK_SAMPLE_COUNT_4_BIT) != 0)
+        return 4;
+    if ((flags & VK_SAMPLE_COUNT_2_BIT) != 0)
+        return 2;
+    return 1;
+}
+
+bool SupportsOptimalFormat(VkPhysicalDevice device, VkFormat format) {
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(device, format, &properties);
+    return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+}
+
 std::string FormatApiVersion(std::uint32_t version) {
     return std::format("{}.{}.{}",
                        VK_API_VERSION_MAJOR(version),
@@ -213,6 +235,9 @@ VulkanPhysicalDeviceFeatures ReadDeviceFeatures(VkPhysicalDevice device) {
             .TimelineSemaphore = features12.timelineSemaphore == VK_TRUE,
             .Synchronization2 = features13.synchronization2 == VK_TRUE,
             .DynamicRendering = features13.dynamicRendering == VK_TRUE,
+            .MultiDrawIndirect = features2.features.multiDrawIndirect == VK_TRUE,
+            .DrawIndirectCount = features12.drawIndirectCount == VK_TRUE,
+            .DescriptorIndexing = features12.descriptorIndexing == VK_TRUE,
     };
 }
 
@@ -234,6 +259,8 @@ std::vector<VulkanQueueFamilyCapabilities> ReadQueueFamilies(VkPhysicalDevice de
                 .Index = index,
                 .QueueCount = properties[index].queueCount,
                 .Graphics = (properties[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0,
+                .Compute = (properties[index].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0,
+                .Transfer = (properties[index].queueFlags & VK_QUEUE_TRANSFER_BIT) != 0,
                 .Present = presentResult == VK_SUCCESS && presentSupported == VK_TRUE,
         });
     }
@@ -254,6 +281,15 @@ void ReadSwapchainSupport(VkPhysicalDevice device,
     std::uint32_t formatCount = 0;
     const VkResult formatResult = vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
     capabilities.SwapchainFormatsSupported = formatResult == VK_SUCCESS && formatCount > 0;
+    if (capabilities.SwapchainFormatsSupported) {
+        std::vector<VkSurfaceFormatKHR> formats(formatCount);
+        if (vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, formats.data()) == VK_SUCCESS) {
+            formats.resize(formatCount);
+            capabilities.SrgbColorSpaceSupported = std::ranges::any_of(formats, [](const VkSurfaceFormatKHR& format) {
+                return format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+            });
+        }
+    }
 
     std::uint32_t presentModeCount = 0;
     const VkResult presentModeResult =
@@ -271,6 +307,15 @@ VulkanPhysicalDeviceCapabilities ReadDeviceCapabilities(VkPhysicalDevice device,
     };
     vkGetPhysicalDeviceProperties2(device, &properties2);
 
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    vkGetPhysicalDeviceMemoryProperties(device, &memoryProperties);
+    std::uint64_t deviceLocalMemoryBytes = 0;
+    for (std::uint32_t index = 0; index < memoryProperties.memoryHeapCount; ++index) {
+        if ((memoryProperties.memoryHeaps[index].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+            deviceLocalMemoryBytes += memoryProperties.memoryHeaps[index].size;
+        }
+    }
+
     const VkPhysicalDeviceProperties& properties = properties2.properties;
 
     VulkanPhysicalDeviceCapabilities capabilities{
@@ -280,6 +325,20 @@ VulkanPhysicalDeviceCapabilities ReadDeviceCapabilities(VkPhysicalDevice device,
             .DeviceId = properties.deviceID,
             .Type = ConvertDeviceType(properties.deviceType),
             .MaxImageDimension2D = properties.limits.maxImageDimension2D,
+            .Rgba8UnormSupported = SupportsOptimalFormat(device, VK_FORMAT_R8G8B8A8_UNORM),
+            .D32FloatSupported = SupportsOptimalFormat(device, VK_FORMAT_D32_SFLOAT),
+            .MaxColorAttachmentSamples = MaxSampleCount(properties.limits.framebufferColorSampleCounts),
+            .MaxDepthStencilAttachmentSamples = MaxSampleCount(properties.limits.framebufferDepthSampleCounts),
+            .MaxComputeWorkGroupInvocations = properties.limits.maxComputeWorkGroupInvocations,
+            .MaxComputeWorkGroupSize = {properties.limits.maxComputeWorkGroupSize[0],
+                                        properties.limits.maxComputeWorkGroupSize[1],
+                                        properties.limits.maxComputeWorkGroupSize[2]},
+            .MaxDrawIndirectCount = properties.limits.maxDrawIndirectCount,
+            .MaxBoundDescriptorSets = properties.limits.maxBoundDescriptorSets,
+            .MaxPerStageStorageBuffers = properties.limits.maxPerStageDescriptorStorageBuffers,
+            .DeviceLocalMemoryBytes = deviceLocalMemoryBytes,
+            .TimestampQueries = properties.limits.timestampComputeAndGraphics == VK_TRUE,
+            .TimestampPeriodNanoseconds = properties.limits.timestampPeriod,
             .DescriptorLimits =
                     {
                             .MinUniformBufferOffsetAlignment = properties.limits.minUniformBufferOffsetAlignment,

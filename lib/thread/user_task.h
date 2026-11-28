@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <utility>
 
+#include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/error/exception.h>
 #include <GraphicsEngine/lib/common/wrapper/non_copyable.h>
 #include <GraphicsEngine/lib/thread/job_control.h>

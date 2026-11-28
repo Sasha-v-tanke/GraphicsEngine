@@ -90,11 +90,13 @@ public:
     }
 
 private:
-    NGraphics::GraphicsCapabilities m_capabilities{
-            .Presentation = true,
-            .TimelineCompletion = true,
-            .MaxFramesInFlight = 2,
-    };
+    NGraphics::GraphicsCapabilities m_capabilities = [] {
+        NGraphics::GraphicsCapabilities capabilities{};
+        capabilities.Presentation = true;
+        capabilities.TimelineCompletion = true;
+        capabilities.MaxFramesInFlight = 2;
+        return capabilities;
+    }();
     std::uint64_t m_nextImage = 1;
 };
 

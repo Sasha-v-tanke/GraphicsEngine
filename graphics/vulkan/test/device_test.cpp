@@ -161,8 +161,25 @@ NVulkan::VulkanPhysicalDeviceSelection MakeSelection() {
                                             .TimelineSemaphore = true,
                                             .Synchronization2 = true,
                                             .DynamicRendering = true,
+                                            .DrawIndirectCount = true,
+                                            .DescriptorIndexing = true,
                                     },
-                            .QueueFamilies = {},
+                            .QueueFamilies =
+                                    {
+                                            {
+                                                    .Index = 2,
+                                                    .QueueCount = 1,
+                                                    .Graphics = true,
+                                                    .Compute = true,
+                                                    .Transfer = true,
+                                            },
+                                            {
+                                                    .Index = 3,
+                                                    .QueueCount = 1,
+                                                    .Compute = true,
+                                                    .Transfer = true,
+                                            },
+                                    },
                             .SurfaceSupported = true,
                             .SwapchainFormatsSupported = true,
                             .SwapchainPresentModesSupported = true,
@@ -325,6 +342,12 @@ TEST(VulkanDevicePlan, MapsGraphicsCapabilities) {
     EXPECT_TRUE(plan.GraphicsCapabilities.Presentation);
     EXPECT_TRUE(plan.GraphicsCapabilities.TimelineCompletion);
     EXPECT_EQ(plan.GraphicsCapabilities.MaxFramesInFlight, 2U);
+    EXPECT_EQ(plan.GraphicsCapabilities.DeviceEpoch, 1U);
+    EXPECT_TRUE(plan.GraphicsCapabilities.PresentationSupport.Presentation);
+    EXPECT_TRUE(plan.GraphicsCapabilities.QueueTopology.Compute);
+    EXPECT_FALSE(plan.GraphicsCapabilities.QueueTopology.DedicatedCompute);
+    EXPECT_FALSE(plan.GraphicsCapabilities.DrawIndirect.DrawIndirectCount);
+    EXPECT_FALSE(plan.GraphicsCapabilities.Bindings.DescriptorIndexing);
 }
 
 TEST(VulkanDevicePlan, RejectsNullPhysicalDevice) {

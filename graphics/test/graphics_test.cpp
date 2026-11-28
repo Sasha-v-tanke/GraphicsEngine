@@ -21,12 +21,16 @@ namespace {
 
 using NTest::ExpectError;
 
+NGraphics::GraphicsCapabilities MakeFakeCapabilities() {
+    NGraphics::GraphicsCapabilities capabilities{};
+    capabilities.Presentation = true;
+    capabilities.TimelineCompletion = true;
+    capabilities.MaxFramesInFlight = 2;
+    return capabilities;
+}
+
 struct FakeGraphicsState {
-    NGraphics::GraphicsCapabilities Capabilities{
-            .Presentation = true,
-            .TimelineCompletion = true,
-            .MaxFramesInFlight = 2,
-    };
+    NGraphics::GraphicsCapabilities Capabilities = MakeFakeCapabilities();
     int CreatedCount = 0;
     int DestroyedCount = 0;
     std::vector<std::pair<std::uint64_t, NGraphics::FrameSubmission>> InFlightSubmissions;
@@ -240,9 +244,61 @@ TEST_F(GraphicsTest, CreatesBackendAndPublishesImmutableCapabilities) {
         EXPECT_TRUE(graphics.GetCapabilities().Presentation);
         EXPECT_TRUE(graphics.GetCapabilities().TimelineCompletion);
         EXPECT_EQ(graphics.GetCapabilities().MaxFramesInFlight, 2U);
+        m_state.Capabilities.Presentation = false;
+        EXPECT_TRUE(graphics.GetCapabilities().Presentation);
     }
 
     EXPECT_EQ(m_state.DestroyedCount, 1);
+}
+
+TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
+    NGraphics::GraphicsCapabilities capabilities{};
+    capabilities.Presentation = true;
+    capabilities.TimelineCompletion = true;
+    capabilities.MaxFramesInFlight = 2;
+    capabilities.Formats.MaxColorAttachmentSamples = 4;
+    capabilities.Formats.MaxDepthStencilAttachmentSamples = 4;
+    capabilities.ShaderCompute.Compute = true;
+    capabilities.ShaderCompute.MaxComputeWorkGroupInvocations = 256;
+    capabilities.DrawIndirect = {.DrawIndirect = true, .DrawIndirectCount = true, .MaxDrawIndirectCount = 1024};
+    capabilities.Bindings = {.StorageBuffers = true,
+                             .DescriptorIndexing = true,
+                             .MaxBoundDescriptorSets = 4,
+                             .MaxPerStageStorageBuffers = 4};
+    capabilities.Profiling.TimestampQueries = true;
+
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::BASE)));
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::ADVANCED)));
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::HIGH_END)));
+
+    capabilities.Bindings.DescriptorIndexing = false;
+    EXPECT_FALSE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::HIGH_END)));
+    EXPECT_TRUE(NGraphics::SatisfiesRequirements(
+            capabilities,
+            NGraphics::MakeRequiredGraphicsCapabilities(NGraphics::EGraphicsCapabilityProfile::ADVANCED)));
+}
+
+TEST(GraphicsCapabilities, RejectsInvalidLimitsAndMissingRequestedFeature) {
+    NGraphics::GraphicsCapabilities capabilities{};
+    capabilities.Presentation = true;
+    capabilities.Formats.MaxColorAttachmentSamples = 1;
+    capabilities.Formats.MaxDepthStencilAttachmentSamples = 1;
+    capabilities.Bindings.MaxBoundDescriptorSets = 3;
+    NGraphics::RequiredGraphicsCapabilities requirements{
+            .Compute = true,
+            .MinColorAttachmentSamples = 4,
+            .MinBoundDescriptorSets = 4,
+    };
+
+    EXPECT_FALSE(NGraphics::SatisfiesRequirements(capabilities, requirements));
 }
 
 TEST_F(GraphicsTest, RejectsBackendThatDoesNotSatisfyRequiredCapabilities) {
