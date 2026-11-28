@@ -10,6 +10,10 @@
 
 namespace NAssets {
 
+inline constexpr std::size_t MaxMetaBytes = 65536;
+inline constexpr std::size_t MaxMetaLineBytes = 4096;
+inline constexpr std::size_t MaxMetaSettings = 256;
+
 struct AssetMeta final {
     AssetId Id;
     std::string Importer;
