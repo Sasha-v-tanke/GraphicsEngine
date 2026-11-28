@@ -94,6 +94,14 @@ private:
             .Presentation = true,
             .TimelineCompletion = true,
             .MaxFramesInFlight = 2,
+            .QueueTopology = {},
+            .Formats = {},
+            .ShaderCompute = {},
+            .DrawIndirect = {},
+            .Bindings = {},
+            .Memory = {},
+            .PresentationSupport = {},
+            .Profiling = {},
     };
     std::uint64_t m_nextImage = 1;
 };

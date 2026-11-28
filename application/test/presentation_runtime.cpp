@@ -92,7 +92,15 @@ class ScriptedBackend final: public NGraphics::NBackend::IGraphicsBackend {
 public:
     NGraphics::GraphicsCapabilities Capabilities{.Presentation = true,
                                                  .TimelineCompletion = true,
-                                                 .MaxFramesInFlight = 3};
+                                                 .MaxFramesInFlight = 3,
+                                                 .QueueTopology = {},
+                                                 .Formats = {},
+                                                 .ShaderCompute = {},
+                                                 .DrawIndirect = {},
+                                                 .Bindings = {},
+                                                 .Memory = {},
+                                                 .PresentationSupport = {},
+                                                 .Profiling = {}};
     std::vector<NGraphics::FrameSubmission> Attempts;
     std::uint64_t CompletedValue = 0;
     std::uint64_t NextValue = 0;

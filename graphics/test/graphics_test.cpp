@@ -26,6 +26,14 @@ struct FakeGraphicsState {
             .Presentation = true,
             .TimelineCompletion = true,
             .MaxFramesInFlight = 2,
+            .QueueTopology = {},
+            .Formats = {},
+            .ShaderCompute = {},
+            .DrawIndirect = {},
+            .Bindings = {},
+            .Memory = {},
+            .PresentationSupport = {},
+            .Profiling = {},
     };
     int CreatedCount = 0;
     int DestroyedCount = 0;
@@ -252,6 +260,7 @@ TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
             .Presentation = true,
             .TimelineCompletion = true,
             .MaxFramesInFlight = 2,
+            .QueueTopology = {},
             .Formats = {.MaxColorAttachmentSamples = 4, .MaxDepthStencilAttachmentSamples = 4},
             .ShaderCompute = {.Compute = true, .MaxComputeWorkGroupInvocations = 256},
             .DrawIndirect = {.DrawIndirect = true, .DrawIndirectCount = true, .MaxDrawIndirectCount = 1024},
@@ -284,6 +293,7 @@ TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
 TEST(GraphicsCapabilities, RejectsInvalidLimitsAndMissingRequestedFeature) {
     NGraphics::GraphicsCapabilities capabilities{
             .Presentation = true,
+            .QueueTopology = {},
             .Formats = {.MaxColorAttachmentSamples = 1, .MaxDepthStencilAttachmentSamples = 1},
             .Bindings = {.MaxBoundDescriptorSets = 3},
     };
