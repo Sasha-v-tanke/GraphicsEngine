@@ -63,4 +63,22 @@ describe('Performance Hub shell', () => {
     expect(window.location.pathname).toBe('/benchmarks')
     expect(host.querySelector('main h2')?.textContent).toBe('Benchmarks')
   })
+
+  it('synchronizes benchmark and run filters after browser history navigation', async () => {
+    window.history.replaceState({}, '', '/benchmarks?q=renderer')
+    const api: PerformanceHubApi = { health: vi.fn().mockResolvedValue({ status: 'ok' }) }
+    const { host } = render(<App api={api} />)
+    await act(async () => {})
+    expect((host.querySelector('input[type="search"]') as HTMLInputElement).value).toBe('renderer')
+    await act(async () => {
+      window.history.pushState({}, '', '/benchmarks?q=ecs')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect((host.querySelector('input[type="search"]') as HTMLInputElement).value).toBe('ecs')
+    await act(async () => {
+      window.history.pushState({}, '', '/runs?range=all')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect((host.querySelector('select') as HTMLSelectElement).value).toBe('all')
+  })
 })
