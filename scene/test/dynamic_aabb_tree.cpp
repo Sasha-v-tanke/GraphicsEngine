@@ -27,8 +27,8 @@ SpatialAabb Box(double x, double y = 0, double z = 0) {
 }
 
 bool Overlaps(SpatialAabb a, SpatialAabb b) {
-    return a.Min.X <= b.Max.X && b.Min.X <= a.Max.X && a.Min.Y <= b.Max.Y && b.Min.Y <= a.Max.Y &&
-           a.Min.Z <= b.Max.Z && b.Min.Z <= a.Max.Z;
+    return a.Min.X <= b.Max.X && b.Min.X <= a.Max.X && a.Min.Y <= b.Max.Y && b.Min.Y <= a.Max.Y && a.Min.Z <= b.Max.Z &&
+           b.Min.Z <= a.Max.Z;
 }
 
 NScene::SpatialFrustum Frustum(SpatialAabb box) {
@@ -136,12 +136,10 @@ TEST_F(DynamicAabbTreeTest, InvalidRefreshDoesNotChangeRetainedSnapshot) {
     reject(bad);
     reject(Grid(4));
     NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)first.Refresh(1, records); });
-    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                       [&] { (void)DynamicAabbTree::Build(Scene, 0, records); });
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)DynamicAabbTree::Build(Scene, 0, records); });
     NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
                        [&] { (void)DynamicAabbTree::Build(Scene, 1, records, {.FatMargin = -1}); });
-    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                       [&] { (void)first.QueryRay({.Direction = {}}); });
+    NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)first.QueryRay({.Direction = {}}); });
     EXPECT_EQ(first.GetVersion(), 1U);
     EXPECT_EQ(first.QueryOverlap(Box(0)).Candidates, std::vector{records[0].Identity});
 }

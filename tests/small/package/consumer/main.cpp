@@ -54,8 +54,8 @@ static_assert(std::is_constructible_v<NVulkan::VulkanFrameContextRing,
 #include <GraphicsEngine/resources/resource_observation.h>
 #include <GraphicsEngine/resources/resource_use_record.h>
 #include <GraphicsEngine/resources/shader_artifact_loader.h>
-#include <GraphicsEngine/scene/scene_manager.h>
 #include <GraphicsEngine/scene/dynamic_aabb_tree.h>
+#include <GraphicsEngine/scene/scene_manager.h>
 #include <GraphicsEngine/scene/spatial_bounds.h>
 #include <GraphicsEngine/scene/static_bvh.h>
 #include <GraphicsEngine/window/window_runtime.h>

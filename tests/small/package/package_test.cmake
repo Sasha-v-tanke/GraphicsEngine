@@ -211,6 +211,7 @@ set(
     "GraphicsEngine/ecs/hierarchy.h"
     "GraphicsEngine/ecs/system_access.h"
     "GraphicsEngine/ecs/world.h"
+    "GraphicsEngine/scene/dynamic_aabb_tree.h"
     "GraphicsEngine/scene/scene.h"
     "GraphicsEngine/scene/spatial_bounds.h"
     "GraphicsEngine/scene/static_bvh.h"

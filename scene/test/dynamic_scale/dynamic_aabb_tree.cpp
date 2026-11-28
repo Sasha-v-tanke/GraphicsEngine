@@ -76,10 +76,9 @@ TEST(DynamicAabbTreeScale, CompareIncrementalRefreshWithFullRebuildAtLowChurn) {
             EXPECT_FALSE(hits.Candidates.empty());
         }
     }
-    std::cout << "DynamicAabbTree scale: records=" << count << " rounds=" << rounds
-              << " refresh_ms=" << incrementalMs << " dynamic_rebuild_ms=" << dynamicRebuildMs
-              << " static_rebuild_ms=" << staticRebuildMs << " reinserts=" << reinserts
-              << " rotations=" << rotations << '\n';
+    std::cout << "DynamicAabbTree scale: records=" << count << " rounds=" << rounds << " refresh_ms=" << incrementalMs
+              << " dynamic_rebuild_ms=" << dynamicRebuildMs << " static_rebuild_ms=" << staticRebuildMs
+              << " reinserts=" << reinserts << " rotations=" << rotations << '\n';
 }
 
 } // namespace
