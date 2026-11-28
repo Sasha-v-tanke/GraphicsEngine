@@ -90,17 +90,13 @@ struct WorkProbe {
 
 class ScriptedBackend final: public NGraphics::NBackend::IGraphicsBackend {
 public:
-    NGraphics::GraphicsCapabilities Capabilities{.Presentation = true,
-                                                 .TimelineCompletion = true,
-                                                 .MaxFramesInFlight = 3,
-                                                 .QueueTopology = {},
-                                                 .Formats = {},
-                                                 .ShaderCompute = {},
-                                                 .DrawIndirect = {},
-                                                 .Bindings = {},
-                                                 .Memory = {},
-                                                 .PresentationSupport = {},
-                                                 .Profiling = {}};
+    NGraphics::GraphicsCapabilities Capabilities = [] {
+        NGraphics::GraphicsCapabilities capabilities{};
+        capabilities.Presentation = true;
+        capabilities.TimelineCompletion = true;
+        capabilities.MaxFramesInFlight = 3;
+        return capabilities;
+    }();
     std::vector<NGraphics::FrameSubmission> Attempts;
     std::uint64_t CompletedValue = 0;
     std::uint64_t NextValue = 0;

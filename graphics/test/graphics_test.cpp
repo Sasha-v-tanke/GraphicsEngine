@@ -21,20 +21,16 @@ namespace {
 
 using NTest::ExpectError;
 
+NGraphics::GraphicsCapabilities MakeFakeCapabilities() {
+    NGraphics::GraphicsCapabilities capabilities{};
+    capabilities.Presentation = true;
+    capabilities.TimelineCompletion = true;
+    capabilities.MaxFramesInFlight = 2;
+    return capabilities;
+}
+
 struct FakeGraphicsState {
-    NGraphics::GraphicsCapabilities Capabilities{
-            .Presentation = true,
-            .TimelineCompletion = true,
-            .MaxFramesInFlight = 2,
-            .QueueTopology = {},
-            .Formats = {},
-            .ShaderCompute = {},
-            .DrawIndirect = {},
-            .Bindings = {},
-            .Memory = {},
-            .PresentationSupport = {},
-            .Profiling = {},
-    };
+    NGraphics::GraphicsCapabilities Capabilities = MakeFakeCapabilities();
     int CreatedCount = 0;
     int DestroyedCount = 0;
     std::vector<std::pair<std::uint64_t, NGraphics::FrameSubmission>> InFlightSubmissions;
@@ -256,20 +252,20 @@ TEST_F(GraphicsTest, CreatesBackendAndPublishesImmutableCapabilities) {
 }
 
 TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
-    NGraphics::GraphicsCapabilities capabilities{
-            .Presentation = true,
-            .TimelineCompletion = true,
-            .MaxFramesInFlight = 2,
-            .QueueTopology = {},
-            .Formats = {.MaxColorAttachmentSamples = 4, .MaxDepthStencilAttachmentSamples = 4},
-            .ShaderCompute = {.Compute = true, .MaxComputeWorkGroupInvocations = 256},
-            .DrawIndirect = {.DrawIndirect = true, .DrawIndirectCount = true, .MaxDrawIndirectCount = 1024},
-            .Bindings = {.StorageBuffers = true,
-                         .DescriptorIndexing = true,
-                         .MaxBoundDescriptorSets = 4,
-                         .MaxPerStageStorageBuffers = 4},
-            .Profiling = {.TimestampQueries = true},
-    };
+    NGraphics::GraphicsCapabilities capabilities{};
+    capabilities.Presentation = true;
+    capabilities.TimelineCompletion = true;
+    capabilities.MaxFramesInFlight = 2;
+    capabilities.Formats.MaxColorAttachmentSamples = 4;
+    capabilities.Formats.MaxDepthStencilAttachmentSamples = 4;
+    capabilities.ShaderCompute.Compute = true;
+    capabilities.ShaderCompute.MaxComputeWorkGroupInvocations = 256;
+    capabilities.DrawIndirect = {.DrawIndirect = true, .DrawIndirectCount = true, .MaxDrawIndirectCount = 1024};
+    capabilities.Bindings = {.StorageBuffers = true,
+                             .DescriptorIndexing = true,
+                             .MaxBoundDescriptorSets = 4,
+                             .MaxPerStageStorageBuffers = 4};
+    capabilities.Profiling.TimestampQueries = true;
 
     EXPECT_TRUE(NGraphics::SatisfiesRequirements(
             capabilities,
@@ -291,12 +287,11 @@ TEST(GraphicsCapabilities, NegotiatesProfilesAndConcreteRequirements) {
 }
 
 TEST(GraphicsCapabilities, RejectsInvalidLimitsAndMissingRequestedFeature) {
-    NGraphics::GraphicsCapabilities capabilities{
-            .Presentation = true,
-            .QueueTopology = {},
-            .Formats = {.MaxColorAttachmentSamples = 1, .MaxDepthStencilAttachmentSamples = 1},
-            .Bindings = {.MaxBoundDescriptorSets = 3},
-    };
+    NGraphics::GraphicsCapabilities capabilities{};
+    capabilities.Presentation = true;
+    capabilities.Formats.MaxColorAttachmentSamples = 1;
+    capabilities.Formats.MaxDepthStencilAttachmentSamples = 1;
+    capabilities.Bindings.MaxBoundDescriptorSets = 3;
     NGraphics::RequiredGraphicsCapabilities requirements{
             .Compute = true,
             .MinColorAttachmentSamples = 4,
