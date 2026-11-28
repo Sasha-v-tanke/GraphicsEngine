@@ -73,11 +73,10 @@ private:
 
 class WorldExecutionAccess {
 public:
-    static PreparedSystemRun
-    Prepare(std::shared_ptr<World> world,
-            NCommon::TaskSystem& tasks,
-            std::function<void(SystemRunOutcome)> onFinished,
-            double deltaTime = 0.0);
+    static PreparedSystemRun Prepare(std::shared_ptr<World> world,
+                                     NCommon::TaskSystem& tasks,
+                                     std::function<void(SystemRunOutcome)> onFinished,
+                                     double deltaTime = 0.0);
 };
 
 [[nodiscard]] PreparedSystemRun PrepareSystems(std::shared_ptr<World> world,

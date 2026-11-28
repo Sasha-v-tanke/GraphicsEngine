@@ -811,9 +811,8 @@ private:
                              SystemSchedule schedule,
                              std::uint32_t structuralOrder) {
         RegisterTypedSystem(
-                std::vector<TypedComponentAccess>{
-                        {{typeid(typename TDeclarations::Component), TDeclarations::MODE},
-                         &ResolveTypedComponent<typename TDeclarations::Component>}...},
+                std::vector<TypedComponentAccess>{{{typeid(typename TDeclarations::Component), TDeclarations::MODE},
+                                                   &ResolveTypedComponent<typename TDeclarations::Component>}...},
                 std::move(callback),
                 std::move(schedule),
                 structuralOrder);

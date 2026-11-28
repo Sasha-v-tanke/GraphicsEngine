@@ -1145,16 +1145,17 @@ void World::RunSystems(NCommon::TaskSystem& taskSystem, double deltaTime) {
     };
     const auto completion = std::make_shared<HostCompletion>();
     // Borrowed admission is confined to this host wrapper, which cannot return before cleanup.
-    auto prepared = NInternal::PrepareSystems(std::shared_ptr<World>{this, [](World*) {}},
-                                              taskSystem,
-                                              [completion](const NInternal::SystemRunOutcome& result) {
-                                                  {
-                                                      std::lock_guard lock{completion->Mutex};
-                                                      completion->Outcome = result;
-                                                  }
-                                                  completion->Condition.notify_one();
-                                              },
-                                              deltaTime);
+    auto prepared = NInternal::PrepareSystems(
+            std::shared_ptr<World>{this, [](World*) {}},
+            taskSystem,
+            [completion](const NInternal::SystemRunOutcome& result) {
+                {
+                    std::lock_guard lock{completion->Mutex};
+                    completion->Outcome = result;
+                }
+                completion->Condition.notify_one();
+            },
+            deltaTime);
     prepared.Start();
     std::unique_lock lock{completion->Mutex};
     completion->Condition.wait(lock, [&] { return completion->Outcome.has_value(); });

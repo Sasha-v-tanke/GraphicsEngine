@@ -76,7 +76,8 @@ public:
         requires(TAccess::template CAN_READ<TComponents> && ...)
     void ForEach(TCallback&& callback, EQueryEnabledPolicy policy = EQueryEnabledPolicy::SKIP_DISABLED) const {
         GetWorld().template ForEach<typename TAccess::template Component<TComponents>...>(
-                std::forward<TCallback>(callback), policy);
+                std::forward<TCallback>(callback),
+                policy);
     }
 
     [[nodiscard]] EntityRef GetEntity(EntityReference entity) const {
@@ -84,8 +85,8 @@ public:
     }
 
     template<typename T>
-        requires TAccess::template CAN_READ<T>
-    [[nodiscard]] typename TAccess::template Component<T>& Get(EntityReference entity) const {
+        requires TAccess::template
+    CAN_READ<T> [[nodiscard]] typename TAccess::template Component<T>& Get(EntityReference entity) const {
         return GetEntity(entity).template GetComponent<typename TAccess::template Component<T>>();
     }
 

@@ -64,13 +64,12 @@ struct Access {
                    ...));
 
     template<typename T>
-    static constexpr bool CAN_READ =
-            (std::is_same_v<std::remove_const_t<T>, typename TDeclarations::Component> || ...);
+    static constexpr bool CAN_READ = (std::is_same_v<std::remove_const_t<T>, typename TDeclarations::Component> || ...);
 
     template<typename T>
-    static constexpr bool CAN_WRITE =
-            ((std::is_same_v<T, typename TDeclarations::Component> && TDeclarations::MODE == ESystemAccessMode::WRITE) ||
-             ...);
+    static constexpr bool CAN_WRITE = ((std::is_same_v<T, typename TDeclarations::Component> &&
+                                        TDeclarations::MODE == ESystemAccessMode::WRITE) ||
+                                       ...);
 
     template<typename T>
     using Component = std::conditional_t<CAN_WRITE<T>, T, const std::remove_const_t<T>>;

@@ -39,8 +39,8 @@ static_assert(std::is_same_v<std::tuple_element_t<1, Row>, Position&>);
 static_assert(std::is_same_v<std::tuple_element_t<2, Row>, const Velocity&>);
 static_assert(std::is_same_v<decltype(std::declval<MovementContext&>().Get<Velocity>(NEcs::EntityReference{})),
                              const Velocity&>);
-static_assert(std::is_same_v<decltype(std::declval<MovementContext&>().Get<Position>(NEcs::EntityReference{})),
-                             Position&>);
+static_assert(
+        std::is_same_v<decltype(std::declval<MovementContext&>().Get<Position>(NEcs::EntityReference{})), Position&>);
 
 class MovementSystem {
 public:
@@ -133,9 +133,8 @@ template<int Number>
 struct Writer {
     using Access = WriteAccess;
     void Update(WriteContext& context) {
-        context.ForEach<Position>([](NEcs::EntityRef, Position& position) {
-            position.Value = position.Value * 10.0 + Number;
-        });
+        context.ForEach<Position>(
+                [](NEcs::EntityRef, Position& position) { position.Value = position.Value * 10.0 + Number; });
     }
 };
 
