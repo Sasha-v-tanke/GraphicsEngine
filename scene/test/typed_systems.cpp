@@ -75,7 +75,7 @@ public:
             EXPECT_TRUE(entity.IsEnabled());
         }
         unsigned visited = 0;
-        context.ForEach<Position, Velocity>([&](NEcs::EntityRef, Position& position, const Velocity& velocity) {
+        context.ForEach<Position, Velocity>([&](const NEcs::EntityRef&, Position& position, const Velocity& velocity) {
             EXPECT_DOUBLE_EQ(position.Value, 3.0);
             EXPECT_DOUBLE_EQ(velocity.Value, 8.0);
             ++visited;
@@ -132,7 +132,7 @@ constexpr std::uint32_t LARGE_QUERY_COUNT = 16384;
 struct LargeQuerySystem {
     using Access = MovementAccess;
 
-    void Update(MovementContext& context) {
+    static void Update(MovementContext& context) {
         std::uint32_t visited = 0;
         for (auto [entity, position, velocity]: context.Query<Position, Velocity>().IncludeDisabled()) {
             EXPECT_EQ(&context.Get<Position>(entity.GetReference()), &position);
@@ -142,7 +142,7 @@ struct LargeQuerySystem {
         }
         EXPECT_EQ(visited, LARGE_QUERY_COUNT / 2);
         visited = 0;
-        context.ForEach<Position, Velocity>([&](NEcs::EntityRef, Position& position, const Velocity& velocity) {
+        context.ForEach<Position, Velocity>([&](const NEcs::EntityRef&, Position& position, const Velocity& velocity) {
             EXPECT_DOUBLE_EQ(position.Value, velocity.Value);
             ++visited;
         });
@@ -186,7 +186,7 @@ struct Writer {
     using Access = WriteAccess;
     void Update(WriteContext& context) {
         context.ForEach<Position>(
-                [](NEcs::EntityRef, Position& position) { position.Value = position.Value * 10.0 + Number; });
+                [](const NEcs::EntityRef&, Position& position) { position.Value = position.Value * 10.0 + Number; });
     }
 };
 
@@ -222,8 +222,8 @@ TEST(TypedSystems, ConflictOrderDoesNotDependOnRegistrationOrWorkerCount) {
 struct OrderedWriter {
     using Access = WriteAccess;
     using After = NEcs::NSystem::After<Writer<1>>;
-    void Update(WriteContext& context) {
-        context.ForEach<Position>([](NEcs::EntityRef, Position& position) {
+    static void Update(WriteContext& context) {
+        context.ForEach<Position>([](const NEcs::EntityRef&, Position& position) {
             EXPECT_DOUBLE_EQ(position.Value, 1.0);
             position.Value = 42.0;
         });
@@ -234,14 +234,14 @@ struct CycleB;
 struct CycleA {
     using Access = WriteAccess;
     using Before = NEcs::NSystem::Before<CycleB>;
-    void Update(WriteContext&) {
+    static void Update(WriteContext&) {
         ADD_FAILURE();
     }
 };
 struct CycleB {
     using Access = WriteAccess;
     using Before = NEcs::NSystem::Before<CycleA>;
-    void Update(WriteContext&) {
+    static void Update(WriteContext&) {
         ADD_FAILURE();
     }
 };
