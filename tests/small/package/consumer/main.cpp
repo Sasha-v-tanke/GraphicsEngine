@@ -22,10 +22,18 @@
 #include <GraphicsEngine/lib/common/error/error.h>
 #include <GraphicsEngine/lib/common/resource_use_record.h>
 #include <GraphicsEngine/lib/common/type_registry.h>
+#include <GraphicsEngine/lib/logging/logger.h>
 #include <GraphicsEngine/lib/thread/job.h>
 #include <GraphicsEngine/lib/thread/task/frame_origin.h>
 #include <GraphicsEngine/lib/thread/task/task_system.h>
 static_assert(NCommon::FrameOrigin{3, 99}.FrameSequence == 99);
+
+void CheckLoggingConsumer() {
+    NLogging::Logger logger;
+    logger.Start();
+    static_cast<void>(logger.Log(NLogging::ESeverity::INFO, "package", "installed"));
+    logger.Shutdown();
+}
 #include <GraphicsEngine/lib/thread/user_task.h>
 #include <GraphicsEngine/math/transform.h>
 #include <GraphicsEngine/renderer/render_graph.h>
