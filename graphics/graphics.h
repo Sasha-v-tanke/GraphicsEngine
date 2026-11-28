@@ -4,14 +4,14 @@
 #include <memory>
 #include <unordered_map>
 
-#include <graphics/buffer.h>
-#include <graphics/completion_point.h>
-#include <graphics/frame_submission.h>
-#include <graphics/graphics_capabilities.h>
-#include <graphics/graphics_config.h>
-#include <graphics/graphics_pipeline.h>
-#include <graphics/image.h>
-#include <lib/common/wrapper/non_transferable.h>
+#include <GraphicsEngine/graphics/buffer.h>
+#include <GraphicsEngine/graphics/completion_point.h>
+#include <GraphicsEngine/graphics/frame_submission.h>
+#include <GraphicsEngine/graphics/graphics_capabilities.h>
+#include <GraphicsEngine/graphics/graphics_config.h>
+#include <GraphicsEngine/graphics/graphics_pipeline.h>
+#include <GraphicsEngine/graphics/image.h>
+#include <GraphicsEngine/lib/common/wrapper/non_transferable.h>
 
 namespace NGraphics {
 
