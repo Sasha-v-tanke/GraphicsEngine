@@ -1,6 +1,6 @@
 #pragma once
 
-#include <graphics/graphics_capabilities.h>
+#include <GraphicsEngine/graphics/graphics_capabilities.h>
 
 namespace NGraphics {
 

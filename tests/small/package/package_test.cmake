@@ -55,6 +55,16 @@ set(
     "${testDirectory}/build-interface-build"
 )
 
+set(
+    publicHeaderBuildDirectory
+    "${testDirectory}/public-header-consumer"
+)
+
+set(
+    publicHeaderSourceDirectory
+    "${testDirectory}/public-header-consumer-src"
+)
+
 file(
     REMOVE_RECURSE
     "${testDirectory}"
@@ -197,112 +207,69 @@ _GRAPHICS_ENGINE_RUN(
 # Verify installed API surface
 # =============================================================================
 
-set(
-    expectedPublicHeaders
-    "GraphicsEngine/application/application.h"
-    "GraphicsEngine/application/application_config.h"
-    "GraphicsEngine/application/game_config.h"
-    "GraphicsEngine/application/frame_diagnostics.h"
-    "GraphicsEngine/application/view_registry.h"
-    "GraphicsEngine/application/service_manager.h"
-    "GraphicsEngine/ecs/entity.h"
-    "GraphicsEngine/ecs/entity_ref.h"
-    "GraphicsEngine/ecs/name_component.h"
-    "GraphicsEngine/ecs/hierarchy.h"
-    "GraphicsEngine/ecs/system_access.h"
-    "GraphicsEngine/ecs/world.h"
-    "GraphicsEngine/scene/dynamic_aabb_tree.h"
-    "GraphicsEngine/scene/scene.h"
-    "GraphicsEngine/scene/spatial_bounds.h"
-    "GraphicsEngine/scene/static_bvh.h"
-    "GraphicsEngine/scene/scene_handle.h"
-    "GraphicsEngine/scene/scene_manager.h"
-    "GraphicsEngine/graphics/buffer.h"
-    "GraphicsEngine/graphics/completion_point.h"
-    "GraphicsEngine/graphics/frame_submission.h"
-    "GraphicsEngine/graphics/graphics.h"
-    "GraphicsEngine/graphics/graphics_capabilities.h"
-    "GraphicsEngine/graphics/graphics_config.h"
-    "GraphicsEngine/graphics/graphics_pipeline.h"
-    "GraphicsEngine/graphics/pipeline_key.h"
-    "GraphicsEngine/graphics/shader.h"
-    "GraphicsEngine/graphics/image.h"
-    "GraphicsEngine/graphics/material.h"
-    "GraphicsEngine/graphics/presentation.h"
-    "GraphicsEngine/lib/common/change_tracker.h"
-    "GraphicsEngine/lib/common/metadata.h"
-    "GraphicsEngine/lib/common/error/assert.h"
-    "GraphicsEngine/lib/common/error/error.h"
-    "GraphicsEngine/lib/common/error/exception.h"
-    "GraphicsEngine/lib/common/resource_use_record.h"
-    "GraphicsEngine/lib/common/type_registry.h"
-    "GraphicsEngine/lib/common/wrapper/non_copyable.h"
-    "GraphicsEngine/lib/common/wrapper/non_transferable.h"
-    "GraphicsEngine/lib/thread/job.h"
-    "GraphicsEngine/lib/thread/job_control.h"
-    "GraphicsEngine/lib/thread/task/frame_origin.h"
-    "GraphicsEngine/lib/thread/task/task_system.h"
-    "GraphicsEngine/lib/thread/user_task.h"
-    "GraphicsEngine/math/camera.h"
-    "GraphicsEngine/math/matrix.h"
-    "GraphicsEngine/math/quaternion.h"
-    "GraphicsEngine/math/transform.h"
-    "GraphicsEngine/math/vector.h"
-    "GraphicsEngine/resources/async_resource_loader.h"
-    "GraphicsEngine/resources/image_data.h"
-    "GraphicsEngine/resources/image_loader.h"
-    "GraphicsEngine/resources/mesh_data.h"
-    "GraphicsEngine/resources/mesh_loader.h"
-    "GraphicsEngine/resources/resource_handle.h"
-    "GraphicsEngine/resources/resource_identity.h"
-    "GraphicsEngine/resources/resource_io.h"
-    "GraphicsEngine/resources/resource_lease.h"
-    "GraphicsEngine/resources/resource_manager.h"
-    "GraphicsEngine/resources/resource_memory.h"
-    "GraphicsEngine/resources/resource_observation.h"
-    "GraphicsEngine/resources/resource_state.h"
-    "GraphicsEngine/resources/resource_use_record.h"
-    "GraphicsEngine/resources/shader_artifact.h"
-    "GraphicsEngine/resources/shader_artifact_loader.h"
-    "GraphicsEngine/renderer/renderer.h"
-    "GraphicsEngine/renderer/render_components.h"
-    "GraphicsEngine/renderer/render_graph.h"
-    "GraphicsEngine/renderer/render_world.h"
-    "GraphicsEngine/renderer/view_selection.h"
-    "GraphicsEngine/renderer/standard_graph.h"
-    "GraphicsEngine/window/window.h"
-    "GraphicsEngine/window/window_config.h"
-    "GraphicsEngine/window/window_runtime.h"
-    "GraphicsEngine/window/window_size.h"
-    "GraphicsEngine/window/window_type.h"
+set(publicHeaderManifest
+    "${installDirectory}/lib/cmake/GraphicsEngine/GraphicsEnginePublicHeaders.cmake")
+
+_GRAPHICS_ENGINE_RUN(
+    "Installed public header lint"
+    "${CMAKE_COMMAND}"
+    "-DGRAPHICS_ENGINE_PUBLIC_HEADER_MANIFEST=${publicHeaderManifest}"
+    "-DGRAPHICS_ENGINE_INCLUDE_DIRECTORY=${installDirectory}/include"
+    -P
+    "${GRAPHICS_ENGINE_SOURCE_DIR}/cmake/public_api_lint.cmake"
 )
 
-if (GRAPHICS_ENGINE_HAS_GRAPH_PRESENTATION)
-    list(APPEND expectedPublicHeaders "GraphicsEngine/renderer/presentation/presentation.h")
-endif ()
-
-file(
-    GLOB_RECURSE
-    installedPublicHeaders
-    RELATIVE
-    "${installDirectory}/include"
-    "${installDirectory}/include/*.h"
+_GRAPHICS_ENGINE_RUN(
+    "Public API lint negative fixtures"
+    "${CMAKE_COMMAND}"
+    "-DGRAPHICS_ENGINE_SOURCE_DIR=${GRAPHICS_ENGINE_SOURCE_DIR}"
+    "-DGRAPHICS_ENGINE_BINARY_DIR=${GRAPHICS_ENGINE_BINARY_DIR}"
+    -P
+    "${GRAPHICS_ENGINE_SOURCE_DIR}/tests/small/package/public_api_lint_test.cmake"
 )
 
-list(SORT
-    expectedPublicHeaders
-)
-list(SORT
-    installedPublicHeaders
+include("${publicHeaderManifest}")
+
+
+# =============================================================================
+# Isolated installed-header compilation
+# =============================================================================
+
+file(MAKE_DIRECTORY "${publicHeaderSourceDirectory}")
+file(WRITE "${publicHeaderSourceDirectory}/CMakeLists.txt"
+"cmake_minimum_required(VERSION 3.31)\n"
+ "project(GraphicsEnginePublicHeaders LANGUAGES CXX)\n"
+ "find_package(GraphicsEngine ${PROJECT_VERSION} CONFIG REQUIRED)\n"
 )
 
-if (NOT installedPublicHeaders STREQUAL expectedPublicHeaders)
-    message(FATAL_ERROR
-        "Installed public headers do not match the expected GraphicsEngine API surface\n"
-        "Expected: ${expectedPublicHeaders}\n"
-        "Actual: ${installedPublicHeaders}"
-    )
-endif ()
+set(publicHeaderIndex 0)
+foreach (header IN LISTS GRAPHICS_ENGINE_PUBLIC_HEADERS)
+    math(EXPR publicHeaderIndex "${publicHeaderIndex} + 1")
+    set(source "${publicHeaderSourceDirectory}/header_${publicHeaderIndex}.cpp")
+    file(WRITE "${source}" "#include <${header}>\n")
+    file(APPEND "${publicHeaderSourceDirectory}/CMakeLists.txt"
+        "add_library(GraphicsEnginePublicHeader${publicHeaderIndex} OBJECT header_${publicHeaderIndex}.cpp)\n"
+        "target_link_libraries(GraphicsEnginePublicHeader${publicHeaderIndex} PRIVATE GraphicsEngine::GraphicsEngine)\n")
+endforeach ()
+
+_GRAPHICS_ENGINE_RUN(
+    "Installed public header consumer configuration"
+    "${CMAKE_COMMAND}"
+    -S
+    "${publicHeaderSourceDirectory}"
+    -B
+    "${publicHeaderBuildDirectory}"
+    "-DCMAKE_PREFIX_PATH=${installDirectory}"
+    ${consumerConfigureArguments}
+)
+
+_GRAPHICS_ENGINE_RUN(
+    "Installed public header consumer build"
+    "${CMAKE_COMMAND}"
+    --build
+    "${publicHeaderBuildDirectory}"
+    ${consumerBuildArguments}
+)
 
 set(
     internalHeaders

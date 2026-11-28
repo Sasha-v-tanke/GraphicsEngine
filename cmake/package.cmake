@@ -304,6 +304,18 @@ list(
     graphicsEngineApiHeaders
 )
 
+set(
+    graphicsEnginePublicHeaderManifest
+    "${PROJECT_BINARY_DIR}/GraphicsEnginePublicHeaders.cmake"
+)
+
+file(
+    WRITE
+    "${graphicsEnginePublicHeaderManifest}"
+    "# Generated from the API() declarations. Do not edit.\n"
+    "set(GRAPHICS_ENGINE_PUBLIC_HEADERS\n"
+)
+
 foreach (header IN LISTS graphicsEngineApiHeaders)
     file(
         RELATIVE_PATH
@@ -320,6 +332,12 @@ foreach (header IN LISTS graphicsEngineApiHeaders)
             "API header '${header}' is outside GraphicsEngine source tree"
         )
     endif ()
+
+    file(
+        APPEND
+        "${graphicsEnginePublicHeaderManifest}"
+        "    \"GraphicsEngine/${relativeHeader}\"\n"
+    )
 
     get_filename_component(
         relativeDirectory
@@ -347,6 +365,12 @@ foreach (header IN LISTS graphicsEngineApiHeaders)
     )
 endforeach ()
 
+file(
+    APPEND
+    "${graphicsEnginePublicHeaderManifest}"
+    ")\n"
+)
+
 
 # =============================================================================
 # Targets
@@ -371,6 +395,8 @@ set(
 )
 
 install(FILES "${PROJECT_SOURCE_DIR}/cmake/metadata_codegen.cmake"
+    DESTINATION "${graphicsEnginePackageDirectory}")
+install(FILES "${graphicsEnginePublicHeaderManifest}"
     DESTINATION "${graphicsEnginePackageDirectory}")
 install(FILES "${PROJECT_SOURCE_DIR}/tools/metadata_codegen/generate.py"
     DESTINATION "${graphicsEnginePackageDirectory}" RENAME metadata_codegen.py)
