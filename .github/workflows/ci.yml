@@ -56,6 +56,11 @@ jobs:
       - name: Run small tests
         run: ./tests/test_small.sh
 
+      - name: Run dynamic AABB tree benchmark
+        run: |
+          ctest --test-dir cmake-build-ci-lite --verbose --no-tests=error \
+            -R '^GraphicsEngineDynamicAabbTreeScaleTests$'
+
       - name: Show test log
         if: failure()
         run: |

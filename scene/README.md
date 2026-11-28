@@ -214,3 +214,60 @@ build 2285.59 ms; 1000 localized queries: 4.37 µs/query в среднем,
 input records и allocator overhead не входят в StorageBytes. Команда повторения:
 `cmake-build-ci-lite/GraphicsEngineStaticBvhScaleTests`. Измерения зависят от нагрузки
 и конфигурации, а тест проверяет memory/depth/pruning, не hardware latency threshold.
+
+## Dynamic AABB tree (FEATURE-0117)
+
+`dynamic_aabb_tree.h` owns immutable versioned CPU indexes for VALID records
+with explicit DYNAMIC classification. `Build(scene, version, records, config)`
+creates the initial tree; `Refresh(newVersion, records)` consumes a complete,
+authoritative capture after ECS commit (not a delta). CaptureSpatialRecords
+provides source/transform revisions and global tight AABBs. The tree compares
+geometry and identity; revision-only changes that leave geometry unchanged do
+not require tree edits. Change-driven capture/facade belongs to FEATURE-0118.
+
+Each leaf stores tight bounds and a conservative fat AABB expanded by FatMargin
+(default 0.5 scene units, clipped to MAX_COORDINATE). Movement inside the fat box
+only changes the tight box, outside movement/teleport removes and reinserts the
+leaf. Absent or reclassified records are removed; generation replacement is
+remove plus insert, not reuse of the old identity. Duplicate slots and malformed
+included records, foreign Scene/mixed Worlds, invalid versions/configuration and
+input budget overflow are rejected. The World identity, once known, is retained
+even when the tree becomes empty. No Scene/World or component pointer is retained.
+
+Insertion descends by minimum incremental surface-area cost; ancestors are refit
+bottom-up, with height-based AVL rotations after structural changes. Freed node
+slots are reused. Build is O(n log n); each membership edit or out-of-fat move
+costs O(log n). Refresh copies the previous nodes/map and merges sorted input and
+existing slots (O(n + k log n) for sorted capture with k structural changes);
+unsorted input additionally costs O(n log n) to normalize. This deliberately
+trades an O(n) snapshot copy for simple strong exception safety and immutable
+concurrent readers. Retaining multiple versions retains their storage; no
+sublinear snapshot-copy or lock-free publication guarantee is made.
+
+QueryOverlap/QueryRay/QueryFrustum share the existing conservative StaticBvh
+geometry and coordinate rules. Fat nodes prune traversal; tight leaf boxes are
+tested to avoid fat-only false candidates. Results have stable identity order
+and snapshot version. Caller publishes synchronized immutable snapshots at the
+safe boundary and uses IsSpatialCandidateAlive before accessing live ECS
+entities. Refresh never mutates a published version, even on failure. No worker
+wait, Physics solver or automatic streaming policy is introduced.
+
+Statistics report inserted/removed/reinserted/in-fat updates, rotations, depth
+and allocated node slots per publication. `scene/test/dynamic_aabb_tree.cpp`
+covers movement, teleport, recycled generations, admission failures, churn and
+brute-force overlap/ray/frustum parity, concurrent readers and committed hierarchy
+capture. `GraphicsEngineDynamicAabbTreeScaleTests` (heavy) compares incremental
+refresh against complete dynamic/static rebuild on 50,000 records and 1% churn;
+it validates candidate parity and structural-work counts and prints timings.
+Small / Linux CI also runs this CPU-only test explicitly with verbose output,
+without running the rest of the heavy suite. Installed package consumer checks
+public Build/Refresh/query.
+
+Measured CI baseline (Linux, Clang 23, ci-lite Debug, commit `43996a8`,
+[CI log](https://github.com/Sasha-v-tanke/GraphicsEngine/actions/runs/46147327865/job/140986158433)):
+50,000 records, eight rounds, 1% movement per round; total refresh 307.494 ms,
+dynamic rebuild 1166.99 ms, static rebuild 2094.97 ms; 400 reinserts, 494 rotations.
+The benchmark passed candidate parity and structural assertions. In this fixture
+refresh was about 3.8x faster than full dynamic rebuild and 6.8x faster than
+static rebuild, including snapshot copying. These are aggregate Debug timings,
+not a hardware latency guarantee or an assertion of sublinear copying cost.

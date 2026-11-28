@@ -1,6 +1,7 @@
 TEST_SUITE(Scene)
 
 SOURCES(
+    dynamic_aabb_tree.cpp
     static_bvh.cpp
     bvh_fixture.h
     spatial_bounds.cpp
@@ -22,4 +23,7 @@ TEST_LABELS(
     scene
 )
 
-RECURSE(scale)
+RECURSE(
+    scale
+    dynamic_scale
+)
