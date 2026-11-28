@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -66,6 +67,8 @@ private:
     const std::thread::id m_owner = std::this_thread::get_id();
     NEngine::Engine* m_engine = nullptr;
     std::mutex m_mutex;
+    std::optional<std::chrono::steady_clock::time_point> m_previousUpdate;
+    std::optional<NScene::SceneHandle> m_previousScene;
     std::vector<std::shared_ptr<Binding>> m_slots;
     NEcs::World m_empty;
     NRenderer::NInternal::IncrementalExtraction m_extraction;

@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <thread>
 #include <typeindex>
+#include <unordered_map>
 #include <vector>
 
 #include <GraphicsEngine/ecs/world.h>
@@ -55,6 +58,14 @@ struct ResolvedBatch {
     std::vector<Entry> Entries;
     std::atomic_bool Active = false;
     std::thread::id Thread;
+
+    [[nodiscard]] const Entry* Find(std::type_index type, Entity entity, bool write) const;
+
+private:
+    // Indices, not pointers into Entries: construction may reallocate the vector.
+    // The index and entries are frozen before the invocation is published.
+    std::unordered_map<std::type_index, std::unordered_map<std::uint32_t, std::size_t>> m_entryIndices;
+    friend class ScopedWorldAccess;
 };
 
 // Views are callback/thread bound. Component references must not escape the
@@ -65,10 +76,9 @@ public:
     using Component = std::conditional_t<Writable, T, const T>;
     [[nodiscard]] Component& Get(EntityReference entity) const {
         Check();
-        for (const auto& entry: m_batch->Entries) {
-            if (entry.Type == typeid(T) && entry.Entity == entity && (!Writable || entry.Writable)) {
-                return *static_cast<Component*>(entry.Component);
-            }
+        const auto* entry = m_batch->Find(typeid(T), entity.Identity, Writable);
+        if (entry && entry->Entity == entity) {
+            return *static_cast<Component*>(entry->Component);
         }
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Component is outside the declared scope");
     }

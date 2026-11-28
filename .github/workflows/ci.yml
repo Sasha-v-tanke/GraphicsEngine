@@ -147,6 +147,14 @@ jobs:
             --select 'BM_TaskSystemDependencyValidation/0' \
             --select 'BM_RendererPreparation/1024/0/real_time'
 
+      - name: Measure typed ECS query scaling
+        run: |
+          cmake-build-benchmark/GraphicsEngineBenchmarks \
+            --benchmark_filter='^BM_TypedSystemQuery/' \
+            --benchmark_min_time=0.05s \
+            --benchmark_repetitions=3 \
+            --benchmark_report_aggregates_only=true
+
   medium-macos:
     name: Medium / MacOS
     runs-on: macos-26

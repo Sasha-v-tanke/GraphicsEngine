@@ -381,3 +381,45 @@ Host-owner нового Query descriptor и EntityRef — поток созда�
 ECS invocation разрешён только этот поток; проверки не ограничиваются распознаванием TaskSystem workers.
 В зарегистрированной invocation действуют её прежние scoped/read-write права, независимо от потока исполнения.
 Остальные legacy World методы и явный producer protocol этим ограничением не заменяются.
+
+### Typed systems
+
+Declare a nested access list and register the system on a scene. The context maps read declarations
+to const references and write declarations to mutable references. Undeclared context queries are
+rejected at compile time; the existing EntityRef validates access and invocation lifetime at runtime.
+
+```cpp
+class MovementSystem {
+public:
+    using Access = NEcs::NSystem::Access<NEcs::NSystem::Read<Velocity>, NEcs::NSystem::Write<Position>>;
+    using Context = NEcs::NSystem::SystemContext<Access>;
+
+    void Update(Context& context) {
+        context.ForEach<Position, Velocity>(
+                [&](NEcs::EntityRef, Position& position, const Velocity& velocity) {
+                    position.Value += velocity.Value * context.DeltaTime();
+                });
+    }
+};
+
+scene.AddSystem<MovementSystem>();
+```
+
+All typed systems execute in Update. A system may declare `using Before = NEcs::NSystem::Before<OtherSystem>`
+or `using After = NEcs::NSystem::After<OtherSystem>`. Missing dependencies and cycles are errors.
+Conflicting systems without an explicit dependency follow a type-derived order within one executable;
+this order is not a serialized identity or a semantic producer/consumer guarantee. Legacy callbacks
+form conservative World barriers in mixed typed runs. Structural edits through scoped EntityRef
+are queued for the existing run's commit; failed or cancelled runs discard queued edits.
+
+The context and query capabilities are invocation-bound; do not retain component references or use
+the context from detached work. DeltaTime is seconds, supplied by the existing run admission;
+offline callers can pass an explicit value to RunSystems. Scene runtime uses monotonic admission
+time between updates of the same active scene, zero on its first update or after drain/scene switch.
+
+Resolved batches index entries by component type and entity slot, validating the generation on lookup.
+The index is constructed before publication and preserves the existing entry order and overlapping-scope
+write promotion. For a fixed number of component types, admission and query membership lookup are
+expected linear in the number of entity slots (hash lookup is expected constant time); the index uses
+linear additional space in the number of resolved entries. Query still scans entity slots and freezes
+matching rows; this is not an archetype or sparse-set traversal optimization.

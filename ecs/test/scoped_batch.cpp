@@ -420,6 +420,41 @@ TEST(EcsScoped, ReadScopeDoesNotGrantWriteAndEmptyStorageStillDeclaresItsType) {
     world.RunSystems(tasks);
 }
 
+TEST(EcsScoped, IndexedEntriesPreserveIdentityModeAndOverlappingScopes) {
+    World world;
+    World other;
+    const auto a = world.CreateEntity();
+    const auto b = world.CreateEntity();
+    world.AddComponent<Position>(a, 11);
+    world.AddComponent<Position>(b, 22);
+    world.AddComponent<Velocity>(a, 33);
+    const auto ar = world.GetEntityReference(a);
+    const auto br = world.GetEntityReference(b);
+    const NEcs::NInternal::ScopedSystem system{
+            {ScopedRead<Position>(), ScopedWrite<Position>(BatchScope::EntitySet({ar, ar})), ScopedRead<Velocity>()},
+            [&](ScopedBatchContext& context) {
+                EXPECT_EQ(context.Read<Position>().Get(br).Value, 22);
+                EXPECT_EQ(context.Write<Position>().Get(ar).Value, 11);
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.Write<Position>().Get(br); });
+                auto foreign = ar;
+                foreign.WorldId = other.GetEntityReference(other.CreateEntity()).WorldId;
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
+                                   [&] { (void)context.Read<Position>().Get(foreign); });
+            }};
+    const auto batch = ScopedWorldAccess::Resolve(world, system);
+    ASSERT_EQ(batch->Entries.size(), 3U);
+    EXPECT_EQ(batch->Entries[0].Entity, ar);
+    EXPECT_EQ(batch->Entries[1].Entity, br);
+    ASSERT_NE(batch->Find(typeid(Position), a, true), nullptr);
+    EXPECT_EQ(batch->Find(typeid(Position), b, true), nullptr);
+    EXPECT_NE(batch->Find(typeid(Position), b, false), nullptr);
+    EXPECT_NE(batch->Find(typeid(Velocity), a, false), nullptr);
+    EXPECT_EQ(batch->Find(typeid(Velocity), b, false), nullptr);
+    EXPECT_EQ(batch->Find(typeid(Position), Entity{a.Index, a.Generation + 1}, false), nullptr);
+    EXPECT_EQ(batch->Find(typeid(void), a, false), nullptr);
+    ScopedWorldAccess::Invoke(world, system, batch);
+}
+
 TEST(EcsScoped, ConflictingWriterWaitsWhileIndependentReadyWorkMakesProgress) {
     World world;
     NCommon::TaskSystem tasks{2};

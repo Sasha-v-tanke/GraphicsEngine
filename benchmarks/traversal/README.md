@@ -43,6 +43,21 @@ Bamboo не имеет независимых ветвей и должен со�
 ожидание включены. Счётчики resolved/recomputed/cache_hits характеризуют реальную работу,
 а не предполагаемое ускорение. Полный required set остаётся O(N), даже на hot кадре.
 
+## Масштабирование typed systems (FEATURE-0085)
+
+`BM_TypedSystemQuery/<entities>/<workers>` измеряет полный run одного typed Read-system:
+подготовку resolved batch, построение индекса, range Query и завершение run.
+Размеры: 1024, 4096, 16384, 65536; workers: 1, 2, 8.
+На каждой итерации проверяется контрольная сумма; создание World и TaskSystem вне измерения.
+Для проверки роста стоимости сравнивайте `real_time` при фиксированном числе workers.
+Фактические результаты требуют запуска benchmark; теоретическая сложность индекса не заменяет измерения.
+
+```sh
+cmake-build-benchmark/GraphicsEngineBenchmarks --benchmark_filter=BM_TypedSystemQuery \
+  --benchmark_min_time=0.05s --benchmark_repetitions=3 \
+  --benchmark_out=/tmp/typed-query.json --benchmark_out_format=json
+```
+
 ## Повторение
 
 ```sh

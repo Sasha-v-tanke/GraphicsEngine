@@ -4,6 +4,19 @@
 
 namespace NEcs::NInternal {
 
+const ResolvedBatch::Entry* ResolvedBatch::Find(std::type_index type, Entity entity, bool write) const {
+    const auto typeEntries = m_entryIndices.find(type);
+    if (typeEntries == m_entryIndices.end()) {
+        return nullptr;
+    }
+    const auto index = typeEntries->second.find(entity.Index);
+    if (index == typeEntries->second.end()) {
+        return nullptr;
+    }
+    const auto& entry = Entries[index->second];
+    return entry.Entity.Identity == entity && (!write || entry.Writable) ? &entry : nullptr;
+}
+
 ScopedBatchContext::ScopedBatchContext(World& world, std::shared_ptr<ResolvedBatch> batch)
     : m_world(world)
     , m_batch(std::move(batch)) {
@@ -96,21 +109,21 @@ std::shared_ptr<ResolvedBatch> ScopedWorldAccess::Resolve(World& world, const Sc
         default:
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Unsupported ECS scope");
         }
+        auto& indices = batch->m_entryIndices[declaration.Access.Component];
         for (const auto entity: entities) {
             void* component = declaration.Resolve(world, entity.Identity);
             if (!component) {
                 continue;
             }
             const bool write = declaration.Access.Mode == ESystemAccessMode::WRITE;
-            auto existing = std::ranges::find_if(batch->Entries, [&](const auto& entry) {
-                return entry.Type == declaration.Access.Component && entry.Entity == entity;
-            });
-            if (existing == batch->Entries.end()) {
+            const auto [index, inserted] = indices.try_emplace(entity.Identity.Index, batch->Entries.size());
+            if (inserted) {
                 const bool enabled = !world.m_disabledEntities.contains(entity.Identity.Index) &&
                                      !world.IsComponentDisabled(entity.Identity, declaration.Access.Component);
                 batch->Entries.push_back({declaration.Access.Component, entity, component, write, enabled});
             } else {
-                existing->Writable = existing->Writable || write;
+                auto& entry = batch->Entries[index->second];
+                entry.Writable = entry.Writable || write;
             }
         }
     }

@@ -1,5 +1,6 @@
 #include "scene_runtime.h"
 
+#include <chrono>
 #include <utility>
 
 #include <engine/runtime/world_update.h>
@@ -10,6 +11,7 @@ namespace NApplication::NRuntime {
 
 struct SceneRuntime::Binding {
     ScenePublication Publication;
+    std::chrono::steady_clock::time_point AdmittedAt;
     std::shared_ptr<NScene::Scene> Source;
     const NRenderer::RenderWorld* Snapshot = nullptr;
     NCommon::TaskSystem* Tasks = nullptr;
@@ -41,6 +43,7 @@ SceneRuntime::TryBeginFrame(NEngine::Engine& engine,
         }
         auto binding = std::make_shared<Binding>();
         binding->Publication.Frame = *frame;
+        binding->AdmittedAt = std::chrono::steady_clock::now();
         binding->Publication.Scene = scenes.GetActiveHandle();
         binding->Source = scenes.AcquireActive();
         if (binding->Source) {
@@ -111,12 +114,22 @@ void SceneRuntime::ScheduleUpdate(const NEngine::NRuntime::FrameContext& frame,
     }
     const auto binding = GetBinding(frame);
     binding->Tasks = &tasks;
+    double deltaTime = 0.0;
+    {
+        std::lock_guard lock{m_mutex};
+        if (binding->Source && m_previousUpdate && m_previousScene == binding->Publication.Scene &&
+            binding->AdmittedAt >= *m_previousUpdate) {
+            deltaTime = std::chrono::duration<double>(binding->AdmittedAt - *m_previousUpdate).count();
+        }
+        m_previousUpdate = binding->Source ? std::optional{binding->AdmittedAt} : std::nullopt;
+        m_previousScene = binding->Publication.Scene;
+    }
     if (!binding->Source) {
         completion->Finish();
         return;
     }
     auto world = std::shared_ptr<NEcs::World>{binding->Source, &binding->Source->GetWorld()};
-    NEngine::NRuntime::ScheduleWorldUpdate(std::move(world), tasks, completion);
+    NEngine::NRuntime::ScheduleWorldUpdate(std::move(world), tasks, completion, deltaTime);
 }
 
 void SceneRuntime::FinalizePostUpdate(const NEngine::NRuntime::FrameContext& frame) {
@@ -165,6 +178,8 @@ void SceneRuntime::Drain() noexcept {
     {
         std::lock_guard lock{m_mutex};
         retired.swap(m_slots);
+        m_previousUpdate.reset();
+        m_previousScene.reset();
     }
 }
 

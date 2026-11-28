@@ -9,5 +9,6 @@ SOURCES(
 
 PRIVATE_DEPENDS(
     Ecs
+    Scene
     Thread
 )

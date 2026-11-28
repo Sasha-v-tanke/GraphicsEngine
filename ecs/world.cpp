@@ -1,6 +1,7 @@
 #include "world.h"
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <exception>
 #include <iterator>
@@ -16,6 +17,12 @@
 
 namespace NEcs {
 namespace {
+void ValidateDeltaTime(double deltaTime) {
+    if (!std::isfinite(deltaTime) || deltaTime < 0.0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS delta time must be finite and nonnegative");
+    }
+}
+
 std::uint64_t AllocateWorldId() {
     static std::atomic<std::uint64_t> next{1};
     std::uint64_t value = next.load();
@@ -114,6 +121,7 @@ struct World::SystemInvocation {
     std::vector<std::weak_ptr<QueryLease>> QueryLeases;
     std::optional<std::uint32_t> StructuralOrder;
     std::uint64_t Id = 0;
+    double DeltaTime = 0.0;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
     std::vector<DeferredCommandBatch> WorkerBatches;
     std::exception_ptr Error;
@@ -366,7 +374,9 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
 NInternal::PreparedSystemRun
 NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
                                          NCommon::TaskSystem& tasks,
-                                         std::function<void(NInternal::SystemRunOutcome)> onFinished) {
+                                         std::function<void(NInternal::SystemRunOutcome)> onFinished,
+                                         double deltaTime) {
+    ValidateDeltaTime(deltaTime);
     const std::shared_ptr<World> owner = std::move(world);
     if (!owner) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Async ECS requires a World owner");
@@ -400,6 +410,7 @@ NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
             invocation.Owner = owner.get();
             invocation.StructuralOrder = owner->Systems_[index].StructuralOrder;
             invocation.Id = ++owner->NextSystemInvocationId_;
+            invocation.DeltaTime = deltaTime;
         }
         owner->PrepareScopedInvocations(state->Invocations);
         if (std::ranges::any_of(owner->Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
@@ -837,6 +848,24 @@ void World::RegisterSystem(SystemAccessList access,
     Systems_.back().Schedule = std::move(schedule);
 }
 
+void World::RegisterTypedSystem(const std::vector<TypedComponentAccess>& access,
+                                SystemCallback callback,
+                                SystemSchedule schedule,
+                                std::uint32_t structuralOrder) {
+    std::vector<NInternal::ScopedComponentAccess> scoped;
+    scoped.reserve(access.size());
+    for (const auto& declaration: access) {
+        scoped.push_back({declaration.Access, {}, declaration.Resolve});
+    }
+    NInternal::ScopedWorldAccess::Register(
+            *this,
+            std::move(scoped),
+            [this, callback = std::move(callback)](NInternal::ScopedBatchContext&) { callback(*this); },
+            std::move(schedule),
+            structuralOrder);
+    Systems_.back().Typed = true;
+}
+
 World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedules) const {
     const std::size_t count = Systems_.size();
     SystemExecutionGraph graph;
@@ -849,13 +878,26 @@ World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedul
         return graph;
     }
 
+    const bool hasTyped = std::ranges::any_of(Systems_, [](const RegisteredSystem& system) { return system.Typed; });
     std::map<std::uint64_t, std::size_t> indices;
     for (std::size_t index = 0; index < count; ++index) {
-        if (!Systems_[index].Schedule.has_value()) {
+        if (Systems_[index].Schedule.has_value()) {
+            indices.emplace(Systems_[index].Schedule->Id, index);
+        } else if (!hasTyped) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS scheduled execution requires a stable ID for every system");
         }
-        indices.emplace(Systems_[index].Schedule->Id, index);
+    }
+    // Unscheduled legacy callbacks have no typed identity. Give them a run-local
+    // order without changing the existing scheduled-only contract.
+    std::uint64_t legacyId = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!Systems_[index].Schedule.has_value()) {
+            while (indices.contains(legacyId)) {
+                ++legacyId;
+            }
+            indices.emplace(legacyId++, index);
+        }
     }
     std::vector<std::vector<bool>> edges(count, std::vector<bool>(count, false));
     auto addConstraint = [&](std::uint64_t before, std::uint64_t after) {
@@ -865,6 +907,9 @@ World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedul
         edges[indices.at(before)][indices.at(after)] = true;
     };
     for (const auto& system: Systems_) {
+        if (!system.Schedule) {
+            continue;
+        }
         for (const auto before: system.Schedule->Before) {
             addConstraint(system.Schedule->Id, before);
         }
@@ -1077,10 +1122,18 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 }
 
 void World::RunSystems() {
-    RunSystemsImpl();
+    RunSystems(0.0);
+}
+
+void World::RunSystems(double deltaTime) {
+    RunSystemsImpl(deltaTime);
 }
 
 void World::RunSystems(NCommon::TaskSystem& taskSystem) {
+    RunSystems(taskSystem, 0.0);
+}
+
+void World::RunSystems(NCommon::TaskSystem& taskSystem, double deltaTime) {
     if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS parallel execution must be coordinated by a host thread");
@@ -1092,15 +1145,17 @@ void World::RunSystems(NCommon::TaskSystem& taskSystem) {
     };
     const auto completion = std::make_shared<HostCompletion>();
     // Borrowed admission is confined to this host wrapper, which cannot return before cleanup.
-    auto prepared = NInternal::PrepareSystems(std::shared_ptr<World>{this, [](World*) {}},
-                                              taskSystem,
-                                              [completion](const NInternal::SystemRunOutcome& result) {
-                                                  {
-                                                      std::lock_guard lock{completion->Mutex};
-                                                      completion->Outcome = result;
-                                                  }
-                                                  completion->Condition.notify_one();
-                                              });
+    auto prepared = NInternal::PrepareSystems(
+            std::shared_ptr<World>{this, [](World*) {}},
+            taskSystem,
+            [completion](const NInternal::SystemRunOutcome& result) {
+                {
+                    std::lock_guard lock{completion->Mutex};
+                    completion->Outcome = result;
+                }
+                completion->Condition.notify_one();
+            },
+            deltaTime);
     prepared.Start();
     std::unique_lock lock{completion->Mutex};
     completion->Condition.wait(lock, [&] { return completion->Outcome.has_value(); });
@@ -1123,6 +1178,7 @@ void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations)
     if (!std::ranges::any_of(Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
         return;
     }
+    const bool hasTyped = std::ranges::any_of(Systems_, [](const RegisteredSystem& system) { return system.Typed; });
     std::map<std::type_index, std::uint64_t> types;
     for (const auto& system: Systems_) {
         for (const auto& access: system.Access) {
@@ -1143,7 +1199,7 @@ void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations)
         auto& invocation = invocations[index];
         invocation.Footprints.push_back({domain(1),
                                          {},
-                                         !system.Scoped && system.Access.empty()
+                                         !system.Scoped && (hasTyped || system.Access.empty())
                                                  ? NInternal::EAccessRequirement::EXCLUSIVE
                                                  : NInternal::EAccessRequirement::READ});
         if (system.Scoped) {
@@ -1322,7 +1378,8 @@ void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
     }
 }
 
-void World::RunSystemsImpl() {
+void World::RunSystemsImpl(double deltaTime) {
+    ValidateDeltaTime(deltaTime);
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
         std::scoped_lock admissionLock{m_queryAdmissionMutex};
@@ -1344,6 +1401,7 @@ void World::RunSystemsImpl() {
             invocations[index].Owner = this;
             invocations[index].StructuralOrder = Systems_[index].StructuralOrder;
             invocations[index].Id = ++NextSystemInvocationId_;
+            invocations[index].DeltaTime = deltaTime;
         }
         PrepareScopedInvocations(invocations);
         std::exception_ptr error;
@@ -1992,6 +2050,14 @@ std::uint64_t World::CaptureQueryInvocation() const {
     return invocation != nullptr ? invocation->Id : 0;
 }
 
+double World::GetSystemDeltaTime() const {
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (invocation == nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Delta time requires an active system invocation");
+    }
+    return invocation->DeltaTime;
+}
+
 void World::ValidateQueryInvocation(std::uint64_t invocation) const {
     const auto current = CaptureQueryInvocation();
     if (invocation != current) {
@@ -2049,12 +2115,8 @@ void* World::ResolveScopedQueryValue(Entity entity, std::type_index type, bool w
     if (!scoped) {
         return nullptr;
     }
-    for (const auto& entry: invocation->Batch->Entries) {
-        if (entry.Type == type && entry.Entity.Identity == entity && (!write || entry.Writable)) {
-            return entry.Component;
-        }
-    }
-    return nullptr;
+    const auto* entry = invocation->Batch->Find(type, entity, write);
+    return entry ? entry->Component : nullptr;
 }
 
 EntityRef World::MakeQueryEntityRef(EntityReference entity, bool readOnly) const {
