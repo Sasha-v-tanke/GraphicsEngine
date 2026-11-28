@@ -1,9 +1,13 @@
 #include "tools/performance_hub/storage.h"
+#include "tools/performance_hub/storage_internal.h"
 
+#include <barrier>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sqlite3.h>
+#include <sstream>
+#include <thread>
 
 namespace ph = graphics_engine::performance_hub;
 
@@ -82,6 +86,7 @@ void RejectsUnsafeArtifacts(const std::filesystem::path& root) {
     }
     CHECK(!storage->Complete(run->id, {{.source_file = source, .relative_path = "../escape.log", .type = "log"}})
                    .has_value());
+    CHECK(!storage->Complete(run->id, {{.source_file = source, .relative_path = "a/../b", .type = "log"}}).has_value());
     CHECK(!storage->Complete(run->id, {{.source_file = root / "missing", .relative_path = "log.txt", .type = "log"}})
                    .has_value());
     CHECK(!storage->Complete(run->id,
@@ -172,6 +177,92 @@ void RejectsCorruptedCurrentSchema(const std::filesystem::path& root) {
     sqlite3_close(raw);
     CHECK(!ph::Storage::Open(root).has_value());
 }
+void IntegrityAndErrors(const std::filesystem::path& root) {
+    auto storage = ph::Storage::Open(root);
+    CHECK(storage.has_value());
+    if (!storage)
+        return;
+    auto run = storage->CreateStage(Draft());
+    CHECK(run.has_value());
+    if (!run)
+        return;
+    sqlite3* raw = nullptr;
+    CHECK(sqlite3_open((root / "performance-hub.sqlite3").c_str(), &raw) == SQLITE_OK);
+    CHECK(sqlite3_exec(raw, "BEGIN EXCLUSIVE", nullptr, nullptr, nullptr) == SQLITE_OK);
+    auto page = storage->List(10);
+    CHECK(!page.has_value());
+    if (!page)
+        CHECK(page.error().code == ph::ErrorCode::database);
+    CHECK(sqlite3_exec(raw, "ROLLBACK", nullptr, nullptr, nullptr) == SQLITE_OK);
+    CHECK(storage->List(10).has_value());
+    CHECK(sqlite3_exec(
+                  raw,
+                  "CREATE TRIGGER fail_completion BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'injected'); END",
+                  nullptr,
+                  nullptr,
+                  nullptr) == SQLITE_OK);
+    CHECK(!storage->Complete(run->id, {}).has_value());
+    CHECK(!std::filesystem::exists(root / "runs" / run->id));
+    CHECK(storage->Read(run->id)->status == ph::RunStatus::staged);
+    CHECK(sqlite3_exec(raw, "DROP TRIGGER fail_completion", nullptr, nullptr, nullptr) == SQLITE_OK);
+    CHECK(storage->Complete(run->id, {}).has_value());
+    CHECK(sqlite3_exec(raw, "DROP INDEX runs_started_at_idx", nullptr, nullptr, nullptr) == SQLITE_OK);
+    CHECK(!ph::Storage::Open(root).has_value());
+    CHECK(sqlite3_exec(raw,
+                       "CREATE INDEX runs_started_at_idx ON runs(started_at_utc DESC,run_id DESC); DROP TABLE "
+                       "artifacts; CREATE TABLE artifacts(run_id TEXT,relative_path TEXT,content_hash TEXT,byte_size "
+                       "INTEGER,type TEXT)",
+                       nullptr,
+                       nullptr,
+                       nullptr) == SQLITE_OK);
+    CHECK(!ph::Storage::Open(root).has_value());
+    sqlite3_close(raw);
+}
+
+void ConcurrentCompletion(const std::filesystem::path& root) {
+    auto first = ph::Storage::Open(root);
+    auto second = ph::Storage::Open(root);
+    CHECK(first && second);
+    if (!first || !second)
+        return;
+    auto run = first->CreateStage(Draft());
+    CHECK(run.has_value());
+    if (!run)
+        return;
+    std::barrier start(2);
+    bool first_ok = false;
+    bool second_ok = false;
+    std::thread writer([&] {
+        start.arrive_and_wait();
+        first_ok = first->Complete(run->id, {}).has_value();
+    });
+    start.arrive_and_wait();
+    second_ok = second->Complete(run->id, {}).has_value();
+    writer.join();
+    CHECK(first_ok != second_ok);
+    CHECK(first->Read(run->id)->status == ph::RunStatus::completed);
+    CHECK(std::filesystem::is_directory(root / "runs" / run->id));
+}
+
+void StreamingBoundsAndErrors() {
+    std::istringstream growing(std::string(16385, 'x'));
+    std::ostringstream output;
+    CHECK(!ph::detail::CopyArtifactBytes(growing, output, 16384).has_value());
+    CHECK(output.str().size() <= 16384);
+    std::istringstream exact(std::string(16384, 'x'));
+    std::ostringstream exact_output;
+    auto copied = ph::detail::CopyArtifactBytes(exact, exact_output, 16384);
+    CHECK(copied.has_value());
+    if (copied)
+        CHECK(copied->bytes == exact_output.str().size());
+    std::istringstream broken("data");
+    broken.setstate(std::ios::badbit);
+    CHECK(!ph::detail::CopyArtifactBytes(broken, output, 16384).has_value());
+    std::istringstream valid("data");
+    std::ostringstream broken_output;
+    broken_output.setstate(std::ios::badbit);
+    CHECK(!ph::detail::CopyArtifactBytes(valid, broken_output, 16384).has_value());
+}
 } // namespace
 
 int main() {
@@ -182,6 +273,9 @@ int main() {
     RecoversPublishedDirectoryAfterInterruptedCompletion(root / "recovery");
     RejectsIncompatibleLegacySchema(root / "incompatible");
     RejectsCorruptedCurrentSchema(root / "corrupted-current");
+    IntegrityAndErrors(root / "integrity");
+    ConcurrentCompletion(root / "concurrent");
+    StreamingBoundsAndErrors();
     std::error_code error;
     std::filesystem::remove_all(root, error);
     return failures == 0 ? 0 : 1;

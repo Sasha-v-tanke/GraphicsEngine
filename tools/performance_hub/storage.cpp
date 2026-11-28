@@ -1,4 +1,5 @@
 #include "tools/performance_hub/storage.h"
+#include "tools/performance_hub/storage_internal.h"
 
 #include <array>
 #include <chrono>
@@ -61,7 +62,7 @@ bool IsSafeRelative(const std::filesystem::path& value) {
     if (value.empty() || value.is_absolute()) {
         return false;
     }
-    for (const auto& component: value.lexically_normal()) {
+    for (const auto& component: value) {
         if (component == ".." || component == ".") {
             return false;
         }
@@ -132,7 +133,46 @@ Run ReadRow(sqlite3_stmt* statement) {
     return run;
 }
 
-Result<void> ValidateV1Schema(sqlite3* database) {
+Result<void> ValidateV1Schema(sqlite3* database, const char* schema) {
+    sqlite3* reference = nullptr;
+    if (sqlite3_open(":memory:", &reference) != SQLITE_OK) {
+        sqlite3_close(reference);
+        return std::unexpected(MakeError(ErrorCode::migration, "cannot create schema reference"));
+    }
+    const auto reference_result = sqlite3_exec(reference, schema, nullptr, nullptr, nullptr);
+    bool matches = reference_result == SQLITE_OK;
+    {
+        Statement expected(reference,
+                           "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name");
+        if (!expected.ready())
+            matches = false;
+        int step = SQLITE_DONE;
+        while (matches && (step = sqlite3_step(expected.get())) == SQLITE_ROW) {
+            Statement actual(database, "SELECT sql FROM sqlite_master WHERE type=? AND name=?");
+            if (!actual.ready() ||
+                !Bind(database,
+                      actual.get(),
+                      1,
+                      reinterpret_cast<const char*>(sqlite3_column_text(expected.get(), 0))) ||
+                !Bind(database,
+                      actual.get(),
+                      2,
+                      reinterpret_cast<const char*>(sqlite3_column_text(expected.get(), 1))) ||
+                sqlite3_step(actual.get()) != SQLITE_ROW) {
+                matches = false;
+                break;
+            }
+            const auto* sql = sqlite3_column_text(actual.get(), 0);
+            matches = sql != nullptr && std::string_view(reinterpret_cast<const char*>(sql)) ==
+                                                reinterpret_cast<const char*>(sqlite3_column_text(expected.get(), 2));
+        }
+        if (step != SQLITE_DONE)
+            matches = false;
+    }
+    sqlite3_close(reference);
+    if (!matches)
+        return std::unexpected(
+                MakeError(ErrorCode::migration, "schema constraints or indexes differ from v1 contract"));
     constexpr std::array queries{
             "SELECT "
             "run_id,status,source,started_at_utc,ended_at_utc,job_id,git_revision,environment_fingerprint,build_"
@@ -222,29 +262,46 @@ Result<void> CopyArtifact(const ArtifactInput& artifact, const std::filesystem::
     if (!input || !output) {
         return std::unexpected(MakeError(ErrorCode::io, "cannot open artifact file"));
     }
-    std::uint64_t hash = 14695981039346656037ULL;
-    std::array<char, 8192> buffer{};
-    while (input.read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || input.gcount() != 0) {
-        const auto count = input.gcount();
-        output.write(buffer.data(), count);
-        for (std::streamsize index = 0; index < count; ++index) {
-            hash = (hash ^ static_cast<unsigned char>(buffer[static_cast<std::size_t>(index)])) * 1099511628211ULL;
-        }
-    }
+    const auto copied = detail::CopyArtifactBytes(input, output, kMaxArtifactBytes);
+    if (!copied)
+        return std::unexpected(copied.error());
     output.close();
-    if (!input.eof() || !output) {
+    if (input.bad() || !input.eof() || !output) {
         return std::unexpected(MakeError(ErrorCode::io, "artifact copy failed"));
     }
     std::ostringstream encoded;
-    encoded << "fnv1a64:" << std::hex << hash;
+    encoded << "fnv1a64:" << std::hex << copied->hash;
     result = Artifact{.content_hash = encoded.str(),
-                      .size = size,
+                      .size = copied->bytes,
                       .type = artifact.type,
                       .relative_path = canonical_path.generic_string()};
     return {};
 }
 
 } // namespace
+
+Result<detail::CopiedArtifact>
+detail::CopyArtifactBytes(std::istream& input, std::ostream& output, const std::uintmax_t limit) {
+    CopiedArtifact copied{0, 14695981039346656037ULL};
+    std::array<char, 8192> buffer{};
+    for (;;) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto count = input.gcount();
+        if (input.bad() || (input.fail() && !input.eof()))
+            return std::unexpected(MakeError(ErrorCode::io, "artifact read failed"));
+        if (static_cast<std::uintmax_t>(count) > limit - copied.bytes)
+            return std::unexpected(MakeError(ErrorCode::io, "artifact exceeded storage limit"));
+        output.write(buffer.data(), count);
+        if (!output)
+            return std::unexpected(MakeError(ErrorCode::io, "artifact write failed"));
+        copied.bytes += static_cast<std::uintmax_t>(count);
+        for (std::streamsize index = 0; index < count; ++index)
+            copied.hash = (copied.hash ^ static_cast<unsigned char>(buffer[static_cast<std::size_t>(index)])) *
+                          1099511628211ULL;
+        if (input.eof())
+            return copied;
+    }
+}
 
 struct Storage::Impl {
     sqlite3* database = nullptr;
@@ -364,7 +421,7 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
                               "apply migration v1");
             !result)
             return fail(result.error());
-        if (auto result = ValidateV1Schema(impl->database); !result)
+        if (auto result = ValidateV1Schema(impl->database, migration_v1); !result)
             return fail(result.error());
         if (auto result = Sql(impl->database,
                               sqlite3_exec(impl->database,
@@ -382,7 +439,7 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
             !result)
             return fail(result.error());
     }
-    if (auto result = ValidateV1Schema(impl->database); !result) {
+    if (auto result = ValidateV1Schema(impl->database, migration_v1); !result) {
         sqlite3_close(impl->database);
         delete impl;
         return std::unexpected(result.error());
@@ -454,8 +511,8 @@ Result<void> Storage::Complete(const std::string& run_id, const std::vector<Arti
         artifacts.push_back(std::move(artifact));
     }
     auto rollback = [&] {
-        sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
         std::filesystem::remove_all(impl_->root / "runs" / run_id, filesystem_error);
+        sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
     };
     if (auto result = Sql(impl_->database,
                           sqlite3_exec(impl_->database, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr),
@@ -465,6 +522,18 @@ Result<void> Storage::Complete(const std::string& run_id, const std::vector<Arti
         return std::unexpected(result.error());
     }
     const auto published = impl_->root / "runs" / run_id;
+    current = Read(run_id);
+    if (!current || current->status != RunStatus::staged) {
+        std::filesystem::remove_all(staging, filesystem_error);
+        sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
+        return std::unexpected(current ? MakeError(ErrorCode::conflict, "only staged runs can be completed")
+                                       : current.error());
+    }
+    if (std::filesystem::exists(published, filesystem_error) || filesystem_error) {
+        std::filesystem::remove_all(staging, filesystem_error);
+        sqlite3_exec(impl_->database, "ROLLBACK", nullptr, nullptr, nullptr);
+        return std::unexpected(MakeError(ErrorCode::conflict, "published directory already exists; recovery required"));
+    }
     std::filesystem::rename(staging, published, filesystem_error);
     if (filesystem_error) {
         std::filesystem::remove_all(staging, filesystem_error);
@@ -581,13 +650,17 @@ Result<RunPage> Storage::List(const std::size_t limit, const std::optional<std::
         !result)
         return std::unexpected(result.error());
     RunPage page{};
-    while (sqlite3_step(statement.get()) == SQLITE_ROW) {
+    int step = SQLITE_DONE;
+    while ((step = sqlite3_step(statement.get())) == SQLITE_ROW) {
         if (page.runs.size() == limit) {
             page.next_cursor = page.runs.back().id;
             break;
         }
         page.runs.push_back(ReadRow(statement.get()));
     }
+    if (step != SQLITE_ROW && step != SQLITE_DONE)
+        return std::unexpected(
+                MakeError(ErrorCode::database, "list runs: " + std::string(sqlite3_errmsg(impl_->database))));
     return page;
 }
 
