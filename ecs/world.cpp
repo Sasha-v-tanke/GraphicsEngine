@@ -837,6 +837,24 @@ void World::RegisterSystem(SystemAccessList access,
     Systems_.back().Schedule = std::move(schedule);
 }
 
+void World::RegisterTypedSystem(std::vector<TypedComponentAccess> access,
+                                SystemCallback callback,
+                                SystemSchedule schedule,
+                                std::uint32_t structuralOrder) {
+    std::vector<NInternal::ScopedComponentAccess> scoped;
+    scoped.reserve(access.size());
+    for (const auto& declaration: access) {
+        scoped.push_back({declaration.Access, {}, declaration.Resolve});
+    }
+    NInternal::ScopedWorldAccess::Register(
+            *this,
+            std::move(scoped),
+            [this, callback = std::move(callback)](NInternal::ScopedBatchContext&) { callback(*this); },
+            std::move(schedule),
+            structuralOrder);
+    Systems_.back().Typed = true;
+}
+
 World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedules) const {
     const std::size_t count = Systems_.size();
     SystemExecutionGraph graph;
@@ -849,13 +867,26 @@ World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedul
         return graph;
     }
 
+    const bool hasTyped = std::ranges::any_of(Systems_, [](const RegisteredSystem& system) { return system.Typed; });
     std::map<std::uint64_t, std::size_t> indices;
     for (std::size_t index = 0; index < count; ++index) {
-        if (!Systems_[index].Schedule.has_value()) {
+        if (Systems_[index].Schedule.has_value()) {
+            indices.emplace(Systems_[index].Schedule->Id, index);
+        } else if (!hasTyped) {
             GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                                   "ECS scheduled execution requires a stable ID for every system");
         }
-        indices.emplace(Systems_[index].Schedule->Id, index);
+    }
+    // Unscheduled legacy callbacks have no typed identity. Give them a run-local
+    // order without changing the existing scheduled-only contract.
+    std::uint64_t legacyId = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!Systems_[index].Schedule.has_value()) {
+            while (indices.contains(legacyId)) {
+                ++legacyId;
+            }
+            indices.emplace(legacyId++, index);
+        }
     }
     std::vector<std::vector<bool>> edges(count, std::vector<bool>(count, false));
     auto addConstraint = [&](std::uint64_t before, std::uint64_t after) {
@@ -865,6 +896,9 @@ World::SystemExecutionGraph World::BuildSystemExecutionGraph(bool requireSchedul
         edges[indices.at(before)][indices.at(after)] = true;
     };
     for (const auto& system: Systems_) {
+        if (!system.Schedule) {
+            continue;
+        }
         for (const auto before: system.Schedule->Before) {
             addConstraint(system.Schedule->Id, before);
         }
@@ -1123,6 +1157,7 @@ void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations)
     if (!std::ranges::any_of(Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
         return;
     }
+    const bool hasTyped = std::ranges::any_of(Systems_, [](const RegisteredSystem& system) { return system.Typed; });
     std::map<std::type_index, std::uint64_t> types;
     for (const auto& system: Systems_) {
         for (const auto& access: system.Access) {
@@ -1143,7 +1178,7 @@ void World::PrepareScopedInvocations(std::vector<SystemInvocation>& invocations)
         auto& invocation = invocations[index];
         invocation.Footprints.push_back({domain(1),
                                          {},
-                                         !system.Scoped && system.Access.empty()
+                                         !system.Scoped && (hasTyped || system.Access.empty())
                                                  ? NInternal::EAccessRequirement::EXCLUSIVE
                                                  : NInternal::EAccessRequirement::READ});
         if (system.Scoped) {

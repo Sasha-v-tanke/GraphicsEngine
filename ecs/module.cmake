@@ -6,6 +6,7 @@ API(
     name_component.h
     hierarchy.h
     system_access.h
+    system_context.h
     world.h
 )
 

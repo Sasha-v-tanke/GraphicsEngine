@@ -48,6 +48,11 @@ namespace NEcs {
 
 class EntityRef;
 
+namespace NSystem {
+template<typename TAccess>
+class SystemContext;
+}
+
 enum class EQueryEnabledPolicy {
     SKIP_DISABLED,
     INCLUDE_DISABLED,
@@ -784,6 +789,37 @@ private:
 
     friend class EntityRef;
     friend class NScene::Scene;
+    template<typename TAccess>
+    friend class NSystem::SystemContext;
+
+    struct TypedComponentAccess {
+        SystemAccess Access;
+        void* (*Resolve)(World&, Entity);
+    };
+
+    template<typename T>
+    static void* ResolveTypedComponent(World& world, Entity entity) {
+        auto* storage = world.FindStorage<T>();
+        return storage && storage->Contains(entity.Index) ? &storage->Get(entity.Index) : nullptr;
+    }
+
+    template<typename... TDeclarations>
+    void RegisterTypedSystem(NSystem::Access<TDeclarations...>*,
+                             SystemCallback callback,
+                             SystemSchedule schedule,
+                             std::uint32_t structuralOrder) {
+        RegisterTypedSystem(
+                std::vector<TypedComponentAccess>{
+                        {{typeid(typename TDeclarations::Component), TDeclarations::MODE},
+                         &ResolveTypedComponent<typename TDeclarations::Component>}...},
+                std::move(callback),
+                std::move(schedule),
+                structuralOrder);
+    }
+    void RegisterTypedSystem(std::vector<TypedComponentAccess> access,
+                             SystemCallback callback,
+                             SystemSchedule schedule,
+                             std::uint32_t structuralOrder);
     void ValidateEntityRefContext(const EntityRef& entity) const;
     [[nodiscard]] bool ResolveEntityRefEnabled(EntityReference entity) const;
     [[nodiscard]] std::uint64_t CaptureQueryInvocation() const;
@@ -941,6 +977,7 @@ private:
         std::optional<std::uint32_t> StructuralOrder;
         std::optional<SystemSchedule> Schedule = std::nullopt;
         std::shared_ptr<NInternal::ScopedSystem> Scoped = {};
+        bool Typed = false;
     };
 
     std::vector<RegisteredSystem> Systems_;
