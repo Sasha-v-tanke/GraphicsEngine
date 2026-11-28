@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "spatial_query_detail.h"
+#include <scene/spatial_query_detail.h>
 
 namespace NScene {
 namespace {
@@ -162,8 +162,11 @@ std::size_t Insert(auto& data, SpatialIdentity identity, SpatialAabb tight) {
         const auto& right = data.Nodes[node.Right];
         const double leftCost = Area(Union(left.Fat, fat)) - Area(left.Fat);
         const double rightCost = Area(Union(right.Fat, fat)) - Area(right.Fat);
-        sibling = leftCost < rightCost || (leftCost == rightCost && left.Height <= right.Height) ? node.Left
-                                                                                               : node.Right;
+        if (leftCost < rightCost || (leftCost == rightCost && left.Height <= right.Height)) {
+            sibling = node.Left;
+        } else {
+            sibling = node.Right;
+        }
     }
     const auto previousParent = data.Nodes[sibling].Parent;
     const auto parent = Allocate(data,

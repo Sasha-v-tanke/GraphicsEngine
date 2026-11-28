@@ -1,0 +1,5 @@
+TEST_SUITE(DynamicAabbTreeScale)
+SOURCES(dynamic_aabb_tree.cpp)
+PRIVATE_DEPENDS(Scene)
+TEST_LABELS(heavy cpp scene spatial)
+set_tests_properties(GraphicsEngineDynamicAabbTreeScaleTests PROPERTIES TIMEOUT 180)

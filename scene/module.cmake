@@ -11,6 +11,7 @@ API(
 
 SOURCES(
     dynamic_aabb_tree.cpp
+    spatial_query_detail.h
     static_bvh.cpp
     spatial_bounds.cpp
     scene_manager.cpp

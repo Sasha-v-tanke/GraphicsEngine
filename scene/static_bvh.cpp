@@ -7,8 +7,7 @@
 #include <utility>
 
 #include <GraphicsEngine/scene/scene_manager.h>
-
-#include "spatial_query_detail.h"
+#include <scene/spatial_query_detail.h>
 
 namespace NScene {
 namespace {

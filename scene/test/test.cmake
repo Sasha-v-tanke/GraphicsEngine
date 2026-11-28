@@ -23,4 +23,7 @@ TEST_LABELS(
     scene
 )
 
-RECURSE(scale)
+RECURSE(
+    scale
+    dynamic_scale
+)

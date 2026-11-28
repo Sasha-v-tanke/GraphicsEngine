@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -200,16 +201,21 @@ TEST_F(DynamicAabbTreeTest, HighChurnMaintainsBalancedTreeAndMatchesIndependentO
 TEST_F(DynamicAabbTreeTest, ReadersRetainExactSnapshotAcrossConcurrentRefreshAndPublication) {
     auto records = Grid(1);
     records[0].Bounds->Aabb = Box(4);
-    std::atomic<std::shared_ptr<const DynamicAabbTree>> published{
-            std::make_shared<const DynamicAabbTree>(DynamicAabbTree::Build(Scene, 1, records))};
+    auto published = std::make_shared<const DynamicAabbTree>(DynamicAabbTree::Build(Scene, 1, records));
+    std::mutex publication;
+    const auto acquire = [&] {
+        const std::lock_guard lock{publication};
+        return published;
+    };
     std::barrier phases{5};
-    std::atomic<bool> valid = true;
+    std::atomic_bool valid = true;
     const auto identity = records[0].Identity;
     std::vector<std::jthread> readers;
+    readers.reserve(4);
     for (int reader = 0; reader < 4; ++reader) {
         readers.emplace_back([&] {
             for (std::uint64_t version = 1; version <= 64; ++version) {
-                const auto snapshot = published.load();
+                const auto snapshot = acquire();
                 phases.arrive_and_wait();
                 const auto hits = snapshot->QueryOverlap(Box(static_cast<double>(version) * 4));
                 if (hits.Version != version || hits.Candidates != std::vector{identity} ||
@@ -223,13 +229,16 @@ TEST_F(DynamicAabbTreeTest, ReadersRetainExactSnapshotAcrossConcurrentRefreshAnd
     for (std::uint64_t version = 1; version <= 64; ++version) {
         phases.arrive_and_wait();
         records[0].Bounds->Aabb = Box(static_cast<double>(version + 1) * 4);
-        const auto next = published.load()->Refresh(version + 1, records);
-        published.store(std::make_shared<const DynamicAabbTree>(next));
+        const auto next = std::make_shared<const DynamicAabbTree>(acquire()->Refresh(version + 1, records));
+        {
+            const std::lock_guard lock{publication};
+            published = next;
+        }
         phases.arrive_and_wait();
     }
     readers.clear();
     EXPECT_TRUE(valid.load());
-    EXPECT_EQ(published.load()->GetVersion(), 65U);
+    EXPECT_EQ(acquire()->GetVersion(), 65U);
 }
 
 TEST_F(DynamicAabbTreeTest, CommittedCaptureTracksHierarchyAndRecycledEntityWithoutPinningScene) {
