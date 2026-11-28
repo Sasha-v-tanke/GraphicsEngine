@@ -74,11 +74,15 @@ private:
 class WorldExecutionAccess {
 public:
     static PreparedSystemRun
-    Prepare(std::shared_ptr<World> world, NCommon::TaskSystem& tasks, std::function<void(SystemRunOutcome)> onFinished);
+    Prepare(std::shared_ptr<World> world,
+            NCommon::TaskSystem& tasks,
+            std::function<void(SystemRunOutcome)> onFinished,
+            double deltaTime = 0.0);
 };
 
 [[nodiscard]] PreparedSystemRun PrepareSystems(std::shared_ptr<World> world,
                                                NCommon::TaskSystem& tasks,
-                                               std::function<void(SystemRunOutcome)> onFinished);
+                                               std::function<void(SystemRunOutcome)> onFinished,
+                                               double deltaTime = 0.0);
 
 } // namespace NEcs::NInternal

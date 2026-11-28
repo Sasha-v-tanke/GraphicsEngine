@@ -11,6 +11,10 @@
 
 namespace NEcs::NSystem {
 
+enum class ESystemPhase {
+    UPDATE,
+};
+
 template<typename... TSystems>
 struct Before {};
 
@@ -40,6 +44,9 @@ template<typename... TSystems>
 
 template<typename TSystem>
 [[nodiscard]] SystemSchedule MakeSchedule() {
+    if constexpr (requires { TSystem::PHASE; }) {
+        static_assert(TSystem::PHASE == ESystemPhase::UPDATE, "Only the Update phase is currently supported");
+    }
     SystemSchedule schedule{.Id = SystemId<TSystem>()};
     if constexpr (requires { typename TSystem::Before; }) {
         schedule.Before = SystemIds(static_cast<typename TSystem::Before*>(nullptr));
@@ -55,6 +62,10 @@ template<typename TSystem>
 template<typename TAccess>
 class SystemContext final {
 public:
+    [[nodiscard]] double DeltaTime() const {
+        return GetWorld().GetSystemDeltaTime();
+    }
+
     template<typename... TComponents>
         requires(TAccess::template CAN_READ<TComponents> && ...)
     [[nodiscard]] auto Query() const {

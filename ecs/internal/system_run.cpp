@@ -47,7 +47,8 @@ void PreparedSystemRun::Start() {
 }
 PreparedSystemRun PrepareSystems(std::shared_ptr<World> world,
                                  NCommon::TaskSystem& tasks,
-                                 std::function<void(SystemRunOutcome)> onFinished) {
-    return WorldExecutionAccess::Prepare(std::move(world), tasks, std::move(onFinished));
+                                 std::function<void(SystemRunOutcome)> onFinished,
+                                 double deltaTime) {
+    return WorldExecutionAccess::Prepare(std::move(world), tasks, std::move(onFinished), deltaTime);
 }
 } // namespace NEcs::NInternal

@@ -1,6 +1,7 @@
 #include "world.h"
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <exception>
 #include <iterator>
@@ -16,6 +17,12 @@
 
 namespace NEcs {
 namespace {
+void ValidateDeltaTime(double deltaTime) {
+    if (!std::isfinite(deltaTime) || deltaTime < 0.0) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "ECS delta time must be finite and nonnegative");
+    }
+}
+
 std::uint64_t AllocateWorldId() {
     static std::atomic<std::uint64_t> next{1};
     std::uint64_t value = next.load();
@@ -114,6 +121,7 @@ struct World::SystemInvocation {
     std::vector<std::weak_ptr<QueryLease>> QueryLeases;
     std::optional<std::uint32_t> StructuralOrder;
     std::uint64_t Id = 0;
+    double DeltaTime = 0.0;
     std::vector<std::unique_ptr<IDeferredCommand>> Commands;
     std::vector<DeferredCommandBatch> WorkerBatches;
     std::exception_ptr Error;
@@ -366,7 +374,9 @@ struct World::SystemRunState final: NInternal::SystemRunControl, std::enable_sha
 NInternal::PreparedSystemRun
 NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
                                          NCommon::TaskSystem& tasks,
-                                         std::function<void(NInternal::SystemRunOutcome)> onFinished) {
+                                         std::function<void(NInternal::SystemRunOutcome)> onFinished,
+                                         double deltaTime) {
+    ValidateDeltaTime(deltaTime);
     const std::shared_ptr<World> owner = std::move(world);
     if (!owner) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_ARGUMENT, "Async ECS requires a World owner");
@@ -400,6 +410,7 @@ NInternal::WorldExecutionAccess::Prepare(std::shared_ptr<World> world,
             invocation.Owner = owner.get();
             invocation.StructuralOrder = owner->Systems_[index].StructuralOrder;
             invocation.Id = ++owner->NextSystemInvocationId_;
+            invocation.DeltaTime = deltaTime;
         }
         owner->PrepareScopedInvocations(state->Invocations);
         if (std::ranges::any_of(owner->Systems_, [](const auto& system) { return system.Scoped != nullptr; })) {
@@ -1111,10 +1122,18 @@ void World::SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& b
 }
 
 void World::RunSystems() {
-    RunSystemsImpl();
+    RunSystems(0.0);
+}
+
+void World::RunSystems(double deltaTime) {
+    RunSystemsImpl(deltaTime);
 }
 
 void World::RunSystems(NCommon::TaskSystem& taskSystem) {
+    RunSystems(taskSystem, 0.0);
+}
+
+void World::RunSystems(NCommon::TaskSystem& taskSystem, double deltaTime) {
     if (NCommon::TaskSystem::IsCurrentThreadWorker()) {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE,
                               "ECS parallel execution must be coordinated by a host thread");
@@ -1134,7 +1153,8 @@ void World::RunSystems(NCommon::TaskSystem& taskSystem) {
                                                       completion->Outcome = result;
                                                   }
                                                   completion->Condition.notify_one();
-                                              });
+                                              },
+                                              deltaTime);
     prepared.Start();
     std::unique_lock lock{completion->Mutex};
     completion->Condition.wait(lock, [&] { return completion->Outcome.has_value(); });
@@ -1357,7 +1377,8 @@ void World::PublishSystemCommands(std::vector<SystemInvocation>& invocations) {
     }
 }
 
-void World::RunSystemsImpl() {
+void World::RunSystemsImpl(double deltaTime) {
+    ValidateDeltaTime(deltaTime);
     {
         std::scoped_lock lock{DeferredStructuralMutex_};
         std::scoped_lock admissionLock{m_queryAdmissionMutex};
@@ -1379,6 +1400,7 @@ void World::RunSystemsImpl() {
             invocations[index].Owner = this;
             invocations[index].StructuralOrder = Systems_[index].StructuralOrder;
             invocations[index].Id = ++NextSystemInvocationId_;
+            invocations[index].DeltaTime = deltaTime;
         }
         PrepareScopedInvocations(invocations);
         std::exception_ptr error;
@@ -2025,6 +2047,14 @@ std::uint64_t World::CaptureQueryInvocation() const {
         GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Query requires an owner phase or active invocation");
     }
     return invocation != nullptr ? invocation->Id : 0;
+}
+
+double World::GetSystemDeltaTime() const {
+    const auto* invocation = GetCurrentSystemInvocation();
+    if (invocation == nullptr) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Delta time requires an active system invocation");
+    }
+    return invocation->DeltaTime;
 }
 
 void World::ValidateQueryInvocation(std::uint64_t invocation) const {

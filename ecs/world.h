@@ -527,7 +527,9 @@ public:
     [[nodiscard]] DeferredStructuralCommandBuffer CreateDeferredStructuralCommandBuffer(std::uint32_t producerOrder);
     void SubmitDeferredStructuralCommands(DeferredStructuralCommandBuffer&& buffer);
     void RunSystems();
+    void RunSystems(double deltaTime);
     void RunSystems(NCommon::TaskSystem& taskSystem);
+    void RunSystems(NCommon::TaskSystem& taskSystem, double deltaTime);
     void ApplyDeferredStructuralChanges();
 
 private:
@@ -913,7 +915,8 @@ private:
     bool m_commitRejectedBeforePublication = false;
     struct SystemInvocation;
     [[nodiscard]] SystemInvocation* GetCurrentSystemInvocation() const noexcept;
-    void RunSystemsImpl();
+    [[nodiscard]] double GetSystemDeltaTime() const;
+    void RunSystemsImpl(double deltaTime);
     void ExecuteSystem(std::size_t index, SystemInvocation& invocation);
     void DiscardSystemCommands(std::vector<SystemInvocation>& invocations);
     void PublishSystemCommands(std::vector<SystemInvocation>& invocations);

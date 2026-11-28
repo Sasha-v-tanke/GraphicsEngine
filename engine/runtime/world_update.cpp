@@ -7,7 +7,8 @@
 namespace NEngine::NRuntime {
 void ScheduleWorldUpdate(std::shared_ptr<NEcs::World> world,
                          NCommon::TaskSystem& tasks,
-                         const std::shared_ptr<UpdateCompletion>& completion) {
+                         const std::shared_ptr<UpdateCompletion>& completion,
+                         double deltaTime) {
     auto prepared = NEcs::NInternal::PrepareSystems(
             std::move(world),
             tasks,
@@ -19,7 +20,8 @@ void ScheduleWorldUpdate(std::shared_ptr<NEcs::World> world,
                     status = EUpdateStatus::CANCELLED;
                 }
                 completion->Finish({.Status = status, .Error = result.Error});
-            });
+            },
+            deltaTime);
     const auto run = prepared.GetHandle();
     completion->BindCancellation([run] { run.RequestCancel(); });
     prepared.Start();

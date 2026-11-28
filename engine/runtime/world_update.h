@@ -14,5 +14,6 @@ namespace NEngine::NRuntime {
 // Scene callers pass an aliasing shared_ptr<World> retaining the acquired Scene owner.
 void ScheduleWorldUpdate(std::shared_ptr<NEcs::World> world,
                          NCommon::TaskSystem& tasks,
-                         const std::shared_ptr<UpdateCompletion>& completion);
+                         const std::shared_ptr<UpdateCompletion>& completion,
+                         double deltaTime = 0.0);
 } // namespace NEngine::NRuntime
