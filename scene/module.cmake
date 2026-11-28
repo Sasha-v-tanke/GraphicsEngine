@@ -1,6 +1,7 @@
 MODULE(Scene)
 
 API(
+    dynamic_aabb_tree.h
     static_bvh.h
     spatial_bounds.h
     scene.h
@@ -9,6 +10,7 @@ API(
 )
 
 SOURCES(
+    dynamic_aabb_tree.cpp
     static_bvh.cpp
     spatial_bounds.cpp
     scene_manager.cpp
