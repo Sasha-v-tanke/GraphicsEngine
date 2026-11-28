@@ -124,7 +124,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm.list
 
           sudo apt-get update
-          sudo apt-get install -y clang-23 libglm-dev
+          sudo apt-get install -y clang-23 libbenchmark-dev libglm-dev
 
       - name: Run catalog unit tests
         run: python3 -m unittest tools.performance_hub.tests.test_benchmark_catalog -v
