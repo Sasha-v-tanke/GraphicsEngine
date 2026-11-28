@@ -176,6 +176,11 @@ Result<void> RecoverPublishedDirectories(sqlite3* database, const std::filesyste
             return std::unexpected(result.error());
         }
         const int step = sqlite3_step(status.get());
+        if (step != SQLITE_ROW && step != SQLITE_DONE) {
+            rollback();
+            return std::unexpected(
+                    MakeError(ErrorCode::database, "read recovery status: " + std::string(sqlite3_errmsg(database))));
+        }
         const bool keep =
                 step == SQLITE_ROW &&
                 std::string_view(reinterpret_cast<const char*>(sqlite3_column_text(status.get(), 0))) == "completed";
@@ -306,13 +311,14 @@ Result<Storage> Storage::Open(const std::filesystem::path& root) {
     {
         Statement version_query(impl->database, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
         if (auto result = version_query.ready(); !result || sqlite3_step(version_query.get()) != SQLITE_ROW) {
-            const Error error_value =
-                    result ? MakeError(ErrorCode::migration, "cannot read schema version") : result.error();
-            sqlite3_close(impl->database);
-            delete impl;
-            return std::unexpected(error_value);
-        }
-        version = sqlite3_column_int(version_query.get(), 0);
+            version = -1;
+        } else
+            version = sqlite3_column_int(version_query.get(), 0);
+    }
+    if (version < 0) {
+        sqlite3_close(impl->database);
+        delete impl;
+        return std::unexpected(MakeError(ErrorCode::migration, "cannot read schema version"));
     }
     if (version > kSchemaVersion) {
         sqlite3_close(impl->database);
