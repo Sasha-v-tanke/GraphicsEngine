@@ -21,7 +21,8 @@ TEST(DynamicAabbTreeScale, CompareIncrementalRefreshWithFullRebuildAtLowChurn) {
     for (std::uint32_t item = 0; item < count; ++item) {
         const double x = static_cast<double>(item % 100) * 4;
         const double y = static_cast<double>((item / 100) % 100) * 4;
-        const double z = static_cast<double>(item / 10'000) * 4;
+        const auto layer = item / 10'000;
+        const double z = static_cast<double>(layer) * 4;
         auto record = NBvhTest::Record(scene, item, {{x, y, z}, {x + 1, y + 1, z + 1}});
         record.Mobility = NScene::ESpatialMobility::DYNAMIC;
         records.push_back(std::move(record));

@@ -259,5 +259,6 @@ brute-force overlap/ray/frustum parity, concurrent readers and committed hierarc
 capture. `GraphicsEngineDynamicAabbTreeScaleTests` (heavy) compares incremental
 refresh against complete dynamic/static rebuild on 50,000 records and 1% churn;
 it validates candidate parity and structural-work counts and prints timings.
-No measured speedup or hardware-specific threshold is asserted without running
+Small / Linux CI also runs this CPU-only test explicitly with verbose output,
+without running the rest of the heavy suite. No measured speedup or hardware-specific threshold is asserted without running
 the benchmark. Installed package consumer checks public Build/Refresh/query.
