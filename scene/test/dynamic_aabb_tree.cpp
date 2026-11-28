@@ -45,13 +45,13 @@ protected:
     NScene::SceneManager Scenes;
     NScene::SceneHandle Scene = Scenes.CreateScene();
 
-    SpatialRecord Record(std::uint32_t slot, SpatialAabb bounds) const {
+    [[nodiscard]] SpatialRecord Record(std::uint32_t slot, SpatialAabb bounds) const {
         auto record = NBvhTest::Record(Scene, slot, bounds);
         record.Mobility = NScene::ESpatialMobility::DYNAMIC;
         return record;
     }
 
-    std::vector<SpatialRecord> Grid(std::uint32_t count) const {
+    [[nodiscard]] std::vector<SpatialRecord> Grid(std::uint32_t count) const {
         std::vector<SpatialRecord> records;
         records.reserve(count);
         for (std::uint32_t slot = 0; slot < count; ++slot) {
