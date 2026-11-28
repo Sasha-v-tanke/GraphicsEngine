@@ -796,7 +796,7 @@ private:
 
     struct TypedComponentAccess {
         SystemAccess Access;
-        void* (*Resolve)(World&, Entity);
+        void* (*Resolve)(World&, Entity) = nullptr;
     };
 
     template<typename T>
