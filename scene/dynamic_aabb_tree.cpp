@@ -1,6 +1,7 @@
 #include "dynamic_aabb_tree.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -204,12 +205,13 @@ SpatialQueryResult Query(const auto& data, const auto& matches) {
     if (data.Root == NO_NODE) {
         return result;
     }
-    std::vector<std::size_t> stack;
-    stack.reserve(data.Statistics.MaxDepth);
-    stack.push_back(data.Root);
-    while (!stack.empty()) {
-        const auto index = stack.back();
-        stack.pop_back();
+    // AVL height with at most UINT32_MAX / 2 leaves is below 64.
+    // Pending siblings fit in a fixed stack; each query avoids heap allocation.
+    std::array<std::size_t, 64> stack{};
+    std::size_t size = 1;
+    stack[0] = data.Root;
+    while (size != 0) {
+        const auto index = stack[--size];
         const auto& node = data.Nodes[index];
         ++result.Statistics.VisitedNodes;
         if (!matches(node.Fat)) {
@@ -221,8 +223,8 @@ SpatialQueryResult Query(const auto& data, const auto& matches) {
                 result.Candidates.push_back(node.Identity);
             }
         } else {
-            stack.push_back(node.Right);
-            stack.push_back(node.Left);
+            stack[size++] = node.Right;
+            stack[size++] = node.Left;
         }
     }
     std::ranges::sort(result.Candidates,
