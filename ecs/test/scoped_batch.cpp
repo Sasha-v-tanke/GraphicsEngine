@@ -435,8 +435,7 @@ TEST(EcsScoped, IndexedEntriesPreserveIdentityModeAndOverlappingScopes) {
             [&](ScopedBatchContext& context) {
                 EXPECT_EQ(context.Read<Position>().Get(br).Value, 22);
                 EXPECT_EQ(context.Write<Position>().Get(ar).Value, 11);
-                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
-                                   [&] { (void)context.Write<Position>().Get(br); });
+                NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT, [&] { (void)context.Write<Position>().Get(br); });
                 auto foreign = ar;
                 foreign.WorldId = other.GetEntityReference(other.CreateEntity()).WorldId;
                 NTest::ExpectError(NCommon::EError::INVALID_ARGUMENT,
