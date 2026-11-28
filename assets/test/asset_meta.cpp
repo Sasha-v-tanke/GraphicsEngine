@@ -76,8 +76,10 @@ TEST(AssetMetaTest, ConcurrentCreatePublishesExactlyOneIdentity) {
     const auto second = *AssetId::Parse("fedcba9876543210fedcba9876543210");
     std::expected<void, std::string> one = std::unexpected("not run");
     std::expected<void, std::string> two = std::unexpected("not run");
-    std::thread firstThread([&] { one = NAssets::CreateMeta(source, AssetMeta{.Id = first, .Importer = "obj"}); });
-    std::thread secondThread([&] { two = NAssets::CreateMeta(source, AssetMeta{.Id = second, .Importer = "obj"}); });
+    std::thread firstThread(
+            [&] { one = NAssets::CreateMeta(source, AssetMeta{.Id = first, .Importer = "obj", .SchemaVersion = 1}); });
+    std::thread secondThread(
+            [&] { two = NAssets::CreateMeta(source, AssetMeta{.Id = second, .Importer = "obj", .SchemaVersion = 1}); });
     firstThread.join();
     secondThread.join();
     EXPECT_NE(static_cast<bool>(one), static_cast<bool>(two));
