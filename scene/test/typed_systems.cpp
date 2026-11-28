@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <optional>
@@ -124,6 +125,57 @@ TEST(TypedSystems, AccessAndLifetimeMatchForSerialAndAsyncRuns) {
             EXPECT_NO_THROW(scene.CommitPending());
         }
     }
+}
+
+constexpr std::uint32_t LARGE_QUERY_COUNT = 16384;
+
+struct LargeQuerySystem {
+    using Access = MovementAccess;
+
+    void Update(MovementContext& context) {
+        std::uint32_t visited = 0;
+        for (auto [entity, position, velocity]: context.Query<Position, Velocity>().IncludeDisabled()) {
+            EXPECT_EQ(&context.Get<Position>(entity.GetReference()), &position);
+            EXPECT_EQ(&context.Get<Velocity>(entity.GetReference()), &velocity);
+            position.Value = velocity.Value;
+            ++visited;
+        }
+        EXPECT_EQ(visited, LARGE_QUERY_COUNT / 2);
+        visited = 0;
+        context.ForEach<Position, Velocity>([&](NEcs::EntityRef, Position& position, const Velocity& velocity) {
+            EXPECT_DOUBLE_EQ(position.Value, velocity.Value);
+            ++visited;
+        });
+        EXPECT_EQ(visited, LARGE_QUERY_COUNT / 2 - 2);
+    }
+};
+
+TEST(TypedSystems, LargeSparseQueryPreservesMembershipAcrossRuns) {
+    NScene::Scene scene;
+    auto& world = scene.GetWorld();
+    for (std::uint32_t index = 0; index < LARGE_QUERY_COUNT; ++index) {
+        const auto entity = world.CreateEntity();
+        world.AddComponent<Position>(entity);
+        if (index % 2 == 0) {
+            world.AddComponent<Velocity>(entity, static_cast<double>(index + 1));
+            if (index == 0) {
+                world.GetEntityRef(world.GetEntityReference(entity)).Disable();
+            } else if (index == 2) {
+                world.GetEntityRef(world.GetEntityReference(entity)).DisableComponent<Velocity>();
+            }
+        }
+    }
+    world.CommitPending();
+    scene.AddSystem<LargeQuerySystem>();
+    world.RunSystems();
+    NCommon::TaskSystem tasks{2};
+    world.RunSystems(tasks);
+    std::uint32_t visited = 0;
+    for (auto [entity, position, velocity]: world.Query<const Position, const Velocity>().IncludeDisabled()) {
+        EXPECT_DOUBLE_EQ(position.Value, velocity.Value);
+        ++visited;
+    }
+    EXPECT_EQ(visited, LARGE_QUERY_COUNT / 2);
 }
 
 using WriteAccess = NEcs::NSystem::Access<NEcs::NSystem::Write<Position>>;
