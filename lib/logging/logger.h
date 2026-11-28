@@ -98,6 +98,7 @@ private:
 
     mutable std::mutex m_mutex;
     std::condition_variable m_drained;
+    std::condition_variable m_shutdownComplete;
     LoggerConfig m_config;
     ELoggerState m_state = ELoggerState::CREATED;
     std::size_t m_activePublications = 0;

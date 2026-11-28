@@ -69,13 +69,32 @@ public:
         std::unique_lock lock(Mutex);
         EnteredCv.wait(lock, [this] { return Entered; });
     }
+    void Flush() override {
+        std::unique_lock lock(Mutex);
+        FlushEntered = true;
+        FlushEnteredCv.notify_all();
+        FlushReleaseCv.wait(lock, [this] { return FlushReleased; });
+    }
+    void WaitUntilFlushEntered() {
+        std::unique_lock lock(Mutex);
+        FlushEnteredCv.wait(lock, [this] { return FlushEntered; });
+    }
+    void ReleaseFlush() {
+        std::scoped_lock lock(Mutex);
+        FlushReleased = true;
+        FlushReleaseCv.notify_all();
+    }
 
 private:
     std::mutex Mutex;
     std::condition_variable EnteredCv;
     std::condition_variable ReleaseCv;
+    std::condition_variable FlushEnteredCv;
+    std::condition_variable FlushReleaseCv;
     bool Entered = false;
     bool Released = false;
+    bool FlushEntered = false;
+    bool FlushReleased = false;
 };
 
 TEST(Logger, OwnsRecordAndSupportsUnicodeFields) {
@@ -156,10 +175,42 @@ TEST(Logger, ShutdownDrainsAdmittedPublicationBeforeFinalFlush) {
     std::this_thread::yield();
     EXPECT_FALSE(shutdownReturned.load());
     sink->Release();
+    sink->WaitUntilFlushEntered();
+    EXPECT_FALSE(shutdownReturned.load());
+    sink->ReleaseFlush();
     shutdown.join();
     publisher.join();
     EXPECT_TRUE(shutdownReturned.load());
     EXPECT_FALSE(logger.Log(ESeverity::INFO, "core", "after shutdown"));
+}
+
+TEST(Logger, ConcurrentShutdownWaitsForFinalFlush) {
+    Logger logger;
+    auto sink = std::make_shared<BlockingSink>();
+    logger.AddSink(sink);
+    logger.Start();
+    std::jthread publisher([&] { EXPECT_TRUE(logger.Log(ESeverity::INFO, "core", "in flight")); });
+    sink->WaitUntilEntered();
+    std::atomic_bool firstReturned = false;
+    std::atomic_bool secondReturned = false;
+    std::jthread first([&] {
+        logger.Shutdown();
+        firstReturned.store(true);
+    });
+    std::jthread second([&] {
+        logger.Shutdown();
+        secondReturned.store(true);
+    });
+    sink->Release();
+    sink->WaitUntilFlushEntered();
+    EXPECT_FALSE(firstReturned.load());
+    EXPECT_FALSE(secondReturned.load());
+    sink->ReleaseFlush();
+    first.join();
+    second.join();
+    publisher.join();
+    EXPECT_TRUE(firstReturned.load());
+    EXPECT_TRUE(secondReturned.load());
 }
 
 TEST(Logger, ConcurrentPublishersKeepUniqueSequences) {

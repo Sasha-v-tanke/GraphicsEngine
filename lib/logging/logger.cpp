@@ -25,12 +25,16 @@ void Logger::Shutdown() noexcept {
     std::shared_ptr<const SinkList> sinks;
     {
         std::unique_lock lock(m_mutex);
-        if (m_state == ELoggerState::SHUTDOWN || m_state == ELoggerState::STOPPING) {
+        if (m_state == ELoggerState::SHUTDOWN) {
+            return;
+        }
+        if (m_state == ELoggerState::STOPPING) {
+            m_shutdownComplete.wait(lock, [this] { return m_state == ELoggerState::SHUTDOWN; });
             return;
         }
         m_state = ELoggerState::STOPPING;
         m_drained.wait(lock, [this] { return m_activePublications == 0; });
-        sinks = std::atomic_load_explicit(&m_sinks, std::memory_order_acquire);
+        sinks = m_sinks;
     }
     if (sinks != nullptr) {
         for (const auto& sink: *sinks) {
@@ -44,11 +48,16 @@ void Logger::Shutdown() noexcept {
     {
         std::scoped_lock lock(m_mutex);
         m_state = ELoggerState::SHUTDOWN;
+        m_shutdownComplete.notify_all();
     }
 }
 
 void Logger::Flush() noexcept {
-    const auto sinks = std::atomic_load_explicit(&m_sinks, std::memory_order_acquire);
+    std::shared_ptr<const SinkList> sinks;
+    {
+        std::scoped_lock lock(m_mutex);
+        sinks = m_sinks;
+    }
     if (sinks != nullptr) {
         for (const auto& sink: *sinks) {
             try {
@@ -84,18 +93,18 @@ void Logger::AddSink(std::shared_ptr<ILogSink> sink) {
         return;
     }
     std::scoped_lock lock(m_mutex);
-    const auto current = std::atomic_load_explicit(&m_sinks, std::memory_order_acquire);
+    const auto current = m_sinks;
     auto updated = current == nullptr ? std::make_shared<SinkList>() : std::make_shared<SinkList>(*current);
     updated->push_back(std::move(sink));
     std::shared_ptr<const SinkList> published = std::move(updated);
-    std::atomic_store_explicit(&m_sinks, std::move(published), std::memory_order_release);
+    m_sinks = std::move(published);
 }
 
 void Logger::ClearSinks() noexcept {
     std::shared_ptr<const SinkList> retired;
     {
         std::scoped_lock lock(m_mutex);
-        retired = std::atomic_exchange_explicit(&m_sinks, {}, std::memory_order_acq_rel);
+        retired = std::exchange(m_sinks, {});
     }
 }
 
@@ -122,7 +131,7 @@ bool Logger::Publish(LogRecord record) noexcept {
         ++m_activePublications;
         record.Timestamp = std::chrono::system_clock::now();
         record.Sequence = m_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
-        sinks = std::atomic_load_explicit(&m_sinks, std::memory_order_acquire);
+        sinks = m_sinks;
     }
     if (sinks != nullptr) {
         for (const auto& sink: *sinks) {
