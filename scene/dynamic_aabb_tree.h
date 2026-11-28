@@ -36,7 +36,7 @@ public:
     [[nodiscard]] static DynamicAabbTree Build(SceneHandle scene,
                                                std::uint64_t version,
                                                std::span<const SpatialRecord> records,
-                                               DynamicAabbTreeConfig config = {});
+                                               DynamicAabbTreeConfig config = DynamicAabbTreeConfig());
     // A complete input snapshot, not a delta. Only VALID explicitly DYNAMIC records
     // are indexed. Absent identities are removed, new generations are inserted, and
     // movement beyond fat bounds reinserts a leaf. Requires a strictly newer version.

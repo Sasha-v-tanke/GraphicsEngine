@@ -60,7 +60,7 @@ bool IsLeaf(const Node& node) {
 
 // Indices survive vector reallocations. Released nodes are linked through Parent;
 // copying Data preserves the free list, so churn cannot grow storage without bound.
-std::size_t Allocate(auto& data, Node node) {
+std::size_t Allocate(auto& data, const Node& node) {
     if (data.Free == NO_NODE) {
         data.Nodes.push_back(node);
         return data.Nodes.size() - 1;
@@ -259,7 +259,8 @@ DynamicAabbTree DynamicAabbTree::Build(SceneHandle scene,
     auto data = std::make_shared<Data>();
     data->Scene = scene;
     data->Config = config;
-    return DynamicAabbTree{std::move(data)}.Refresh(version, records);
+    const DynamicAabbTree initial(std::move(data));
+    return initial.Refresh(version, records);
 }
 
 DynamicAabbTree DynamicAabbTree::Refresh(std::uint64_t version, std::span<const SpatialRecord> records) const {
@@ -351,8 +352,9 @@ const DynamicAabbTreeStatistics& DynamicAabbTree::GetStatistics() const noexcept
 
 SpatialQueryResult DynamicAabbTree::QueryOverlap(SpatialAabb bounds, SpatialVector origin) const {
     Require(IsBox(bounds) && IsVector(origin), "Invalid dynamic AABB tree overlap query");
-    const auto global = GlobalBox(bounds, origin);
-    return Query(*m_data, [&](SpatialAabb box) { return Overlaps(box, global); });
+    const SpatialAabb globalBounds = GlobalBox(bounds, origin);
+    const auto matches = [globalBounds](SpatialAabb box) { return Overlaps(box, globalBounds); };
+    return Query(*m_data, matches);
 }
 
 SpatialQueryResult DynamicAabbTree::QueryRay(SpatialRay ray, SpatialVector origin) const {

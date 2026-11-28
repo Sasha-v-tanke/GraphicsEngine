@@ -260,5 +260,14 @@ capture. `GraphicsEngineDynamicAabbTreeScaleTests` (heavy) compares incremental
 refresh against complete dynamic/static rebuild on 50,000 records and 1% churn;
 it validates candidate parity and structural-work counts and prints timings.
 Small / Linux CI also runs this CPU-only test explicitly with verbose output,
-without running the rest of the heavy suite. No measured speedup or hardware-specific threshold is asserted without running
-the benchmark. Installed package consumer checks public Build/Refresh/query.
+without running the rest of the heavy suite. Installed package consumer checks
+public Build/Refresh/query.
+
+Measured CI baseline (Linux, Clang 23, ci-lite Debug, commit `43996a8`,
+[CI log](https://github.com/Sasha-v-tanke/GraphicsEngine/actions/runs/46147327865/job/140986158433)):
+50,000 records, eight rounds, 1% movement per round; total refresh 307.494 ms,
+dynamic rebuild 1166.99 ms, static rebuild 2094.97 ms; 400 reinserts, 494 rotations.
+The benchmark passed candidate parity and structural assertions. In this fixture
+refresh was about 3.8x faster than full dynamic rebuild and 6.8x faster than
+static rebuild, including snapshot copying. These are aggregate Debug timings,
+not a hardware latency guarantee or an assertion of sublinear copying cost.
