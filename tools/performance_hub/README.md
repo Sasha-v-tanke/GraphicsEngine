@@ -1,4 +1,6 @@
-# Performance Hub storage
+# Performance Hub
+
+## Storage
 
 `GraphicsEnginePerformanceHubStorage` is an optional host-only SQLite backend. It is not
 linked into the GraphicsEngine SDK, editor, or runtime.
@@ -36,3 +38,9 @@ The `Small / Linux` CI job explicitly enables this optional module and runs
 cmake --build <build-dir> --target GraphicsEnginePerformanceHubStorageTests
 ctest --test-dir <build-dir> -R '^GraphicsEnginePerformanceHubStorageTests$' --output-on-failure
 ```
+
+## Benchmark catalog host adapter
+
+`benchmark_catalog.py` reads declared CMake build presets and an already-built
+`GraphicsEngineBenchmarks` executable. It never configures, builds, or runs a
+benchmark. Run `python3 tools/performance_hub/benchmark_catalog.py --help`.
