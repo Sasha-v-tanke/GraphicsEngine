@@ -6,7 +6,7 @@
 namespace NLogging {
 
 Logger::Logger(LoggerConfig config)
-    : m_config(config) {
+    : m_config(std::move(config)) {
 }
 
 Logger::~Logger() noexcept {
@@ -29,9 +29,11 @@ void Logger::Shutdown() noexcept {
             return;
         }
         if (m_state == ELoggerState::STOPPING) {
-            m_shutdownComplete.wait(lock, [this] { return m_state == ELoggerState::SHUTDOWN; });
+            const std::uint64_t generation = m_shutdownGeneration;
+            m_shutdownComplete.wait(lock, [this, generation] { return m_completedShutdownGeneration >= generation; });
             return;
         }
+        ++m_shutdownGeneration;
         m_state = ELoggerState::STOPPING;
         m_drained.wait(lock, [this] { return m_activePublications == 0; });
         sinks = m_sinks;
@@ -48,6 +50,7 @@ void Logger::Shutdown() noexcept {
     {
         std::scoped_lock lock(m_mutex);
         m_state = ELoggerState::SHUTDOWN;
+        m_completedShutdownGeneration = m_shutdownGeneration;
         m_shutdownComplete.notify_all();
     }
 }
@@ -71,7 +74,7 @@ void Logger::Flush() noexcept {
 
 void Logger::SetConfig(LoggerConfig config) {
     std::scoped_lock lock(m_mutex);
-    m_config = config;
+    m_config = std::move(config);
 }
 
 LoggerConfig Logger::GetConfig() const {

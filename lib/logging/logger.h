@@ -101,6 +101,8 @@ private:
     std::condition_variable m_shutdownComplete;
     LoggerConfig m_config;
     ELoggerState m_state = ELoggerState::CREATED;
+    std::uint64_t m_shutdownGeneration = 0;
+    std::uint64_t m_completedShutdownGeneration = 0;
     std::size_t m_activePublications = 0;
     std::shared_ptr<const SinkList> m_sinks;
     std::atomic_uint64_t m_sequence = 0;
