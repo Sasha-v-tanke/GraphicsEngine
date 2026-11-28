@@ -46,7 +46,8 @@ jobs:
             clang-tidy-23 \
             clang-format-23 \
             libglm-dev \
-            libgtest-dev
+            libgtest-dev \
+            libsqlite3-dev
 
       - name: Check formatting
         run: |
@@ -60,6 +61,18 @@ jobs:
         run: |
           ctest --test-dir cmake-build-ci-lite --verbose --no-tests=error \
             -R '^GraphicsEngineDynamicAabbTreeScaleTests$'
+
+      - name: Run Performance Hub storage tests
+        run: |
+          cmake -S . -B build/performance-hub -G Ninja \
+            -DGRAPHICS_ENGINE_BUILD_PERFORMANCE_HUB=ON \
+            -DGRAPHICS_ENGINE_BUILD_TESTS=ON \
+            -DGRAPHICS_ENGINE_BUILD_BENCHMARKS=OFF \
+            -DGRAPHICS_ENGINE_BUILD_SAMPLES=OFF \
+            -DGRAPHICS_ENGINE_BUILD_VULKAN=OFF \
+            -DGRAPHICS_ENGINE_BUILD_GLFW=OFF
+          cmake --build build/performance-hub --target GraphicsEnginePerformanceHubStorageTests
+          ctest --test-dir build/performance-hub -R '^GraphicsEnginePerformanceHubStorageTests$' --output-on-failure
 
       - name: Show test log
         if: failure()
