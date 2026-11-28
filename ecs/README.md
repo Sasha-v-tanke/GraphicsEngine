@@ -416,3 +416,10 @@ The context and query capabilities are invocation-bound; do not retain component
 the context from detached work. DeltaTime is seconds, supplied by the existing run admission;
 offline callers can pass an explicit value to RunSystems. Scene runtime uses monotonic admission
 time between updates of the same active scene, zero on its first update or after drain/scene switch.
+
+Resolved batches index entries by component type and entity slot, validating the generation on lookup.
+The index is constructed before publication and preserves the existing entry order and overlapping-scope
+write promotion. For a fixed number of component types, admission and query membership lookup are
+expected linear in the number of entity slots (hash lookup is expected constant time); the index uses
+linear additional space in the number of resolved entries. Query still scans entity slots and freezes
+matching rows; this is not an archetype or sparse-set traversal optimization.

@@ -848,7 +848,7 @@ void World::RegisterSystem(SystemAccessList access,
     Systems_.back().Schedule = std::move(schedule);
 }
 
-void World::RegisterTypedSystem(std::vector<TypedComponentAccess> access,
+void World::RegisterTypedSystem(const std::vector<TypedComponentAccess>& access,
                                 SystemCallback callback,
                                 SystemSchedule schedule,
                                 std::uint32_t structuralOrder) {
@@ -2115,12 +2115,8 @@ void* World::ResolveScopedQueryValue(Entity entity, std::type_index type, bool w
     if (!scoped) {
         return nullptr;
     }
-    for (const auto& entry: invocation->Batch->Entries) {
-        if (entry.Type == type && entry.Entity.Identity == entity && (!write || entry.Writable)) {
-            return entry.Component;
-        }
-    }
-    return nullptr;
+    const auto* entry = invocation->Batch->Find(type, entity, write);
+    return entry ? entry->Component : nullptr;
 }
 
 EntityRef World::MakeQueryEntityRef(EntityReference entity, bool readOnly) const {

@@ -817,7 +817,7 @@ private:
                 std::move(schedule),
                 structuralOrder);
     }
-    void RegisterTypedSystem(std::vector<TypedComponentAccess> access,
+    void RegisterTypedSystem(const std::vector<TypedComponentAccess>& access,
                              SystemCallback callback,
                              SystemSchedule schedule,
                              std::uint32_t structuralOrder);
