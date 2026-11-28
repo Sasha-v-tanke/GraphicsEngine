@@ -38,6 +38,9 @@ struct LogRecord final {
     std::string TaskTraceContext;
 };
 
+// Implementations must synchronize their own mutable state: Consume/Consume,
+// Consume/Flush and Flush/Flush may overlap, including calls from different loggers.
+// Record references are valid only for the duration of Consume; copy to retain them.
 class ILogSink {
 public:
     virtual ~ILogSink() = default;
@@ -70,6 +73,8 @@ public:
 
     void Start();
     void Shutdown() noexcept;
+    // Best-effort flush of the current snapshot; does not drain concurrent publications.
+    // May overlap sink callbacks. Shutdown provides the final publication drain.
     void Flush() noexcept;
 
     void SetConfig(LoggerConfig config);
@@ -78,6 +83,7 @@ public:
     [[nodiscard]] std::uint64_t GetSinkFailureCount() const noexcept;
 
     // The shared ownership contract lets an in-flight snapshot safely outlive sink removal.
+    // Throws INVALID_STATE during STOPPING. After SHUTDOWN, configures the next Start.
     void AddSink(std::shared_ptr<ILogSink> sink);
     void ClearSinks() noexcept;
 

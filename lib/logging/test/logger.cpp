@@ -177,6 +177,7 @@ TEST(Logger, ShutdownDrainsAdmittedPublicationBeforeFinalFlush) {
     sink->Release();
     sink->WaitUntilFlushEntered();
     EXPECT_FALSE(shutdownReturned.load());
+    EXPECT_ANY_THROW(logger.AddSink(std::make_shared<CollectingSink>()));
     sink->ReleaseFlush();
     shutdown.join();
     publisher.join();
@@ -221,6 +222,7 @@ TEST(Logger, ConcurrentPublishersKeepUniqueSequences) {
     constexpr int producers = 8;
     constexpr int recordsPerProducer = 1000;
     std::vector<std::jthread> threads;
+    threads.reserve(producers);
     for (int producer = 0; producer < producers; ++producer) {
         threads.emplace_back([&] {
             for (int index = 0; index < recordsPerProducer; ++index) {
@@ -232,6 +234,7 @@ TEST(Logger, ConcurrentPublishersKeepUniqueSequences) {
     std::scoped_lock lock(sink->Mutex);
     ASSERT_EQ(sink->Records.size(), producers * recordsPerProducer);
     std::vector<std::uint64_t> sequences;
+    sequences.reserve(sink->Records.size());
     for (const auto& record: sink->Records) {
         sequences.push_back(record.Sequence);
     }

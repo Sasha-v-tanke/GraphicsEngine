@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <utility>
 
+#include <GraphicsEngine/lib/common/error/error.h>
+#include <GraphicsEngine/lib/common/error/exception.h>
+
 namespace NLogging {
 
 Logger::Logger(LoggerConfig config)
@@ -35,8 +38,8 @@ void Logger::Shutdown() noexcept {
         }
         ++m_shutdownGeneration;
         m_state = ELoggerState::STOPPING;
-        m_drained.wait(lock, [this] { return m_activePublications == 0; });
         sinks = m_sinks;
+        m_drained.wait(lock, [this] { return m_activePublications == 0; });
     }
     if (sinks != nullptr) {
         for (const auto& sink: *sinks) {
@@ -96,6 +99,9 @@ void Logger::AddSink(std::shared_ptr<ILogSink> sink) {
         return;
     }
     std::scoped_lock lock(m_mutex);
+    if (m_state == ELoggerState::STOPPING) {
+        GRAPHICS_ENGINE_THROW(NCommon::EError::INVALID_STATE, "Cannot add logging sinks during shutdown");
+    }
     const auto current = m_sinks;
     auto updated = current == nullptr ? std::make_shared<SinkList>() : std::make_shared<SinkList>(*current);
     updated->push_back(std::move(sink));
