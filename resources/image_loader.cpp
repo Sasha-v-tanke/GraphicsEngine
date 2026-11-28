@@ -91,7 +91,11 @@ ResourceHandle<ImageData>
 LoadImage(ResourceManager& resources, ResourceIdentity identity, const std::filesystem::path& path) {
     const ResourceIdentity failureIdentity = identity;
     const ResourceHandle<ImageData> handle = resources.Request<ImageData>(std::move(identity));
-    const ResourceOperation<ImageData> operation = resources.BeginLoading(handle);
+    const auto admitted = resources.TryBeginLoading(handle);
+    if (!admitted) {
+        return handle;
+    }
+    const ResourceOperation<ImageData> operation = *admitted;
 
     std::error_code fileSizeError;
     const std::uintmax_t fileSize = std::filesystem::file_size(path, fileSizeError);

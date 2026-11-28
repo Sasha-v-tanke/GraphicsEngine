@@ -86,7 +86,11 @@ ResourceHandle<ShaderArtifact> LoadShaderArtifact(ResourceManager& resources,
                                                   EShaderStage stage) {
     const ResourceIdentity failureIdentity = identity;
     const ResourceHandle<ShaderArtifact> handle = resources.Request<ShaderArtifact>(std::move(identity));
-    const ResourceOperation<ShaderArtifact> operation = resources.BeginLoading(handle);
+    const auto admitted = resources.TryBeginLoading(handle);
+    if (!admitted) {
+        return handle;
+    }
+    const ResourceOperation<ShaderArtifact> operation = *admitted;
     const std::vector<std::uint32_t> words = ReadShaderWords(path);
 
     if (words.empty()) {
