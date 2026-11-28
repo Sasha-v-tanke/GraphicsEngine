@@ -143,7 +143,11 @@ std::expected<void, std::string> CreateMeta(const std::filesystem::path& source,
     for (const auto& [key, value]: meta.Settings) {
         if (9 + key.size() + value.size() + 1 > MaxMetaBytes - serialized.size())
             return std::unexpected("metadata exceeds byte limit");
-        serialized += "setting." + key + '=' + value + '\n';
+        serialized += "setting.";
+        serialized += key;
+        serialized += '=';
+        serialized += value;
+        serialized += '\n';
     }
     const auto target = MetaPathFor(source);
     static std::atomic_uint64_t sequence{};
