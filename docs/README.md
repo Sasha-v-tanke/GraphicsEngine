@@ -19,6 +19,7 @@
 Здесь описываются назначение и публичные возможности отдельных модулей: когда ими пользоваться, как настроить, какие классы и методы доступны, что они возвращают и какие ограничения должен учитывать вызывающий код. Сведения о внутренней реализации здесь не дублируются.
 
 - [Application: Game config, Scene и сервисы](about/application.md).
+- [Logging: structured records и sinks](about/logging.md).
 
 **Запланированные описания** (пока не опубликованы):
 
@@ -38,6 +39,7 @@ README рядом с исходным кодом описывает устрой
 | Window | [`window/README.md`](../window/README.md) |
 | Engine | [`engine/README.md`](../engine/README.md) |
 | TaskSystem | [`lib/thread/README.md`](../lib/thread/README.md) |
+| Logging | [`lib/logging/README.md`](../lib/logging/README.md) |
 | ECS | [`ecs/README.md`](../ecs/README.md) |
 | Scene | [`scene/README.md`](../scene/README.md) |
 | Resources | [`resources/README.md`](../resources/README.md) |
